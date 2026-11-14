@@ -1,0 +1,7 @@
+[Unit]
+Description=Sync the apw password snapshot
+Documentation=https://github.com/bendews/apw
+
+[Service]
+Type=oneshot
+ExecStart=@APW@ sync

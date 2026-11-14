@@ -1,195 +1,81 @@
-<div align="center">
-  <a href="https://github.com/bendews/apw">
-    <img src="icon.png" alt="Logo" width="80" height="80">
-  </a>
+# apw
 
-<h3 align="center">Apple Passwords CLI</h3>
+apw reads Apple Passwords on Linux. One Rust binary, one encrypted snapshot, no daemon.
 
-<p align="center">
-    A CLI for access to Apple Passwords. A foundation for enabling integration and automation.
-    <br />
-    <a href="https://github.com/bendews/apw"><strong>Explore the docs »</strong></a>
-    <br />
-    <br />
-    <a href="https://github.com/bendews/apw">View Demo</a>
-    ·
-    <a href="https://github.com/bendews/apw/issues">Report Bug</a>
-    ·
-    <a href="https://github.com/bendews/apw/issues">Request Feature</a>
-  </p>
+Apple ships Passwords for macOS, Windows, and iOS, with no Linux client and no public API for iCloud Keychain. apw signs in with an Apple ID, joins the device trust circle, decrypts the keychain records, and stores them in a local encrypted snapshot. Query commands read that snapshot and never touch the network. Nothing is written back to Apple.
 
-[![Contributors][contributors-shield]][contributors-url] [![Forks][forks-shield]][forks-url]
-[![Stargazers][stars-shield]][stars-url] [![Issues][issues-shield]][issues-url]
-[![MIT License][license-shield]][license-url]
-<br />
+## Status
 
-</div>
+| Area | State |
+| --- | --- |
+| CLI, encrypted snapshot, `pw`, `otp`, `status`, `install-units` | Works against fixtures |
+| `login` and live `sync` | Designed, not in this build |
+| Shared groups, passkeys, notes | Designed, not in this build |
 
-<!-- ABOUT THE PROJECT -->
+The Deno implementation for macOS stays under `legacy/` for reference. It is not built or supported.
 
-## About The Project
+## Requirements
 
-This project introduces a CLI interface designed to access iCloud passwords and OTP tokens. The core objective is to
-provide a secure and straightforward way to retrieve iCloud passwords, facilitating integration with other systems or
-for personal convenience.
+- Linux on x86_64 or aarch64, glibc.
+- An Apple ID with two-factor authentication.
+- An anisette server for sign-in. See [Install](docs/install.md#anisette).
+- A Secret Service provider (GNOME Keyring, KWallet) or `APW_PASSPHRASE`.
 
-It utilises a built in helper tool in macOS 14 and above to facilitate this functionality.
+Rust 1.82 or later is needed only to build from source.
 
-https://github.com/user-attachments/assets/8cb45571-d164-4e28-aa6e-64d27705d6d2
+## How it works
 
-## Getting Started
+`apw login` authenticates through GSA SRP, answers the two-factor prompt, joins Octagon, and recovers the keychain keys through escrow. `apw sync` refreshes the tokens and decrypts the CKKS records into the snapshot. `apw pw` and `apw otp` read the snapshot.
 
-**APW requires a supported browser with the <ins>iCloud Passwords extension installed</ins>**:
+The snapshot is AES-256-GCM under a 256-bit key in Secret Service. Without a session bus, the key is derived with Argon2id from a passphrase.
 
-- **Ungoogled Chromium**: `brew install --cask ungoogled-chromium`
-- or **Google Chrome**: `brew install --cask google-chrome`
-- or **Brave Browser**: `brew install --cask brave-browser`
-- or **Microsoft Edge**: `brew install --cask microsoft-edge`
-
-<ins>Link to iCloud Passwords Extension:
-[Link](https://chromewebstore.google.com/detail/icloud-passwords/pejdijmoenmkgeppbflobdenhhabjlaj)</ins>
-
-> **Note:** The browser is launched headlessly in the background. It will generally not be usable for regular browsing
-> while `apw` is running. Installing one of the above as a dedicated secondary browser is recommended.
-
-### Quick Start
-
-**1. Install APW**
+## Install
 
 ```sh
-brew install bendews/homebrew-tap/apw
+cargo install --git https://github.com/bendews/apw
 ```
 
-**2. Start the daemon**
+[Install](docs/install.md) covers the anisette server, the first sign-in, the systemd timer, and the build from a checkout.
 
-APW will detect the browser and extension automatically. To start at login:
+## Use
 
 ```sh
-brew services start apw
+apw login --anisette-url http://127.0.0.1:6969
+apw sync
+apw pw list example.com
+apw pw get example.com
+apw otp get example.com
+apw status
 ```
 
-**3. Authenticate**
-
-This step is required every time the daemon starts (e.g. on boot):
+`apw pw get` prints the password.
 
 ```sh
-apw auth
+apw pw get example.com --json
 ```
 
-A native macOS popup with a PIN will appear. Enter it when prompted to complete pairing.
-
----
-
-APW is now running and ready to use.
-
-## Integrations
-
-The following integrations provide quick access to passwords and OTP tokens:
-
-- [Raycast extension](https://www.raycast.com/bendews/apple-passwords) automatically retrieves entries for the currently
-  active webpage and enters them.
-- [LaunchBar action](https://github.com/andesco/launchbar-apple-passwords) finds entries for a typed domain and pastes
-  the selected entry.
-
-The following are some future integration ideas:
-
-- SSH Agent to allow storing and using SSH keys/passwords
-- Additional wrappers for CLI tools and services
-
-## Usage
-
-Ensure the daemon is running (`apw start` or `brew services start apw`) and authenticated (`apw auth`).
-
-Start with a specific browser without the interactive prompt, selections will be persisted:
-
-`apw start --browser chrome`
-
-Query for available passwords (Interactive):
-
-`apw pw`
-
-Query for available passwords (JSON output):
-
-`apw pw list google.com`
-
-Create or update a password (the command prompts for the password):
-
-`apw pw save google.com username`
-
-Retrieve a one-time code:
-
-`apw otp get google.com`
-
-View more commands & help:
-
-`apw --help`
-
-```shell
-Options:
-
-  -h, --help     - Show this help.                            
-  -V, --version  - Show the version number for this program.  
-
-Commands:
-
-  auth   - Authenticate CLI with daemon.         
-  pw     - Interactively list or save accounts/passwords.
-  otp    - Interactively list accounts/OTPs.     
-  start  - Start the daemon.
+```json
+{"results":[{"id":"login-example","username":"alice","domain":"example.com","sites":["example.com"],"title":"Example","password":"hunter2"}],"status":0}
 ```
 
-<!-- CONTRIBUTING -->
+`--json` works on every command and prints the envelope described in [Reference](docs/reference.md#json).
 
-## Building
+## Read-only
 
-This project uses Deno for development and compilation. Make sure you have Deno installed on your system before
-proceeding.
+This build has no `pw save` and no item edit. `apw pw save` fails as an unknown command.
 
-### Running the Project
+Apple's iCloud terms prohibit automated access. apw stays polite: paced syncs, no automatic retries, one escrow attempt per user action. The contract risk is yours.
 
-To run the project whilst developing:
+## Docs
 
-```shell
-deno task dev <OPTIONS>
-```
-
-### Building a release version
-
-To build a statically compiled binary:
-
-```shell
-deno task compile
-```
-
-## Contributing
-
-Contributions are what make the open source community such an amazing place to learn, inspire, and create. Any
-contributions you make are **greatly appreciated**.
-
-If you have a suggestion that would make this better, please fork the repo and create a pull request. You can also
-simply open an issue with the tag "enhancement". Don't forget to give the project a star! Thanks again!
-
-1. Fork the Project
-2. Create your Feature Branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your Changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the Branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
+- [Install](docs/install.md): anisette, sign-in, timer, source build.
+- [Operate](docs/operate.md): sync, status, re-authentication, shared groups.
+- [Reference](docs/reference.md): commands, paths, config, JSON, limits.
+- [Secrets](docs/secrets.md): snapshot key, passphrase, escrow, threat model.
+- [Troubleshooting](docs/troubleshooting.md): symptoms and fixes.
+- [Design](docs/design.md): protocols, architecture, passes.
+- [Contributing](CONTRIBUTING.md): build, tests, fixtures, live gate.
 
 ## License
 
-Distributed under the GPL V3.0 License. See `LICENSE` for more information.
-
-<!-- MARKDOWN LINKS & IMAGES -->
-<!-- https://www.markdownguide.org/basic-syntax/#reference-style-links -->
-
-[contributors-shield]: https://img.shields.io/github/contributors/bendews/apw.svg?style=for-the-badge
-[contributors-url]: https://github.com/bendews/apw/graphs/contributors
-[forks-shield]: https://img.shields.io/github/forks/bendews/apw.svg?style=for-the-badge
-[forks-url]: https://github.com/bendews/apw/network/members
-[stars-shield]: https://img.shields.io/github/stars/bendews/apw.svg?style=for-the-badge
-[stars-url]: https://github.com/bendews/apw/stargazers
-[issues-shield]: https://img.shields.io/github/issues/bendews/apw.svg?style=for-the-badge
-[issues-url]: https://github.com/bendews/apw/issues
-[license-shield]: https://img.shields.io/github/license/bendews/apw.svg?style=for-the-badge
-[license-url]: https://github.com/bendews/apw/blob/master/LICENSE.txt
-[product-screenshot]: images/screenshot.png
+GPL-3.0-only. See `LICENSE`.

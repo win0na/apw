@@ -1,0 +1,41 @@
+[package]
+name = "apw"
+version = "2.0.0"
+edition = "2021"
+rust-version = "1.82"
+description = "Read Apple Passwords on Linux"
+license = "GPL-3.0-only"
+repository = "https://github.com/bendews/apw"
+default-run = "apw"
+
+[[bin]]
+name = "apw"
+path = "src/main.rs"
+
+[features]
+default = ["keyring"]
+keyring = ["dep:keyring"]
+
+[dependencies]
+aes-gcm = "0.10"
+argon2 = "0.5"
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
+data-encoding = "2"
+hmac = "0.12"
+rand = "0.8"
+rpassword = "7"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha1 = "0.10"
+sha2 = "0.10"
+thiserror = "2"
+toml = "0.8"
+zeroize = "1"
+keyring = { version = "3", features = ["linux-native"], optional = true }
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+tempfile = "3"

@@ -1,0 +1,74 @@
+# Operate
+
+Queries read the snapshot. `apw sync` is the only command that talks to iCloud.
+
+This page describes the 2.0 target. Live sync and shared groups arrive in later passes; this build syncs fixtures.
+
+## Sync
+
+```sh
+apw sync            # respects the interval
+apw sync --force    # ignores it
+```
+
+Syncs are at least five minutes apart. The binary enforces the floor, so a laptop that was asleep catches up on the next timer tick instead of syncing in a burst. Errors back off exponentially to six hours, and a `Retry-After` header wins over the local schedule.
+
+The timer runs hourly, which is well above the floor.
+
+## What sync does
+
+1. Refresh `cloudKitToken` from `mmeAuthToken` through `setup.icloud.com`.
+2. Fetch the TLK shares for the recovered sponsor and union them with the new peer's shares.
+3. Read `tlkshare`, `synckey`, `item`, and `currentitem` records from the private zones.
+4. Decrypt each item with AES-SIV and write the snapshot.
+
+Fetching only the new peer's shares returns a clean, empty keychain. The union in step 2 is what makes the data appear.
+
+## Status
+
+```sh
+apw status
+apw status --json
+```
+
+It prints the account, source, entry and group counts, the last sync time, and the snapshot path and size. It reads the state file, not the snapshot, so it never asks for the snapshot key.
+
+`needs_sync` is true when there is no last sync or the last one is older than the interval.
+
+## Re-authentication
+
+A sync that gets 401 records the failure and stops. It never retries the password. Run `apw login` again; the escrow step makes one attempt per run.
+
+The snapshot keeps working while the tokens are expired, so `pw` and `otp` continue to answer.
+
+## Shared groups
+
+Shared groups live in the `com.apple.security.shared.keychain` container, one zone per group. `apw sync` accepts pending invites before reading a zone, then decrypts the items with PCS share keys.
+
+A group that fails to decrypt is reported per group. It does not fail the whole sync.
+
+## Timer
+
+```sh
+systemctl --user status apw-sync.timer
+journalctl --user -u apw-sync -n 50
+```
+
+`apw install-units` writes `apw-sync.service` and `apw-sync.timer` to `~/.config/systemd/user/`. The service runs `apw sync` once; the timer fires hourly with `Persistent=true`.
+
+If the timer never runs, enable lingering for the user:
+
+```sh
+loginctl enable-linger "$USER"
+```
+
+## Fixture sync
+
+The fixture path exercises the storage layer without Apple credentials:
+
+```sh
+apw sync --fixture tests/fixtures/vault.json
+apw pw list
+```
+
+`APW_FIXTURE` does the same when `--fixture` is absent. Fixtures use the same JSON model as the snapshot.

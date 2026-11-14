@@ -1,15 +1,9 @@
-# Deno
-.cache
-deps
-deno-test-results.xml
+# Rust
+/target/
+**/*.rs.bk
 
-# TypeScript
-*.tsbuildinfo
-
-# Node.js
-node_modules
-npm-debug.log
-yarn-error.log
+# Build output
+dist/
 
 # Editor/IDE
 .vscode
@@ -17,12 +11,14 @@ yarn-error.log
 *.sublime-project
 *.sublime-workspace
 
-# Build output
-dist
+# OS
+.DS_Store
 
-# Other
-*.psd
+# Local test state
+*.tmp
 
 # Binary
-apw# Deepwork
+apw
+
+# Deepwork
 .slim/deepwork/
