@@ -33,8 +33,14 @@ pub fn run(paths: &Paths, config: &Config, json: bool) -> Result<()> {
     }
 
     for (label, value) in [
-        ("account", result["account"].as_str().unwrap_or("-").to_string()),
-        ("source", result["source"].as_str().unwrap_or("-").to_string()),
+        (
+            "account",
+            result["account"].as_str().unwrap_or("-").to_string(),
+        ),
+        (
+            "source",
+            result["source"].as_str().unwrap_or("-").to_string(),
+        ),
         ("entries", result["entries"].to_string()),
         ("groups", result["groups"].to_string()),
         (

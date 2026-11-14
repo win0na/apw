@@ -11,7 +11,7 @@ pub fn list(paths: &Paths, config: &mut Config, query: Option<&str>, json: bool)
         .entries
         .iter()
         .filter(|entry| entry.kind == EntryKind::Login)
-        .filter(|entry| query.map_or(true, |value| entry.matches(value)))
+        .filter(|entry| query.is_none_or(|value| entry.matches(value)))
         .collect();
 
     if output::use_json(json) {

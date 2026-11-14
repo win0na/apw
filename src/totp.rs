@@ -17,7 +17,11 @@ pub fn generate(totp: &Totp, at: SystemTime) -> Result<String> {
     let counter = at.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() / period;
     let code = hotp(&key, counter, totp.algorithm)?;
     let modulus = 10u32.pow(digits);
-    Ok(format!("{:0width$}", code % modulus, width = digits as usize))
+    Ok(format!(
+        "{:0width$}",
+        code % modulus,
+        width = digits as usize
+    ))
 }
 
 pub fn seconds_remaining(totp: &Totp, at: SystemTime) -> u64 {
@@ -73,7 +77,7 @@ fn decode_secret(secret: &str) -> Result<Vec<u8>> {
     }
     let padding = (8 - normalized.len() % 8) % 8;
     let mut padded = normalized;
-    padded.extend(std::iter::repeat('=').take(padding));
+    padded.extend(std::iter::repeat_n('=', padding));
     BASE32
         .decode(padded.as_bytes())
         .map_err(|_| Error::Invalid("TOTP secret is not valid base32".into()))

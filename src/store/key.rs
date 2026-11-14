@@ -29,7 +29,10 @@ pub struct SnapshotKey {
 }
 
 pub fn load_or_create(config: &mut Config, paths: &Paths) -> Result<SnapshotKey> {
-    if let Some(passphrase) = std::env::var("APW_PASSPHRASE").ok().filter(|v| !v.is_empty()) {
+    if let Some(passphrase) = std::env::var("APW_PASSPHRASE")
+        .ok()
+        .filter(|v| !v.is_empty())
+    {
         return derive_from_passphrase(config, paths, &passphrase);
     }
 
@@ -91,8 +94,7 @@ fn derive_from_passphrase(
         None => {
             let mut salt = [0u8; 16];
             rand::rngs::OsRng.fill_bytes(&mut salt);
-            config.kdf_salt =
-                Some(base64::engine::general_purpose::STANDARD.encode(salt));
+            config.kdf_salt = Some(base64::engine::general_purpose::STANDARD.encode(salt));
             config.save(paths)?;
             salt.to_vec()
         }
@@ -101,13 +103,9 @@ fn derive_from_passphrase(
     let mut key = [0u8; KEY_LEN];
     let params = argon2::Params::new(64 * 1024, 3, 1, Some(KEY_LEN))
         .map_err(|error| Error::Message(format!("invalid Argon2 parameters: {error}")))?;
-    argon2::Argon2::new(
-        argon2::Algorithm::Argon2id,
-        argon2::Version::V0x13,
-        params,
-    )
-    .hash_password_into(passphrase.as_bytes(), &salt, &mut key)
-    .map_err(|error| Error::Message(format!("cannot derive the snapshot key: {error}")))?;
+    argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params)
+        .hash_password_into(passphrase.as_bytes(), &salt, &mut key)
+        .map_err(|error| Error::Message(format!("cannot derive the snapshot key: {error}")))?;
 
     Ok(SnapshotKey {
         key,

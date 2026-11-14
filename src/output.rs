@@ -48,7 +48,10 @@ pub fn print_table(headers: &[&str], rows: &[Vec<String>]) {
             .to_string()
     };
 
-    println!("{}", line(&headers.iter().map(|h| h.to_string()).collect::<Vec<_>>()));
+    println!(
+        "{}",
+        line(&headers.iter().map(|h| h.to_string()).collect::<Vec<_>>())
+    );
     println!(
         "{}",
         widths
