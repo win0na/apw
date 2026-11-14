@@ -1,6 +1,6 @@
 # Reference
 
-This page describes the 2.0 target. This build reads fixtures; `login` and live `sync` are not implemented yet.
+This page describes the 2.0 target. This build signs in and reads fixtures; live `sync` is not implemented yet.
 
 ## Commands
 

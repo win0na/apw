@@ -39,7 +39,7 @@ apw
 | `p384`, `hkdf`, `pbkdf2` | Peer keys, escrow, SRP |
 | `aes-siv`, `plist`, `prost` | CKKS records, item plists, protobuf |
 
-The current build uses the first four rows. The rest arrive with the auth, Octagon, and CKKS passes.
+The current build has the CLI, storage, SRP, anisette, GSA, and token exchange. `p384`, `aes-siv`, `plist`, and `prost` arrive with the Octagon and CKKS passes.
 
 Data flow:
 

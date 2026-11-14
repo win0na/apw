@@ -24,6 +24,8 @@ pub struct Vault {
     pub entries: Vec<Entry>,
     #[serde(default)]
     pub groups: Vec<Group>,
+    #[serde(default)]
+    pub session: Option<Session>,
 }
 
 impl Default for Vault {
@@ -35,6 +37,7 @@ impl Default for Vault {
             source: Source::default(),
             entries: Vec::new(),
             groups: Vec::new(),
+            session: None,
         }
     }
 }
@@ -191,4 +194,18 @@ pub struct Group {
     pub name: Option<String>,
     #[serde(default)]
     pub shared: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Session {
+    pub adsid: String,
+    pub dsid: String,
+    pub pet: String,
+    pub mme_auth_token: String,
+    pub cloudkit_token: String,
+    #[serde(default)]
+    pub ckdatabasews_url: Option<String>,
+    #[serde(default)]
+    pub escrow_proxy_url: Option<String>,
+    pub logged_in_at: chrono::DateTime<chrono::Utc>,
 }

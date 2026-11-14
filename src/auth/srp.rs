@@ -1,8 +1,10 @@
 //! SRP-6a client for Apple's GSA login.
 //!
-//! Apple uses the RFC 5054 2048-bit group with g = 2 and SHA-256. The password
-//! is not hashed the RFC 5054 way: it is SHA-256 first, then PBKDF2-HMAC-SHA256
-//! with the server's salt and iteration count. The username is not part of x.
+//! Apple uses the RFC 5054 2048-bit group with g = 2 and SHA-256 everywhere.
+//! The password is SHA-256 first, then PBKDF2-HMAC-SHA256 with the server's
+//! salt and iteration count. Under the `s2k_fo` scheme the SHA-256 digest is
+//! lowercase hex before PBKDF2. The username is not part of x, but it is part
+//! of M1.
 
 use num_bigint::BigUint;
 use num_traits::Zero;
@@ -23,6 +25,24 @@ AF874E7303CE53299CCC041C7BC308D82A5698F3A8D0C38271AE35F8E9DBFBB6\
 
 const G: u32 = 2;
 const N_BYTES: usize = 256;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PasswordScheme {
+    S2k,
+    S2kFo,
+}
+
+impl PasswordScheme {
+    pub fn parse(value: &str) -> Result<Self> {
+        match value {
+            "s2k" => Ok(Self::S2k),
+            "s2k_fo" => Ok(Self::S2kFo),
+            other => Err(Error::Message(format!(
+                "server chose an unknown password scheme: {other}"
+            ))),
+        }
+    }
+}
 
 pub struct SrpClient {
     secret: BigUint,
@@ -51,11 +71,13 @@ impl SrpClient {
     pub fn new() -> Self {
         let mut secret = [0u8; 32];
         rand::rngs::OsRng.fill_bytes(&mut secret);
+        secret[0] |= 0x80;
         let secret = BigUint::from_bytes_be(&secret);
-        let public = pad(&BigUint::from(G).modpow(&secret, &modulus()));
+        let public = BigUint::from(G).modpow(&secret, &modulus()).to_bytes_be();
         Self { secret, public }
     }
 
+    /// A, minimal length, as sent in `A2k`.
     pub fn public(&self) -> &[u8] {
         &self.public
     }
@@ -66,6 +88,7 @@ impl SrpClient {
         password: &str,
         salt: &[u8],
         iterations: u32,
+        scheme: PasswordScheme,
         server_public: &[u8],
     ) -> Result<Proof> {
         let n = modulus();
@@ -77,26 +100,30 @@ impl SrpClient {
             ));
         }
 
-        let x = password_x(password, salt, iterations);
+        let x = password_x(password, salt, iterations, scheme);
         let gx = g.modpow(&x, &n);
         let k = multiplier();
         let kgx = (k * gx) % &n;
 
         // B - k*g^x mod N, without underflow.
         let base = (server_b.clone() + &n - kgx) % &n;
-        let server_bytes = pad(&server_b);
 
-        let u = scrambling(&self.public, &server_bytes);
+        let public = BigUint::from_bytes_be(&self.public);
+        let u = scrambling(&pad(&public), &pad(&server_b));
+        if u.is_zero() {
+            return Err(Error::Message("server sent an invalid SRP scramble".into()));
+        }
+
         let exponent = &self.secret + &u * &x;
         let shared = base.modpow(&exponent, &n);
-
         let key = sha256(&[&shared.to_bytes_be()]);
+
         let m1 = sha256(&[
             &hash_n_xor_g(),
             &sha256(&[username.as_bytes()]),
             salt,
             &self.public,
-            &server_bytes,
+            &server_b.to_bytes_be(),
             &key,
         ]);
         let m2 = sha256(&[&self.public, &m1, &key]);
@@ -130,10 +157,14 @@ fn scrambling(public: &[u8], server_public: &[u8]) -> BigUint {
     BigUint::from_bytes_be(&sha256(&[public, server_public]))
 }
 
-fn password_x(password: &str, salt: &[u8], iterations: u32) -> BigUint {
-    let inner = sha256(&[password.as_bytes()]);
+fn password_x(password: &str, salt: &[u8], iterations: u32, scheme: PasswordScheme) -> BigUint {
+    let digest = sha256(&[password.as_bytes()]);
+    let stretched_input = match scheme {
+        PasswordScheme::S2k => digest,
+        PasswordScheme::S2kFo => data_encoding::HEXLOWER.encode(&digest).into_bytes(),
+    };
     let mut stretched = [0u8; 32];
-    pbkdf2::pbkdf2_hmac::<Sha256>(&inner, salt, iterations.max(1), &mut stretched);
+    pbkdf2::pbkdf2_hmac::<Sha256>(&stretched_input, salt, iterations.max(1), &mut stretched);
     let outer = sha256(&[salt, &sha256(&[b":", &stretched])]);
     BigUint::from_bytes_be(&outer)
 }
@@ -160,10 +191,16 @@ fn sha256(parts: &[&[u8]]) -> Vec<u8> {
 mod tests {
     use super::*;
 
-    fn server(salt: &[u8], iterations: u32, password: &str, public: &[u8]) -> (Vec<u8>, Vec<u8>) {
+    fn server(
+        salt: &[u8],
+        iterations: u32,
+        password: &str,
+        scheme: PasswordScheme,
+        public: &[u8],
+    ) -> (Vec<u8>, Vec<u8>) {
         let n = modulus();
         let g = BigUint::from(G);
-        let x = password_x(password, salt, iterations);
+        let x = password_x(password, salt, iterations, scheme);
         let v = g.modpow(&x, &n);
 
         let mut secret = [0u8; 32];
@@ -172,18 +209,24 @@ mod tests {
         let server_public = ((multiplier() * &v) + g.modpow(&b, &n)) % &n;
 
         let client_public = BigUint::from_bytes_be(public);
-        let u = scrambling(public, &pad(&server_public));
+        let u = scrambling(&pad(&client_public), &pad(&server_public));
         let shared = (client_public * v.modpow(&u, &n)).modpow(&b, &n);
         let key = sha256(&[&shared.to_bytes_be()]);
 
-        (pad(&server_public), key)
+        (server_public.to_bytes_be(), key)
     }
 
     #[test]
-    fn round_trip_matches() {
+    fn round_trip_s2k() {
         let client = SrpClient::new();
         let salt = b"0123456789abcdef";
-        let (server_public, server_key) = server(salt, 1000, "correct horse", client.public());
+        let (server_public, server_key) = server(
+            salt,
+            1000,
+            "correct horse",
+            PasswordScheme::S2k,
+            client.public(),
+        );
 
         let proof = client
             .prove(
@@ -191,6 +234,7 @@ mod tests {
                 "correct horse",
                 salt,
                 1000,
+                PasswordScheme::S2k,
                 &server_public,
             )
             .unwrap();
@@ -201,13 +245,61 @@ mod tests {
     }
 
     #[test]
+    fn round_trip_s2k_fo() {
+        let client = SrpClient::new();
+        let salt = b"fedcba9876543210";
+        let (server_public, server_key) = server(
+            salt,
+            20_000,
+            "correct horse",
+            PasswordScheme::S2kFo,
+            client.public(),
+        );
+
+        let proof = client
+            .prove(
+                "user@example.com",
+                "correct horse",
+                salt,
+                20_000,
+                PasswordScheme::S2kFo,
+                &server_public,
+            )
+            .unwrap();
+
+        assert_eq!(proof.key, server_key);
+    }
+
+    #[test]
+    fn schemes_differ() {
+        let client = SrpClient::new();
+        let salt = b"0123456789abcdef";
+        let (server_public, _) = server(salt, 1000, "pw", PasswordScheme::S2k, client.public());
+        let s2k = client
+            .prove("u", "pw", salt, 1000, PasswordScheme::S2k, &server_public)
+            .unwrap();
+        let fo = client
+            .prove("u", "pw", salt, 1000, PasswordScheme::S2kFo, &server_public)
+            .unwrap();
+        assert_ne!(s2k.key, fo.key);
+    }
+
+    #[test]
     fn wrong_password_does_not_match() {
         let client = SrpClient::new();
         let salt = b"0123456789abcdef";
-        let (server_public, server_key) = server(salt, 1000, "right", client.public());
+        let (server_public, server_key) =
+            server(salt, 1000, "right", PasswordScheme::S2k, client.public());
 
         let proof = client
-            .prove("user@example.com", "wrong", salt, 1000, &server_public)
+            .prove(
+                "user@example.com",
+                "wrong",
+                salt,
+                1000,
+                PasswordScheme::S2k,
+                &server_public,
+            )
             .unwrap();
 
         assert_ne!(proof.key, server_key);
@@ -227,8 +319,20 @@ mod tests {
     fn rejects_zero_server_public() {
         let client = SrpClient::new();
         let error = client
-            .prove("user@example.com", "pw", b"salt", 1, &[0u8; 256])
+            .prove(
+                "user@example.com",
+                "pw",
+                b"salt",
+                1,
+                PasswordScheme::S2k,
+                &[0u8; 256],
+            )
             .unwrap_err();
         assert!(error.to_string().contains("invalid SRP public key"));
+    }
+
+    #[test]
+    fn rejects_unknown_scheme() {
+        assert!(PasswordScheme::parse("s2k_x").is_err());
     }
 }

@@ -2,7 +2,7 @@
 
 Queries read the snapshot. `apw sync` is the only command that talks to iCloud.
 
-This page describes the 2.0 target. Live sync and shared groups arrive in later passes; this build syncs fixtures.
+This page describes the 2.0 target. Live sync and shared groups arrive in later passes; this build signs in and syncs fixtures.
 
 ## Sync
 

@@ -2,7 +2,7 @@
 
 This page takes a Linux machine from nothing to a working snapshot and a systemd timer.
 
-The commands describe the finished 2.0 build. This build reads fixtures: `login` and live `sync` are not implemented yet. See [Status](../README.md#status).
+The commands describe the finished 2.0 build. This build signs in and writes a session snapshot; live `sync` is not implemented yet. See [Status](../README.md#status).
 
 ## Before you start
 

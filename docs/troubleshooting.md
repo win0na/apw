@@ -26,14 +26,6 @@ cannot decrypt the snapshot: wrong key or damaged file
 
 The passphrase is wrong, the keyring entry changed, or the file is damaged. Use the passphrase that created the snapshot, or delete `snapshot.bin` and sign in again. A new keyring entry produces the same error.
 
-## apw login says it is not implemented
-
-```
-live login is not implemented in this build
-```
-
-Expected in this build. The anisette URL is saved; the auth backend arrives in a later pass. See [Status](../README.md#status).
-
 ## apw login stops before the two-factor prompt
 
 The anisette URL is missing, unreachable, or not returning a device identity. Check the URL and the server:

@@ -9,7 +9,8 @@ Apple ships Passwords for macOS, Windows, and iOS, with no Linux client and no p
 | Area | State |
 | --- | --- |
 | CLI, encrypted snapshot, `pw`, `otp`, `status`, `install-units` | Works against fixtures |
-| `login` and live `sync` | Designed, not in this build |
+| `login`: GSA SRP, anisette, 2FA, token exchange | Implemented, live run pending |
+| `sync` from iCloud | Designed, not in this build |
 | Shared groups, passkeys, notes | Designed, not in this build |
 
 The Deno implementation for macOS stays under `legacy/` for reference. It is not built or supported.

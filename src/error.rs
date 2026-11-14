@@ -19,6 +19,10 @@ pub enum Error {
     #[error("cannot decrypt the snapshot: wrong key or damaged file")]
     Aead,
     #[error(transparent)]
+    Http(#[from] reqwest::Error),
+    #[error(transparent)]
+    Plist(#[from] plist::Error),
+    #[error(transparent)]
     Keyring(#[from] keyring::Error),
 }
 
