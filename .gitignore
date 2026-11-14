@@ -24,4 +24,5 @@ dist
 *.psd
 
 # Binary
-apw
+apw# Deepwork
+.slim/deepwork/
