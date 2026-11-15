@@ -2,7 +2,7 @@
 
 This page takes a Linux machine to a signed-in snapshot and a systemd timer.
 
-This build signs in and writes a session snapshot. Live `sync` is not implemented. See [Project status](../README.md#project-status).
+This build signs in, joins the trust, and syncs. None of it has run against a live account yet. See [Project status](../README.md#project-status).
 
 ## Requirements
 
@@ -50,11 +50,14 @@ AUR, Debian, Nix, and static tarball packages arrive with the packaging pass. Un
 
 ```sh
 apw login --account you@example.com
+apw join
 ```
 
-`apw login` prompts for the Apple ID password, then for the two-factor code from a trusted device. It joins the trust circle and asks for the device passcode or iCloud Security Code to recover the keychain keys.
+`apw login` prompts for the Apple ID password, then for the two-factor code from a trusted device. It writes the session to the snapshot.
 
-Escrow allows about ten attempts before Apple destroys the recovery record. `apw login` makes one attempt per run and never retries on its own. A wrong passcode stops the command.
+`apw join` joins the Octagon trust circle. It prompts for the device passcode or iCloud Security Code and recovers the keychain keys from the escrow record.
+
+Escrow allows about ten attempts before Apple destroys the recovery record. `apw join` makes one attempt per run and never retries on its own. A wrong passcode stops the command.
 
 On success the snapshot is written. `apw status` shows the account and entry count.
 

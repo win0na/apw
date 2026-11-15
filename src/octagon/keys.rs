@@ -6,8 +6,8 @@
 
 use base64::Engine;
 use p384::ecdsa::signature::{Signer, Verifier};
-use p384::elliptic_curve::sec1::ToEncodedPoint;
 use p384::ecdsa::{Signature, SigningKey, VerifyingKey};
+use p384::elliptic_curve::sec1::ToEncodedPoint;
 use p384::pkcs8::EncodePublicKey;
 use p384::SecretKey;
 use rand::rngs::OsRng;

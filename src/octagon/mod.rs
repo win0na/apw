@@ -11,7 +11,7 @@ use crate::cloudkit::Gateway;
 use crate::error::{Error, Result};
 use crate::wire::{Reader, Writer};
 
-use self::escrow::{Bottle, Escrow};
+use self::escrow::{Bottle, Escrow, Recovered};
 use self::keys::{PeerKeys, PEER_DYNAMIC_INFO, PEER_PERMANENT_INFO, PEER_STABLE_INFO, VOUCHER};
 
 pub struct Peer {
@@ -77,7 +77,7 @@ pub async fn join(
     peer: &Peer,
     passcode: &[u8],
     adsid: &str,
-) -> Result<(Trust, Bottle, String)> {
+) -> Result<(Trust, Bottle, Recovered)> {
     let mut bottles_request = Writer::new();
     bottles_request.uint64(1, 1).bytes(2, &[]);
     let bottles = escrow::parse_bottles(
@@ -135,14 +135,16 @@ pub async fn join(
     let mut request = Writer::new();
     request.bytes(1, &trust.restore_point);
     request.bytes(2, &peer_message);
-    let response = gateway.invoke("joinWithVoucher", request.as_slice()).await?;
+    let response = gateway
+        .invoke("joinWithVoucher", request.as_slice())
+        .await?;
 
     if let Ok(updated) = parse_changes(&response) {
         if !updated.restore_point.is_empty() {
             trust = updated;
         }
     }
-    Ok((trust, bottle, sponsor.peer_id))
+    Ok((trust, bottle, sponsor))
 }
 
 /// Fetch the TLK shares visible to one peer. Call it for the new peer and the
@@ -256,7 +258,10 @@ mod tests {
     fn peer_generates_a_stable_id() {
         let peer = Peer::generate("machine", "MacBookPro18,3").unwrap();
         assert!(peer.id.starts_with("SHA256:"));
-        assert_eq!(peer.id, keys::peer_id(&peer.permanent, &peer.permanent_signature));
+        assert_eq!(
+            peer.id,
+            keys::peer_id(&peer.permanent, &peer.permanent_signature)
+        );
     }
 
     #[test]

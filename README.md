@@ -7,7 +7,7 @@
 
 Apple ships Passwords for macOS, Windows, and iOS, with no Linux client and no public API for iCloud Keychain. `apw` signs in with an Apple ID, joins the device trust circle, decrypts the keychain records through escrow, and stores them in a snapshot. It never writes to Apple.
 
-Sign in works today. Sync from iCloud is designed and not in this build.
+Sign in and sync are implemented. Neither has run against a live account yet.
 
 ## Get started
 
@@ -97,7 +97,8 @@ Apple's iCloud terms prohibit automated access. `apw` stays polite: paced syncs,
 | --- | --- |
 | CLI, encrypted snapshot, `pw`, `otp`, `status`, `install-units` | Works against fixtures |
 | `login`: GSA SRP, anisette, 2FA, token exchange | Implemented, live run pending |
-| `sync` from iCloud | Designed, not in this build |
+| `join`: Octagon trust, escrow recovery | Implemented, live run pending |
+| `sync` from iCloud | Implemented, live run pending |
 | Shared groups, passkeys, notes | Designed, not in this build |
 
 The Deno implementation for macOS stays under `legacy/` for reference. It is not built or supported.

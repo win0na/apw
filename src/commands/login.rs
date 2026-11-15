@@ -64,6 +64,7 @@ pub fn run(
         output::print_json(&output::success(serde_json::json!([result])));
     } else {
         println!("signed in as {account}");
+        println!("run `apw join` to read the keychain");
         println!("snapshot {}", paths.snapshot_file.display());
     }
     Ok(())

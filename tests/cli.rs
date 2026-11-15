@@ -37,6 +37,26 @@ fn sync_writes_an_encrypted_snapshot() {
 }
 
 #[test]
+fn join_requires_a_session() {
+    let dir = TempDir::new().unwrap();
+    apw(&dir)
+        .args(["join", "--passcode", "1234"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("login"));
+}
+
+#[test]
+fn live_sync_requires_a_session() {
+    let dir = TempDir::new().unwrap();
+    apw(&dir)
+        .args(["sync", "--force"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("login"));
+}
+
+#[test]
 fn pw_get_returns_the_password() {
     let dir = TempDir::new().unwrap();
     sync(&dir);

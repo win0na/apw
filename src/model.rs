@@ -26,6 +26,8 @@ pub struct Vault {
     pub groups: Vec<Group>,
     #[serde(default)]
     pub session: Option<Session>,
+    #[serde(default)]
+    pub peer: Option<PeerState>,
 }
 
 impl Default for Vault {
@@ -38,8 +40,29 @@ impl Default for Vault {
             entries: Vec::new(),
             groups: Vec::new(),
             session: None,
+            peer: None,
         }
     }
+}
+
+/// The Octagon peer this device uses to read the keychain.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PeerState {
+    pub id: String,
+    /// X9.63 P-384 private key, base64.
+    pub signing_key: String,
+    /// X9.63 P-384 private key, base64.
+    pub encryption_key: String,
+    /// Signed permanent info, base64.
+    pub permanent: String,
+    pub permanent_signature: String,
+    #[serde(default)]
+    pub sponsor_id: Option<String>,
+    /// The recovered sponsor's encryption key, base64 X9.63.
+    #[serde(default)]
+    pub sponsor_encryption_key: Option<String>,
+    #[serde(default)]
+    pub restore_point: String,
 }
 
 impl Vault {

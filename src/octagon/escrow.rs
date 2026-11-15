@@ -148,7 +148,9 @@ impl Escrow {
         let blob = base64_decode(blob)?;
         let (header, sections) = unpack(&blob, 24, 3)?;
         if sections.len() != 3 {
-            return Err(Error::Message("escrow SRP_INIT returned the wrong shape".into()));
+            return Err(Error::Message(
+                "escrow SRP_INIT returned the wrong shape".into(),
+            ));
         }
 
         Ok(Init {
@@ -162,15 +164,14 @@ impl Escrow {
     }
 
     /// RECOVER: send the SRP proof and receive the encrypted record.
-    pub async fn recover(
-        &self,
-        label: &str,
-        init: &Init,
-        proof: &[u8],
-    ) -> Result<Recovery> {
+    pub async fn recover(&self, label: &str, init: &Init, proof: &[u8]) -> Result<Recovery> {
         let mut header = init.header.clone();
         header[0..4].copy_from_slice(&165u32.to_be_bytes());
-        let version = if init.club_type == Some(1) { 2u32 } else { 0u32 };
+        let version = if init.club_type == Some(1) {
+            2u32
+        } else {
+            0u32
+        };
         header[4..8].copy_from_slice(&version.to_be_bytes());
 
         let payload = pack(&header, &[(&init.identifier, 20), (proof, 0)])?;
@@ -205,12 +206,7 @@ impl Escrow {
     ///
     /// This consumes one of the ten irreversible escrow attempts. The caller
     /// must have explicit confirmation.
-    pub async fn entropy(
-        &self,
-        label: &str,
-        passcode: &[u8],
-        _adsid: &str,
-    ) -> Result<Vec<u8>> {
+    pub async fn entropy(&self, label: &str, passcode: &[u8], _adsid: &str) -> Result<Vec<u8>> {
         let mut secret = [0u8; 32];
         rand::rngs::OsRng.fill_bytes(&mut secret);
         let a = BigUint::from_bytes_be(&secret);
@@ -453,7 +449,13 @@ fn aes_gcm_decrypt(key: &[u8], iv: &[u8], ct: &[u8], tag: &[u8]) -> Result<Vec<u
     let mut combined = ct.to_vec();
     combined.extend_from_slice(tag);
     cipher
-        .decrypt(nonce, Payload { msg: &combined, aad: &[] })
+        .decrypt(
+            nonce,
+            Payload {
+                msg: &combined,
+                aad: &[],
+            },
+        )
         .map_err(|_| Error::Message("bottle decrypt failed: wrong entropy or account".into()))
 }
 

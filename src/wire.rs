@@ -301,10 +301,7 @@ mod tests {
         let mut reader = Reader::new(writer.as_slice());
         assert_eq!(reader.next().unwrap().unwrap().varint().unwrap(), 300);
         assert_eq!(reader.next().unwrap().unwrap().varint().unwrap(), 0);
-        assert_eq!(
-            reader.next().unwrap().unwrap().varint().unwrap(),
-            u64::MAX
-        );
+        assert_eq!(reader.next().unwrap().unwrap().varint().unwrap(), u64::MAX);
         assert!(reader.next().unwrap().is_none());
     }
 

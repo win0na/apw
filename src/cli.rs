@@ -33,6 +33,12 @@ pub enum Command {
         #[arg(long)]
         account: Option<String>,
     },
+    /// Join the Octagon trust with the escrow passcode.
+    Join {
+        /// Escrow passcode. Prompted when omitted.
+        #[arg(long)]
+        passcode: Option<String>,
+    },
     /// Refresh the snapshot.
     Sync {
         /// Ignore the sync interval.
@@ -98,6 +104,7 @@ fn execute(cli: Cli) -> Result<()> {
             anisette_url,
             account,
         } => commands::login::run(&paths, &mut config, anisette_url, account, cli.json),
+        Command::Join { passcode } => commands::join::run(&paths, &mut config, passcode, cli.json),
         Command::Sync { force, fixture } => {
             commands::sync::run(&paths, &mut config, force, fixture, cli.json)
         }

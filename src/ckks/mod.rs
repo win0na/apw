@@ -11,9 +11,9 @@ use aes_gcm::aead::{Aead, Payload};
 use aes_gcm::{Aes256Gcm, KeyInit as AeadKeyInit, Nonce};
 use aes_siv::siv::Aes256Siv;
 use base64::Engine;
-use plist::{Dictionary, Value};
 use p384::ecdh::diffie_hellman;
 use p384::{PublicKey, SecretKey};
+use plist::{Dictionary, Value};
 use sha2::{Digest, Sha256};
 
 use crate::cloudkit::{FieldValue, Record};
@@ -138,6 +138,51 @@ pub fn decrypt_items(
     out
 }
 
+/// Split a `fetchRecoverableTlkshares` response into TLK share records and the
+/// synckey records carried alongside them.
+pub fn shares_from_response(data: &[u8]) -> Result<(Vec<Record>, Vec<Record>)> {
+    let mut reader = Reader::new(data);
+    let mut shares = Vec::new();
+    let mut synckeys = Vec::new();
+    while let Some(field) = reader.next()? {
+        if field.number != 1 {
+            continue;
+        }
+        let mut share = field.message()?;
+        while let Some(item) = share.next()? {
+            match item.number {
+                2 => {
+                    let mut view = item.message()?;
+                    while let Some(entry) = view.next()? {
+                        if matches!(entry.number, 1 | 2 | 3 | 5) {
+                            if let Some(record) = record_wrapper(entry.bytes()?)? {
+                                synckeys.push(record);
+                            }
+                        }
+                    }
+                }
+                3 => {
+                    if let Some(record) = record_wrapper(item.bytes()?)? {
+                        shares.push(record);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok((shares, synckeys))
+}
+
+fn record_wrapper(data: &[u8]) -> Result<Option<Record>> {
+    let mut reader = Reader::new(data);
+    while let Some(field) = reader.next()? {
+        if field.number == 2 {
+            return Ok(Some(crate::cloudkit::parse_record(field.bytes()?)?));
+        }
+    }
+    Ok(None)
+}
+
 /// Map a decrypted item plist to a vault entry.
 pub fn entry_from_plist(record_name: &str, value: &Value) -> Option<Entry> {
     let dict = value.as_dictionary()?;
@@ -205,7 +250,11 @@ pub fn entry_from_plist(record_name: &str, value: &Value) -> Option<Entry> {
         url,
         sites,
         username: acct,
-        password: if kind == EntryKind::Login { password } else { None },
+        password: if kind == EntryKind::Login {
+            password
+        } else {
+            None
+        },
         notes,
         totp,
         passkey,
@@ -249,7 +298,10 @@ fn item_headers(record: &Record) -> Vec<Vec<u8>> {
         "encver".to_string(),
         le8(record.int("encver").unwrap_or(2) as u64),
     );
-    aad.insert("gen".to_string(), le8(record.int("gen").unwrap_or(0) as u64));
+    aad.insert(
+        "gen".to_string(),
+        le8(record.int("gen").unwrap_or(0) as u64),
+    );
     if let Some(parent) = record.reference("parentkeyref") {
         aad.insert("wrappedkey".to_string(), parent.as_bytes().to_vec());
     }
@@ -316,8 +368,8 @@ fn siv_unwrap(key: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>> {
 }
 
 fn siv_unwrap_with(key: &[u8], ciphertext: &[u8], headers: &[&[u8]]) -> Result<Vec<u8>> {
-    let mut cipher = Aes256Siv::new_from_slice(key)
-        .map_err(|_| Error::Message("invalid AES-SIV key".into()))?;
+    let mut cipher =
+        Aes256Siv::new_from_slice(key).map_err(|_| Error::Message("invalid AES-SIV key".into()))?;
     cipher
         .decrypt(headers.iter().copied(), ciphertext)
         .map_err(|_| Error::Message("AES-SIV decrypt failed".into()))
@@ -437,15 +489,16 @@ fn resolve<'a>(objects: &'a [Value], value: &'a Value) -> Result<&'a Value> {
 fn archive_bytes(value: &Value) -> Option<Vec<u8>> {
     match value {
         Value::Data(bytes) => Some(bytes.clone()),
-        Value::Dictionary(dict) => dict.get("NS.data").and_then(Value::as_data).map(<[u8]>::to_vec),
+        Value::Dictionary(dict) => dict
+            .get("NS.data")
+            .and_then(Value::as_data)
+            .map(<[u8]>::to_vec),
         _ => None,
     }
 }
 
 fn string(dict: &Dictionary, key: &str) -> Option<String> {
-    dict.get(key)
-        .and_then(Value::as_string)
-        .map(str::to_string)
+    dict.get(key).and_then(Value::as_string).map(str::to_string)
 }
 
 fn le8(value: u64) -> Vec<u8> {
@@ -467,7 +520,9 @@ mod tests {
         let key = [4u8; 64];
         let ciphertext = {
             let mut cipher = Aes256Siv::new_from_slice(&key).unwrap();
-            cipher.encrypt([b"iv".as_slice()], b"password".as_slice()).unwrap()
+            cipher
+                .encrypt([b"iv".as_slice()], b"password".as_slice())
+                .unwrap()
         };
         let plaintext = siv_unwrap_with(&key, &ciphertext, &[b"iv"]).unwrap();
         assert_eq!(plaintext, b"password");
