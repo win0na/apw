@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod cli;
+pub mod ckks;
 pub mod cloudkit;
 pub mod commands;
 pub mod config;
