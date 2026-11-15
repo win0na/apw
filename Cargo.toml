@@ -42,10 +42,11 @@ reqwest = { version = "0.13.3", default-features = false, features = ["rustls", 
 plist = "1.8.0"
 aes = "0.8.4"
 cbc = "0.1.2"
-p384 = { version = "0.13.1", features = ["ecdsa", "ecdh"] }
+p384 = { version = "0.13.1", features = ["ecdsa", "ecdh", "pkcs8"] }
 aes-siv = "0.7.0"
 hkdf = "0.12.4"
 prost = "0.13.5"
+flate2 = "1.1"
 
 [dev-dependencies]
 assert_cmd = "2"

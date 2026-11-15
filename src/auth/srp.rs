@@ -91,6 +91,31 @@ impl SrpClient {
         scheme: PasswordScheme,
         server_public: &[u8],
     ) -> Result<Proof> {
+        let x = password_x(password, salt, iterations, scheme);
+        self.prove_with_x(username, salt, server_public, &x)
+    }
+
+    /// Escrow SRP: the password is the escrow secret and the username is the
+    /// DSID. There is no prehash or PBKDF2 stretch.
+    pub fn prove_escrow(
+        &self,
+        username: &str,
+        password: &[u8],
+        salt: &[u8],
+        server_public: &[u8],
+    ) -> Result<Proof> {
+        let inner = sha256(&[username.as_bytes(), b":", password]);
+        let x = BigUint::from_bytes_be(&sha256(&[salt, &inner]));
+        self.prove_with_x(username, salt, server_public, &x)
+    }
+
+    fn prove_with_x(
+        &self,
+        username: &str,
+        salt: &[u8],
+        server_public: &[u8],
+        x: &BigUint,
+    ) -> Result<Proof> {
         let n = modulus();
         let g = BigUint::from(G);
         let server_b = BigUint::from_bytes_be(server_public);
@@ -100,8 +125,7 @@ impl SrpClient {
             ));
         }
 
-        let x = password_x(password, salt, iterations, scheme);
-        let gx = g.modpow(&x, &n);
+        let gx = g.modpow(x, &n);
         let k = multiplier();
         let kgx = (k * gx) % &n;
 
@@ -114,7 +138,7 @@ impl SrpClient {
             return Err(Error::Message("server sent an invalid SRP scramble".into()));
         }
 
-        let exponent = &self.secret + &u * &x;
+        let exponent = &self.secret + &u * x;
         let shared = base.modpow(&exponent, &n);
         let key = sha256(&[&shared.to_bytes_be()]);
 
@@ -313,6 +337,34 @@ mod tests {
             data_encoding::HEXLOWER.encode(&out),
             "120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b"
         );
+    }
+
+    #[test]
+    fn escrow_round_trip() {
+        let client = SrpClient::new();
+        let salt = b"escrow-salt";
+        let username = "1234567890";
+        let password = b"device-passcode";
+
+        let n = modulus();
+        let g = BigUint::from(G);
+        let inner = sha256(&[username.as_bytes(), b":", password]);
+        let x = BigUint::from_bytes_be(&sha256(&[salt, &inner]));
+        let v = g.modpow(&x, &n);
+
+        let mut secret = [0u8; 32];
+        rand::rngs::OsRng.fill_bytes(&mut secret);
+        let b = BigUint::from_bytes_be(&secret);
+        let server_public = ((multiplier() * &v) + g.modpow(&b, &n)) % &n;
+
+        let proof = client
+            .prove_escrow(username, password, salt, &server_public.to_bytes_be())
+            .unwrap();
+
+        let client_public = BigUint::from_bytes_be(client.public());
+        let u = scrambling(&pad(&client_public), &pad(&server_public));
+        let shared = (client_public * v.modpow(&u, &n)).modpow(&b, &n);
+        assert_eq!(proof.key, sha256(&[&shared.to_bytes_be()]));
     }
 
     #[test]
