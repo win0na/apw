@@ -5,7 +5,7 @@ edition = "2021"
 rust-version = "1.85"
 description = "Read Apple Passwords on Linux"
 license = "GPL-3.0-only"
-repository = "https://github.com/bendews/apw"
+repository = "https://github.com/win0na/apw"
 default-run = "apw"
 
 [[bin]]
@@ -38,10 +38,14 @@ num-bigint = "0.5.1"
 num-traits = "0.2.19"
 pbkdf2 = "0.12.2"
 tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros"] }
-reqwest = { version = "0.13.3", default-features = false, features = ["rustls", "json"] }
+reqwest = { version = "0.13.3", default-features = false, features = ["rustls", "json", "cookies"] }
 plist = "1.8.0"
 aes = "0.8.4"
 cbc = "0.1.2"
+p384 = { version = "0.13.1", features = ["ecdsa", "ecdh"] }
+aes-siv = "0.7.0"
+hkdf = "0.12.4"
+prost = "0.13.5"
 
 [dev-dependencies]
 assert_cmd = "2"
