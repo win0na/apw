@@ -16,7 +16,7 @@ There is no snapshot yet. Run `apw login` once, then `apw sync`. In this build, 
 no Secret Service key and no terminal for a passphrase; set APW_PASSPHRASE
 ```
 
-There is no D-Bus session, or no keyring provider is running. Start one (GNOME Keyring, KWallet), or set `APW_PASSPHRASE` and let apw derive the key. A timer has no terminal, so it needs the variable or an unlocked keyring.
+There is no D-Bus session, or no keyring provider is running. Start one (GNOME Keyring, KWallet), or set `APW_PASSPHRASE` and let `apw` derive the key. A timer has no terminal, so it needs the variable or an unlocked keyring.
 
 ## apw cannot decrypt the snapshot
 
@@ -46,7 +46,7 @@ timedatectl
 
 ## The escrow passcode is rejected
 
-The code is the device passcode or the iCloud Security Code, not the Apple ID password. apw makes one attempt per run and stops.
+The code is the device passcode or the iCloud Security Code, not the Apple ID password. `apw` makes one attempt per run and stops.
 
 Apple allows about ten attempts before the recovery record is destroyed. Do not rerun the command in a loop. Verify the code on a signed-in device first, then run `apw login` once.
 

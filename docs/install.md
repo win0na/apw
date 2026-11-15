@@ -1,21 +1,22 @@
 # Install
 
-This page takes a Linux machine from nothing to a working snapshot and a systemd timer.
+This page takes a Linux machine to a signed-in snapshot and a systemd timer.
 
-The commands describe the finished 2.0 build. This build signs in and writes a session snapshot; live `sync` is not implemented yet. See [Status](../README.md#status).
+This build signs in and writes a session snapshot. Live `sync` is not implemented. See [Project status](../README.md#project-status).
 
-## Before you start
+## Requirements
 
-- Linux x86_64 or aarch64 with glibc.
+- Linux on x86_64 or aarch64, glibc.
 - An Apple ID with two-factor authentication.
-- A Secret Service provider, or a passphrase in `APW_PASSPHRASE`.
-- Rust 1.82 or later when you build from source.
+- An anisette server. See [Set up anisette](#set-up-anisette).
+- A Secret Service provider (GNOME Keyring, KWallet) or `APW_PASSPHRASE`.
+- Rust 1.85 or later to build from source.
 
-The binary needs glibc and a D-Bus session for Secret Service. It does not need Deno, Chrome, or any Apple software.
+The binary needs glibc and a D-Bus session for Secret Service. It does not need Deno, Chrome, or Apple software.
 
-## Anisette
+## Set up anisette
 
-Anisette is the device identity Apple expects on account requests. Apple does not document it and apw ships no Apple binary. Run a server and give apw its URL:
+Anisette is the device identity Apple expects on account requests. Apple does not document it, and `apw` ships no Apple binary. Run a server and give `apw` its URL:
 
 - `anisette-v3-server` in Docker, on the same machine or a trusted host.
 - A local CoreADI under Wine, as in `Sank6/Anisette-on-Wine`.
@@ -24,9 +25,9 @@ Anisette is the device identity Apple expects on account requests. Apple does no
 apw login --anisette-url http://127.0.0.1:6969 --account you@example.com
 ```
 
-`APW_ANISETTE_URL` overrides the config file. Treat the server as sensitive: it holds a device identity that Apple ties to your account, so self-host it or use a host you trust.
+`APW_ANISETTE_URL` overrides the config file. The server holds a device identity that Apple ties to your account. Self-host it or use a host you trust.
 
-## Install the binary
+## Install
 
 With Cargo:
 
@@ -51,13 +52,13 @@ AUR, Debian, Nix, and static tarball packages arrive with the packaging pass. Un
 apw login --account you@example.com
 ```
 
-apw prompts for the Apple ID password, then for the two-factor code from a trusted device. It joins the trust circle and asks for the device passcode or iCloud Security Code to recover the keychain keys.
+`apw login` prompts for the Apple ID password, then for the two-factor code from a trusted device. It joins the trust circle and asks for the device passcode or iCloud Security Code to recover the keychain keys.
 
-Escrow allows about ten attempts before Apple destroys the recovery record. `apw login` makes one attempt per run and never retries on its own. A wrong passcode is reported and the command stops.
+Escrow allows about ten attempts before Apple destroys the recovery record. `apw login` makes one attempt per run and never retries on its own. A wrong passcode stops the command.
 
 On success the snapshot is written. `apw status` shows the account and entry count.
 
-## Timer
+## Run the sync timer
 
 ```sh
 apw install-units
@@ -71,7 +72,7 @@ The timer runs `apw sync` hourly. `Persistent=true` catches up after a suspend o
 loginctl enable-linger "$USER"
 ```
 
-## Verify
+## Check the install
 
 ```sh
 apw status

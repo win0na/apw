@@ -2,9 +2,9 @@
 
 Queries read the snapshot. `apw sync` is the only command that talks to iCloud.
 
-This page describes the 2.0 target. Live sync and shared groups arrive in later passes; this build signs in and syncs fixtures.
+This page describes the 2.0 target. Live sync and shared groups arrive in later passes. See [Project status](../README.md#project-status).
 
-## Sync
+## Sync the snapshot
 
 ```sh
 apw sync            # respects the interval
@@ -13,9 +13,9 @@ apw sync --force    # ignores it
 
 Syncs are at least five minutes apart. The binary enforces the floor, so a laptop that was asleep catches up on the next timer tick instead of syncing in a burst. Errors back off exponentially to six hours, and a `Retry-After` header wins over the local schedule.
 
-The timer runs hourly, which is well above the floor.
+The timer runs hourly, well above the floor.
 
-## What sync does
+## What a sync does
 
 1. Refresh `cloudKitToken` from `mmeAuthToken` through `setup.icloud.com`.
 2. Fetch the TLK shares for the recovered sponsor and union them with the new peer's shares.
@@ -24,20 +24,20 @@ The timer runs hourly, which is well above the floor.
 
 Fetching only the new peer's shares returns a clean, empty keychain. The union in step 2 is what makes the data appear.
 
-## Status
+## Check the snapshot
 
 ```sh
 apw status
 apw status --json
 ```
 
-It prints the account, source, entry and group counts, the last sync time, and the snapshot path and size. It reads the state file, not the snapshot, so it never asks for the snapshot key.
+`apw status` prints the account, source, entry and group counts, the last sync time, and the snapshot path and size. It reads the state file, not the snapshot, so it never asks for the snapshot key.
 
 `needs_sync` is true when there is no last sync or the last one is older than the interval.
 
-## Re-authentication
+## Re-authenticate
 
-A sync that gets 401 records the failure and stops. It never retries the password. Run `apw login` again; the escrow step makes one attempt per run.
+A sync that gets 401 records the failure and stops. It never retries the password. Run `apw login` again. The escrow step makes one attempt per run.
 
 The snapshot keeps working while the tokens are expired, so `pw` and `otp` continue to answer.
 
@@ -47,7 +47,7 @@ Shared groups live in the `com.apple.security.shared.keychain` container, one zo
 
 A group that fails to decrypt is reported per group. It does not fail the whole sync.
 
-## Timer
+## Inspect the timer
 
 ```sh
 systemctl --user status apw-sync.timer
@@ -62,7 +62,7 @@ If the timer never runs, enable lingering for the user:
 loginctl enable-linger "$USER"
 ```
 
-## Fixture sync
+## Sync a fixture
 
 The fixture path exercises the storage layer without Apple credentials:
 

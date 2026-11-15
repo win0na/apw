@@ -1,10 +1,10 @@
 # Contributing
 
-apw is a Rust binary. The Deno implementation under `legacy/` is reference material and is not built.
+`apw` is a Rust binary. The Deno implementation under `legacy/` is reference material and is not built.
 
 ## Build
 
-Rust 1.82 or later.
+Rust 1.85 or later.
 
 ```sh
 cargo build
@@ -19,7 +19,7 @@ cargo test
 
 The suite has two parts:
 
-- Unit tests in `src/`: TOTP vectors from RFC 6238, and snapshot seal and open.
+- Unit tests in `src/`: TOTP vectors from RFC 6238, snapshot seal and open, SRP round trips, and the GSA `spd` decrypt.
 - Integration tests in `tests/cli.rs`: a fixture sync, `pw`, `otp`, `status`, wrong passphrase, missing snapshot, and the anisette check.
 
 Tests isolate the XDG directories with `APW_CONFIG_DIR`, `APW_DATA_DIR`, and `APW_STATE_DIR`, and set `APW_PASSPHRASE` so no keyring is needed. They never touch the network.
@@ -81,6 +81,10 @@ apw otp get example.com
 | --- | --- |
 | `src/cli.rs` | clap definitions and dispatch |
 | `src/commands/` | `login`, `sync`, `status`, `pw`, `otp`, `units` |
+| `src/auth/` | SRP, anisette, GSA, two-factor, token exchange |
+| `src/wire/` | Protobuf framing and the CloudKit gateway client (pass 3) |
+| `src/octagon/` | Peer keys, escrow, trust join, TLK shares (pass 3) |
+| `src/ckks/` | Zones, records, AES-SIV, item plists (pass 3) |
 | `src/config.rs` | XDG paths, `config.toml`, `state.json` |
 | `src/model.rs` | Vault, entry, TOTP, group |
 | `src/store/` | Snapshot encryption and key sources |

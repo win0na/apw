@@ -1,6 +1,6 @@
 # Secrets
 
-apw keeps one secret: the key that opens the snapshot. Everything else lives inside it.
+`apw` keeps one secret: the key that opens the snapshot. Everything else lives inside it.
 
 ## Snapshot key
 
@@ -13,7 +13,7 @@ The snapshot is encrypted with a random 256-bit key. The key comes from one of t
 
 The passphrase is never written to disk. Its 16-byte salt is `kdf_salt` in `config.toml`; the derived key exists only in memory.
 
-`APW_PASSPHRASE` forces the passphrase path, which is what a headless timer uses. Without the variable and without a bus, apw prompts on the terminal.
+`APW_PASSPHRASE` forces the passphrase path, which is what a headless timer uses. Without the variable and without a bus, `apw` prompts on the terminal.
 
 ## What the snapshot holds
 
@@ -29,7 +29,7 @@ Treat the snapshot as a password database. It is one file, and one key opens all
 
 ## Escrow
 
-The device passcode or iCloud Security Code unlocks the keychain keys once, during `apw login`. apw does not store it, cache it, or send it anywhere except the escrow request.
+The device passcode or iCloud Security Code unlocks the keychain keys once, during `apw login`. `apw` does not store it, cache it, or send it anywhere except the escrow request.
 
 Apple allows about ten attempts before the recovery record is destroyed. `apw login` makes one attempt per run. It does not retry on failure and does not loop. A wrong code ends the command.
 
@@ -47,11 +47,11 @@ The anisette server holds a device identity that Apple ties to the account. It d
 | Root | No | It can read process memory and the keyring. |
 | Network, or Apple | No | Apple holds the account and the server-side data; TLS protects transit only. |
 
-Advanced Data Protection changes what Apple can read on its side. apw has not been tested against an ADP account.
+Advanced Data Protection changes what Apple can read on its side. `apw` has not been tested against an ADP account.
 
 ## Recovery
 
-A lost key means a lost snapshot. Delete `snapshot.bin` and sign in again; escrow attempts apply to the new login.
+A lost key means a lost snapshot. Delete `snapshot.bin` and sign in again. Escrow attempts apply to the new login.
 
 In keyring mode the key is not portable. Copying `snapshot.bin` to another machine does not make it readable. In passphrase mode, the snapshot moves with `APW_PASSPHRASE` and the same `kdf_salt`.
 

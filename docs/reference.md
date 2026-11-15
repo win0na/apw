@@ -1,6 +1,8 @@
 # Reference
 
-This page describes the 2.0 target. This build signs in and reads fixtures; live `sync` is not implemented yet.
+Commands, files, configuration, output, and limits.
+
+This page describes the 2.0 target. This build signs in and reads fixtures; live `sync` is not implemented. See [Project status](../README.md#project-status).
 
 ## Commands
 
@@ -19,7 +21,7 @@ This page describes the 2.0 target. This build signs in and reads fixtures; live
 
 `QUERY` matches a substring of the domain, URL, title, or username, case-insensitive.
 
-## Paths
+## Files
 
 | Path | Contents |
 | --- | --- |
@@ -30,7 +32,7 @@ This page describes the 2.0 target. This build signs in and reads fixtures; live
 
 Defaults are `~/.config/apw`, `~/.local/share/apw`, and `~/.local/state/apw`.
 
-## Config
+## Configuration
 
 ```toml
 anisette_url = "http://127.0.0.1:6969"
@@ -42,7 +44,7 @@ min_interval_seconds = 300
 max_backoff_seconds = 21600
 ```
 
-`kdf_salt` is the base64 salt for the Argon2id fallback. Leave it alone; changing it makes the existing snapshot unreadable.
+`kdf_salt` is the base64 salt for the Argon2id fallback. Leave it alone. Changing it makes the existing snapshot unreadable.
 
 ## Environment
 
@@ -57,7 +59,7 @@ max_backoff_seconds = 21600
 
 The three directory variables exist for tests and for running from a removable volume.
 
-## JSON
+## JSON output
 
 Every command prints one object. Success:
 
@@ -65,7 +67,7 @@ Every command prints one object. Success:
 {"results":[{"id":"login-example","username":"alice","domain":"example.com","sites":["example.com"],"title":"Example","password":"hunter2"}],"status":0}
 ```
 
-Failure goes to stderr and the process exits with the status code:
+Failure goes to stderr, and the process exits with the status code:
 
 ```json
 {"error":"no login matches example.org","status":3,"results":[]}
@@ -83,7 +85,7 @@ The codes match the macOS apw build, so scripts that check `status` keep working
 
 `pw list` results carry `id`, `username`, `domain`, `sites`, `title`, `notes`, and `group` when present. `pw get` adds `password`. `otp` results carry `id`, `username`, `domain`, `source`, and `code`.
 
-## Snapshot
+## Snapshot format
 
 The snapshot is one AES-256-GCM message:
 
@@ -120,4 +122,4 @@ A TOTP seed has `secret` (base32), `algorithm` (`SHA1`, `SHA256`, `SHA512`), `di
 | Snapshot key | 32 bytes |
 | Argon2id | 64 MiB, 3 iterations, 1 lane |
 
-Apple's iCloud terms prohibit automated access. apw stays polite: paced syncs, no automatic retries, one escrow attempt per user action. The contract risk is yours.
+Apple's iCloud terms prohibit automated access. `apw` stays polite: paced syncs, no automatic retries, one escrow attempt per user action. The contract risk is yours.

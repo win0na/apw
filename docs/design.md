@@ -23,9 +23,10 @@ apw
 ├── cli        clap; login, sync, status, pw, otp, install-units
 ├── commands   one module per command
 ├── store      AES-256-GCM snapshot; Secret Service or Argon2id key
-├── auth       GSA SRP-6a, anisette, 2FA, trust, accountLogin
-├── octagon    P-384 peer, trust join, escrow recovery, TLK shares
-├── ckks       CloudKit CKCode, zones, records, AES-SIV decryption
+├── auth       GSA SRP-6a, anisette, 2FA, token exchange
+├── wire       protobuf framing and the CloudKit gateway client
+├── octagon    P-384 peer, escrow recovery, trust join, TLK shares
+├── ckks       zones, records, AES-SIV decryption, item plists
 └── pcs        shared groups, PCSShareProtection
 ```
 
@@ -35,11 +36,11 @@ apw
 | `serde`, `serde_json`, `toml` | Config, state, snapshot, fixtures |
 | `aes-gcm`, `argon2`, `keyring` | Snapshot encryption and key storage |
 | `sha1`, `sha2`, `hmac`, `data-encoding` | TOTP |
-| `tokio`, `reqwest` with rustls | GSA, CloudKit, escrow (auth pass) |
+| `tokio`, `reqwest` with rustls | GSA, CloudKit, escrow |
 | `p384`, `hkdf`, `pbkdf2` | Peer keys, escrow, SRP |
 | `aes-siv`, `plist`, `prost` | CKKS records, item plists, protobuf |
 
-The current build has the CLI, storage, SRP, anisette, GSA, and token exchange. `p384`, `aes-siv`, `plist`, and `prost` arrive with the Octagon and CKKS passes.
+The current build has the CLI, storage, SRP, anisette, GSA, and token exchange. The `wire`, `octagon`, and `ckks` modules arrive with pass 3.
 
 Data flow:
 
@@ -51,17 +52,21 @@ Data flow:
 
 The login path follows Apple's device authentication, not the web login.
 
-1. Read the anisette URL from `APW_ANISETTE_URL` or `$XDG_CONFIG_HOME/apw/config.toml`. When both are unset, fail with a message that names the variable and links [Install](install.md#anisette).
+1. Read the anisette URL from `APW_ANISETTE_URL` or `$XDG_CONFIG_HOME/apw/config.toml`. When both are unset, fail with a message that names the variable and links [Install](install.md#set-up-anisette).
 2. GSA SRP-6a over HTTPS to `gsa.apple.com`: 2048-bit group, `g = 2`, `P' = PBKDF2-HMAC-SHA256(SHA-256(password), s, i)`, `x = H(s | H(":" | P'))`. The username is omitted from `x`.
 3. Two-factor with a trusted-device code. Security keys are out of scope for v1.
-4. Exchange the GrandSlam session for `mmeAuthToken` and `cloudKitToken` through `setup.icloud.com`.
-5. Generate or load the P-384 signing and encryption peer. The permanent info is a `TPPBPeerPermanentInfo` protobuf; the signature is ECDSA-P384-SHA384 over `"TPPB.PeerPermanentInfo" || data`; the peer ID is `SHA256:` plus base64 of SHA-256 over `data || signature`.
-6. Join Octagon through CloudKit `CKCode` calls: `com.apple.security.joinWithVoucher`, `fetchViableBottles`, and `fetchRecoverableTLKShares`, in container `com.apple.security.keychain` with bundle `com.apple.security.cuttlefish`.
-7. Recover the trust circle escrow with the device passcode or iCloud Security Code. The bottle yields `bottled_peer_entropy`, which HKDF-SHA384 expands into an AES-256-GCM key for the sponsor's P-384 keys.
+4. Exchange the GrandSlam session for `mmeAuthToken` and `cloudKitToken` through `setup.icloud.com`, then read the CloudKit and escrow endpoints from the account settings.
+5. Call `ckAppInit` with HTTP Basic `dsid:mmeAuthToken` for container `com.apple.security.keychain`. The reply carries the per-container `cloudKitUserId`, which is not the DSID.
+6. Generate or load the P-384 signing and encryption peer. Public keys are SPKI DER, private keys are X9.63. The permanent info is a `TPPBPeerPermanentInfo` protobuf; the signature is ECDSA-P384-SHA384 over `"TPPB.PeerPermanentInfo" || data`; the peer ID is `SHA256:` plus base64 of SHA-256 over `data || signature`.
+7. Recover the trust circle escrow. Escrow SRP uses the DSID as the username and the device passcode or iCloud Security Code as the password. The recovered bottle decrypts to `bottled_peer_entropy`, which HKDF-SHA384 expands into the sponsor's P-384 keys.
+8. Fetch the current trust state, sign the new peer's stable and dynamic info, and join with a voucher signed by the recovered sponsor.
+9. Fetch the TLK shares for the sponsor and for the new peer, then union them.
 
 The passcode is used once and never stored. Escrow allows about ten attempts before the record is destroyed, so `apw login` makes exactly one attempt per user action. A failure prints the remaining-attempts warning and stops. Nothing retries automatically.
 
 The join must fetch the TLK shares as the recovered sponsor and union them with the new peer's shares. Fetching only the new peer's shares returns a clean, empty keychain.
+
+CloudKit is not the JSON web services API. The `cloudKitToken` authenticates the protobuf gateway at `gateway.icloud.com`, sent as `x-cloudkit-authtoken`. Requests are gzip-compressed protobuf with a varint length prefix; records sync through `ckdatabase/api/client/record/sync` with operation type 213, and Cuttlefish functions through `ckcoderouter/api/client/code/invoke`. A missing zone (48) means the account has no state for it; a bad token (11) or HTTP 401 means re-authentication.
 
 ## Data model
 
@@ -74,12 +79,16 @@ CKKS keeps records in per-view private zones, including `Passwords` and `Manatee
 | `item` | Credential | AES-SIV under the class key |
 | `currentitem` | Pointer to the live item | None |
 
+A TLK share wraps a `CuttlefishSerializedKey`. The wrapped key is an NSKeyedArchiver plist with the sender's ephemeral P-384 key, an ECIES ciphertext, and an authentication code. ECDH and an X9.63 KDF produce a 32-byte AES-256-GCM key and a 16-byte IV. The plaintext carries the TLK UUID, zone, class, and key.
+
 Items are plists with `srvr` (domain), `acct` (username), `v_Data` (password, passkey blob, or card data), and `agrp` (access group):
 
 - `com.apple.cfnetwork`: web logins.
 - `com.apple.password-manager`: per-login metadata, including `customTitle`, notes, password history, and the `totp` seed (`secret`, `algorithm`, `digits`, `period`, `issuer`, `accountName`).
 - `com.apple.webkit.webauthn`: passkeys.
 - `com.apple.safari.credit-cards` and other groups: decrypted and counted, not surfaced in v1.
+
+Item decryption authenticates the record metadata in lexicographic key order, without the key names. The ciphertext is padded in 20-byte blocks with an ISO 7816-4 marker, and the payload carries its own 16-byte IV.
 
 Shared groups live in the `com.apple.security.shared.keychain` container, one zone per group named `group-<UUID>`. They are PCS-encrypted with `PCSShareProtection`: AES key wrap, an SP800-108 KDF, and AES-128-GCM v3.
 
@@ -95,7 +104,7 @@ Shared-with-me groups need share keys from the invite. `apw sync` accepts pendin
 
 The snapshot is a JSON vault sealed with AES-256-GCM. The file is `APWSNAP\0`, a version byte, a random 12-byte nonce, and the ciphertext; the header is the AAD. The key is 32 random bytes in Secret Service, or an Argon2id key derived from a passphrase.
 
-Writes go to a temporary file, fsync, then rename, with mode `0600`. Tokens and peer keys live inside the snapshot, so one secret protects everything.
+Writes go to a temporary file, fsync, then rename, with mode `0600`. Tokens, peer keys, and TLK shares live inside the snapshot, so one secret protects everything.
 
 ## CLI
 
@@ -125,8 +134,10 @@ Syncs are at least five minutes apart. Errors back off exponentially to six hour
 There are no live Apple credentials in the development environment, and escrow attempts are destructive. Crypto is validated offline:
 
 - Unit vectors: RFC 5297 (AES-SIV), RFC 6238 (TOTP), RFC 5054 (SRP), HKDF-SHA384, and vectors from the prior-art projects below.
-- Integration: recorded, sanitized CloudKit and anisette fixtures behind a mock HTTP server.
+- Integration: recorded, sanitized CloudKit and anisette fixtures behind a mock gateway.
 - Live gate: one `apw login`, then `apw sync`, `apw pw list`, and `apw otp get` on the user's own account.
+
+The escrow SRP padding rule is the one unresolved vector: implementations disagree on whether `u` hashes padded or trimmed public values. The padded form follows RFC 5054 and is the default; a live attempt should not run until the vectors agree.
 
 ## Packaging
 
@@ -144,6 +155,7 @@ There are no live Apple credentials in the development environment, and escrow a
 ## Risks
 
 - Two undocumented protocols to maintain (GSA, Octagon/CKKS). Apple can change them without notice.
+- The CloudKit gateway is internal. Its request framing and error codes can change without notice.
 - An anisette server is a hard prerequisite for login.
 - Read-only v1: no save, no passkey assertion.
 - Shared-with-me depends on invite acceptance and share-key delivery. It is the least proven part of the plan.
@@ -164,7 +176,7 @@ The crypto was cross-checked against the first two.
 ## Passes
 
 1. Skeleton: Rust crate, CLI, XDG paths, encrypted snapshot, Secret Service and passphrase unlock, fixture backend, `pw` and `otp` end to end.
-2. Auth: GSA SRP, anisette, 2FA, trust, accountLogin, token refresh.
-3. Octagon and CKKS: peer keys, join, escrow, TLK recovery, records, decryption.
+2. Auth: GSA SRP, anisette, 2FA, token exchange.
+3. Octagon and CKKS: protobuf gateway, peer keys, escrow, join, TLK recovery, records, decryption.
 4. Shared groups: PCS, invite acceptance, passkey and note surfacing.
 5. Sync timer, packaging, live gate.

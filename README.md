@@ -7,7 +7,7 @@
 
 Apple ships Passwords for macOS, Windows, and iOS, with no Linux client and no public API for iCloud Keychain. `apw` signs in with an Apple ID, joins the device trust circle, decrypts the keychain records through escrow, and stores them in a snapshot. It never writes to Apple.
 
-Sign-in works today. Sync from iCloud is designed and not in this build.
+Sign in works today. Sync from iCloud is designed and not in this build.
 
 ## Get started
 
@@ -15,7 +15,7 @@ Sign-in works today. Sync from iCloud is designed and not in this build.
 
 - Linux on x86_64 or aarch64, glibc.
 - An Apple ID with two-factor authentication.
-- An [anisette server](docs/install.md#anisette) for sign-in.
+- An [anisette server](docs/install.md#set-up-anisette) for sign-in.
 - A Secret Service provider (GNOME Keyring, KWallet) or `APW_PASSPHRASE`.
 
 Rust 1.85 or later is needed only to build from source.
