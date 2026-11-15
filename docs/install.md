@@ -31,7 +31,7 @@ apw login --anisette-url http://127.0.0.1:6969 --account you@example.com
 With Cargo:
 
 ```sh
-cargo install --git https://github.com/bendews/apw
+cargo install --git https://github.com/win0na/apw
 ```
 
 From a checkout:
