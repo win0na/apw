@@ -228,6 +228,44 @@ pub struct Passkey {
     pub created_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
+/// Fold `com.apple.password-manager` metadata records into the login they
+/// describe. The sidecar points at its login by record id, or by domain and
+/// username when it was written without a parent reference.
+pub fn merge_sidecars(logins: &mut [Entry], sidecars: Vec<Entry>) {
+    for sidecar in sidecars {
+        let domain = sidecar.domain();
+        let index = logins
+            .iter()
+            .position(|login| login.id == domain)
+            .or_else(|| {
+                logins.iter().position(|login| {
+                    login.domain().eq_ignore_ascii_case(&domain)
+                        && match (&login.username, &sidecar.username) {
+                            (Some(left), Some(right)) => left.eq_ignore_ascii_case(right),
+                            _ => true,
+                        }
+                })
+            });
+        let Some(index) = index else {
+            continue;
+        };
+        let login = &mut logins[index];
+        let login_domain = login.domain();
+        if login.title.is_none() || login.title.as_deref() == Some(login_domain.as_str()) {
+            login.title = sidecar.title;
+        }
+        if login.notes.is_none() {
+            login.notes = sidecar.notes;
+        }
+        if login.totp.is_none() {
+            login.totp = sidecar.totp;
+        }
+        if login.username.is_none() {
+            login.username = sidecar.username;
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Group {
     pub id: String,

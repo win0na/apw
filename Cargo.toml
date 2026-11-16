@@ -43,6 +43,7 @@ plist = "1.8.0"
 aes = "0.8.4"
 cbc = "0.1.2"
 p384 = { version = "0.13.1", features = ["ecdsa", "ecdh", "pkcs8"] }
+p256 = { version = "0.13.1", features = ["ecdh"] }
 aes-siv = "0.7.0"
 hkdf = "0.12.4"
 prost = "0.13.5"

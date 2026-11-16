@@ -17,15 +17,21 @@ use crate::model::Session;
 use crate::wire::{self, Reader, Writer};
 
 pub const CONTAINER: &str = "com.apple.security.keychain";
+/// Groups live in their own CloudKit container.
+pub const SHARED_CONTAINER: &str = "com.apple.security.shared.keychain";
 pub const BUNDLE_RECORDS: &str = "com.apple.securityd";
 pub const BUNDLE_CUTTLEFISH: &str = "com.apple.security.cuttlefish";
 
 const GATEWAY: &str = "https://gateway.icloud.com";
 const CK_APP_INIT: &str = "/setup/setup/ck/v1/ckAppInit";
 const RECORD_SYNC: &str = "/ckdatabase/api/client/record/sync";
+const ZONE_SYNC: &str = "/ckdatabase/api/client/zone/sync";
+const ZONE_RETRIEVE: &str = "/ckdatabase/api/client/zone/retrieve";
 const CODE_INVOKE: &str = "/ckcoderouter/api/client/code/invoke";
 
 const OP_RECORD_SYNC: u64 = 213;
+const OP_ZONE_SYNC: u64 = 203;
+const OP_ZONE_RETRIEVE: u64 = 201;
 const OP_FUNCTION_INVOKE: u64 = 1101;
 
 #[derive(Debug, Clone)]
@@ -43,6 +49,25 @@ pub struct Record {
     pub name: String,
     pub record_type: String,
     pub fields: BTreeMap<String, FieldValue>,
+    pub protection_info: Option<Vec<u8>>,
+    pub pcs_key: Option<Vec<u8>>,
+    pub share_info: Option<ShareInfo>,
+}
+
+/// The zone-wide share record (`cloudkit.zoneshare`).
+#[derive(Debug, Clone)]
+pub struct ShareInfo {
+    pub invited_pcs: Option<Vec<u8>>,
+    pub participants: Vec<Participant>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Participant {
+    pub user_id: Option<String>,
+    pub public_key: Option<Vec<u8>>,
+    pub protection_info: Option<Vec<u8>>,
+    pub state: i32,
+    pub permission: i32,
 }
 
 impl Record {
@@ -75,6 +100,52 @@ impl Record {
     }
 }
 
+/// CloudKit database scope. Shared zones live in the shared database.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Scope {
+    Private,
+    Shared,
+}
+
+impl Scope {
+    fn header(self) -> &'static str {
+        match self {
+            Scope::Private => "PRIVATE",
+            Scope::Shared => "SHARED",
+        }
+    }
+
+    fn value(self) -> u64 {
+        match self {
+            Scope::Private => 1,
+            Scope::Shared => 3,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ZoneInfo {
+    pub name: String,
+    pub owner: String,
+    pub change_type: i32,
+}
+
+#[derive(Debug, Clone)]
+pub struct ZoneChanges {
+    pub zones: Vec<ZoneInfo>,
+    pub token: Option<Vec<u8>>,
+    pub status: i32,
+}
+
+/// One zone and its PCS protection blobs.
+#[derive(Debug, Clone)]
+pub struct Zone {
+    pub name: String,
+    pub owner: String,
+    pub protection_info: Option<Vec<u8>>,
+    pub record_protection_info: Option<Vec<u8>>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Changes {
     pub records: Vec<Record>,
@@ -87,6 +158,8 @@ pub struct Outcome {
     pub code: i32,
     pub description: Option<String>,
     pub changes: Option<Changes>,
+    pub zone_changes: Option<ZoneChanges>,
+    pub zone: Option<Zone>,
     pub result: Option<Vec<u8>>,
 }
 
@@ -112,6 +185,8 @@ pub struct Gateway {
     token: String,
     identity: Identity,
     device: Device,
+    container: String,
+    scope: Scope,
 }
 
 struct Device {
@@ -123,9 +198,14 @@ struct Device {
 
 impl Gateway {
     /// Register this client for the keychain container and return the gateway.
-    pub async fn bootstrap(session: &Session, identity: &Identity) -> Result<Self> {
+    pub async fn bootstrap(
+        session: &Session,
+        identity: &Identity,
+        container: &str,
+        scope: Scope,
+    ) -> Result<Self> {
         let http = reqwest::Client::new();
-        let url = format!("{GATEWAY}{CK_APP_INIT}?container={CONTAINER}");
+        let url = format!("{GATEWAY}{CK_APP_INIT}?container={container}");
         let authorization = format!(
             "Basic {}",
             base64::engine::general_purpose::STANDARD
@@ -137,9 +217,9 @@ impl Gateway {
             .header("authorization", authorization)
             .header("accept", "application/json")
             .header("user-agent", "CloudKit/1970 (19H384)")
-            .header("x-cloudkit-containerid", CONTAINER)
+            .header("x-cloudkit-containerid", container)
             .header("x-cloudkit-bundleid", BUNDLE_RECORDS)
-            .header("x-cloudkit-databasescope", "Private")
+            .header("x-cloudkit-databasescope", scope.header())
             .header("x-cloudkit-environment", "Production")
             .header("x-mme-client-info", &identity.client_info);
 
@@ -157,6 +237,9 @@ impl Gateway {
             )));
         }
 
+        if std::env::var_os("APW_DEBUG").is_some() {
+            eprintln!("ckinit {scope:?}: {body}");
+        }
         let json: serde_json::Value = serde_json::from_str(&body)
             .map_err(|error| Error::Message(format!("invalid CloudKit registration: {error}")))?;
         let user_id = json
@@ -171,6 +254,8 @@ impl Gateway {
             token: session.cloudkit_token.clone(),
             identity: identity.clone(),
             device: Device::new(),
+            container: container.to_string(),
+            scope,
         })
     }
 
@@ -178,13 +263,22 @@ impl Gateway {
         &self.user_id
     }
 
-    /// Read one page of record changes from a private zone.
-    pub async fn record_sync(&self, zone: &str, token: Option<&[u8]>) -> Result<Changes> {
+    pub fn scope(&self) -> Scope {
+        self.scope
+    }
+
+    /// Read one page of record changes from a zone.
+    pub async fn record_sync(
+        &self,
+        zone: &str,
+        owner: Option<&str>,
+        token: Option<&[u8]>,
+    ) -> Result<Changes> {
         let mut request = Writer::new();
         if let Some(token) = token {
             request.bytes(1, token);
         }
-        request.message(2, &self.zone_identifier(zone));
+        request.message(2, &self.zone_identifier(zone, owner));
         request.uint64(4, 500);
 
         let outcome = self
@@ -192,6 +286,43 @@ impl Gateway {
             .await?;
         let outcome = outcome.check()?;
         Ok(outcome.changes.unwrap_or_default())
+    }
+
+    /// List changed zones in one database scope.
+    pub async fn zone_changes(&self, token: Option<&[u8]>) -> Result<ZoneChanges> {
+        let mut request = Writer::new();
+        if let Some(token) = token {
+            request.bytes(1, token);
+        }
+        request.uint64(2, 200);
+
+        let outcome = self
+            .call(ZONE_SYNC, BUNDLE_RECORDS, OP_ZONE_SYNC, &request, None)
+            .await?;
+        let outcome = outcome.check()?;
+        outcome
+            .zone_changes
+            .ok_or_else(|| Error::Message("zone sync returned no zones".into()))
+    }
+
+    /// Retrieve one zone and its PCS protection blobs.
+    pub async fn zone_retrieve(&self, zone: &str, owner: &str) -> Result<Zone> {
+        let mut request = Writer::new();
+        request.message(1, &self.zone_identifier(zone, Some(owner)));
+
+        let outcome = self
+            .call(
+                ZONE_RETRIEVE,
+                BUNDLE_RECORDS,
+                OP_ZONE_RETRIEVE,
+                &request,
+                None,
+            )
+            .await?;
+        let outcome = outcome.check()?;
+        outcome
+            .zone
+            .ok_or_else(|| Error::Message("zone retrieve returned no zone".into()))
     }
 
     /// Invoke a Cuttlefish function and return its serialized result.
@@ -217,13 +348,13 @@ impl Gateway {
             .ok_or_else(|| Error::Message(format!("{name} returned no result")))
     }
 
-    fn zone_identifier(&self, zone: &str) -> Writer {
+    fn zone_identifier(&self, zone: &str, owner_id: Option<&str>) -> Writer {
         let mut identifier = Writer::new();
         identifier.string(1, zone);
         identifier.uint64(2, 6);
 
         let mut owner = Writer::new();
-        owner.string(1, &self.user_id);
+        owner.string(1, owner_id.unwrap_or(&self.user_id));
         owner.uint64(2, 7);
 
         let mut zone_id = Writer::new();
@@ -273,8 +404,8 @@ impl Gateway {
             .header("x-apple-operation-id", &operation_id)
             .header("x-apple-request-uuid", uppercase_uuid())
             .header("x-cloudkit-bundleid", bundle)
-            .header("x-cloudkit-containerid", CONTAINER)
-            .header("x-cloudkit-databasescope", "Private")
+            .header("x-cloudkit-containerid", &self.container)
+            .header("x-cloudkit-databasescope", self.scope.header())
             .header("x-cloudkit-duetpreclearedmode", "None")
             .header("x-cloudkit-environment", "Production")
             .header("x-mme-client-info", &self.identity.client_info)
@@ -314,7 +445,7 @@ impl Gateway {
         identifier.uint64(2, 2);
 
         let mut header = Writer::new();
-        header.string(2, CONTAINER);
+        header.string(2, &self.container);
         header.string(3, bundle);
         header.message(7, &identifier);
         header.string(8, &self.device.software);
@@ -325,7 +456,7 @@ impl Gateway {
         header.uint64(19, 1);
         header.string(21, "apw");
         header.string(22, &self.device.name);
-        header.uint64(23, 1);
+        header.uint64(23, self.scope.value());
         header.uint64(25, 1);
         header.uint64(29, 0);
         header.string(32, &lower_sha1(&self.device.name));
@@ -362,7 +493,10 @@ fn parse_outcome(frame: &[u8]) -> Result<Outcome> {
                 }
             }
             203 => {
-                outcome.changes = Some(parse_zone_changes(field.bytes()?)?);
+                outcome.zone_changes = Some(parse_zone_changes(field.bytes()?)?);
+            }
+            201 => {
+                outcome.zone = Some(parse_zone_retrieve(field.bytes()?)?);
             }
             213 => {
                 outcome.changes = Some(parse_changes(field.bytes()?)?);
@@ -411,8 +545,110 @@ fn parse_changes(data: &[u8]) -> Result<Changes> {
     Ok(changes)
 }
 
-fn parse_zone_changes(_data: &[u8]) -> Result<Changes> {
-    Ok(Changes::default())
+fn parse_zone_changes(data: &[u8]) -> Result<ZoneChanges> {
+    let mut reader = Reader::new(data);
+    let mut changes = ZoneChanges {
+        zones: Vec::new(),
+        token: None,
+        status: 0,
+    };
+    while let Some(field) = reader.next()? {
+        match field.number {
+            1 => {
+                let mut zone = field.message()?;
+                let mut info = ZoneInfo {
+                    name: String::new(),
+                    owner: String::new(),
+                    change_type: 0,
+                };
+                while let Some(item) = zone.next()? {
+                    match item.number {
+                        1 => {
+                            let (name, owner) = parse_zone_identifier(item.message()?)?;
+                            info.name = name;
+                            info.owner = owner;
+                        }
+                        2 => info.change_type = item.varint()? as i32,
+                        _ => {}
+                    }
+                }
+                changes.zones.push(info);
+            }
+            2 => changes.token = Some(field.bytes()?.to_vec()),
+            3 => changes.status = field.varint()? as i32,
+            _ => {}
+        }
+    }
+    Ok(changes)
+}
+
+fn parse_zone_identifier(mut reader: Reader<'_>) -> Result<(String, String)> {
+    let mut name = String::new();
+    let mut owner = String::new();
+    while let Some(field) = reader.next()? {
+        match field.number {
+            1 => name = parse_identifier_name(field.message()?)?,
+            2 => owner = parse_identifier_name(field.message()?)?,
+            _ => {}
+        }
+    }
+    Ok((name, owner))
+}
+
+fn parse_identifier_name(mut reader: Reader<'_>) -> Result<String> {
+    while let Some(field) = reader.next()? {
+        if field.number == 1 {
+            return Ok(field.string()?.to_string());
+        }
+    }
+    Ok(String::new())
+}
+
+fn parse_zone_retrieve(data: &[u8]) -> Result<Zone> {
+    let mut reader = Reader::new(data);
+    while let Some(field) = reader.next()? {
+        if field.number != 1 {
+            continue;
+        }
+        let mut summary = field.message()?;
+        while let Some(item) = summary.next()? {
+            if item.number == 1 {
+                return parse_zone(item.message()?);
+            }
+        }
+    }
+    Err(Error::Message("zone retrieve has no target zone".into()))
+}
+
+fn parse_zone(mut reader: Reader<'_>) -> Result<Zone> {
+    let mut zone = Zone {
+        name: String::new(),
+        owner: String::new(),
+        protection_info: None,
+        record_protection_info: None,
+    };
+    while let Some(field) = reader.next()? {
+        match field.number {
+            1 => {
+                let (name, owner) = parse_zone_identifier(field.message()?)?;
+                zone.name = name;
+                zone.owner = owner;
+            }
+            3 => zone.protection_info = parse_protection_info(field.message()?)?,
+            6 => zone.record_protection_info = parse_protection_info(field.message()?)?,
+            _ => {}
+        }
+    }
+    Ok(zone)
+}
+
+fn parse_protection_info(mut reader: Reader<'_>) -> Result<Option<Vec<u8>>> {
+    while let Some(field) = reader.next()? {
+        if field.number == 1 {
+            return Ok(Some(field.bytes()?.to_vec()));
+        }
+    }
+    Ok(None)
 }
 
 pub fn parse_record(data: &[u8]) -> Result<Record> {
@@ -421,6 +657,9 @@ pub fn parse_record(data: &[u8]) -> Result<Record> {
         name: String::new(),
         record_type: String::new(),
         fields: BTreeMap::new(),
+        protection_info: None,
+        pcs_key: None,
+        share_info: None,
     };
     while let Some(field) = reader.next()? {
         match field.number {
@@ -430,10 +669,56 @@ pub fn parse_record(data: &[u8]) -> Result<Record> {
                 let (name, value) = parse_record_field(field.message()?)?;
                 record.fields.insert(name, value);
             }
+            13 => record.protection_info = parse_protection_info(field.message()?)?,
+            16 => record.share_info = Some(parse_share_info(field.message()?)?),
+            24 => record.pcs_key = Some(field.bytes()?.to_vec()),
             _ => {}
         }
     }
     Ok(record)
+}
+
+fn parse_share_info(mut reader: Reader<'_>) -> Result<ShareInfo> {
+    let mut share = ShareInfo {
+        invited_pcs: None,
+        participants: Vec::new(),
+    };
+    while let Some(field) = reader.next()? {
+        match field.number {
+            4 => share.invited_pcs = parse_protection_info(field.message()?)?,
+            6 => share
+                .participants
+                .push(parse_participant(field.message()?)?),
+            _ => {}
+        }
+    }
+    Ok(share)
+}
+
+fn parse_participant(mut reader: Reader<'_>) -> Result<Participant> {
+    let mut participant = Participant {
+        user_id: None,
+        public_key: None,
+        protection_info: None,
+        state: 0,
+        permission: 0,
+    };
+    while let Some(field) = reader.next()? {
+        match field.number {
+            2 => {
+                let name = parse_identifier_name(field.message()?)?;
+                if !name.is_empty() {
+                    participant.user_id = Some(name);
+                }
+            }
+            4 => participant.state = field.varint()? as i32,
+            6 => participant.permission = field.varint()? as i32,
+            9 => participant.public_key = parse_protection_info(field.message()?)?,
+            11 => participant.protection_info = parse_protection_info(field.message()?)?,
+            _ => {}
+        }
+    }
+    Ok(participant)
 }
 
 fn parse_identifier(mut reader: Reader<'_>) -> Result<String> {

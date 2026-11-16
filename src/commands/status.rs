@@ -21,6 +21,7 @@ pub fn run(paths: &Paths, config: &Config, json: bool) -> Result<()> {
         "entries": state.entries,
         "passkeys": state.passkeys,
         "groups": state.groups,
+        "shared_entries": state.shared_entries,
         "last_sync": state.last_sync,
         "snapshot": paths.snapshot_file,
         "snapshot_bytes": snapshot.map(|meta| meta.len()).unwrap_or(0),
@@ -45,6 +46,7 @@ pub fn run(paths: &Paths, config: &Config, json: bool) -> Result<()> {
         ("entries", result["entries"].to_string()),
         ("passkeys", result["passkeys"].to_string()),
         ("groups", result["groups"].to_string()),
+        ("shared", result["shared_entries"].to_string()),
         (
             "last sync",
             result["last_sync"].as_str().unwrap_or("never").to_string(),

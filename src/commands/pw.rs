@@ -5,13 +5,28 @@ use crate::model::EntryKind;
 use crate::output;
 use crate::vault;
 
-pub fn list(paths: &Paths, config: &mut Config, query: Option<&str>, json: bool) -> Result<()> {
+pub fn list(
+    paths: &Paths,
+    config: &mut Config,
+    query: Option<&str>,
+    personal: bool,
+    group: Option<&str>,
+    json: bool,
+) -> Result<()> {
     let vault = vault::load(paths, config)?;
     let entries: Vec<_> = vault
         .entries
         .iter()
         .filter(|entry| entry.kind == EntryKind::Login)
         .filter(|entry| query.is_none_or(|value| entry.matches(value)))
+        .filter(|entry| !personal || entry.group.is_none())
+        .filter(|entry| match group {
+            Some(group) => entry
+                .group
+                .as_deref()
+                .is_some_and(|value| value == group || value.starts_with(group)),
+            None => true,
+        })
         .collect();
 
     if output::use_json(json) {
@@ -23,6 +38,11 @@ pub fn list(paths: &Paths, config: &mut Config, query: Option<&str>, json: bool)
         return Ok(());
     }
 
+    let names: std::collections::HashMap<&str, &str> = vault
+        .groups
+        .iter()
+        .map(|group| (group.id.as_str(), group.name.as_deref().unwrap_or("")))
+        .collect();
     let rows = entries
         .iter()
         .map(|entry| {
@@ -30,10 +50,15 @@ pub fn list(paths: &Paths, config: &mut Config, query: Option<&str>, json: bool)
                 entry.domain(),
                 entry.username.clone().unwrap_or_default(),
                 entry.title.clone().unwrap_or_default(),
+                entry
+                    .group
+                    .as_deref()
+                    .map(|id| names.get(id).copied().unwrap_or(id).to_string())
+                    .unwrap_or_default(),
             ]
         })
         .collect::<Vec<_>>();
-    output::print_table(&["DOMAIN", "USERNAME", "TITLE"], &rows);
+    output::print_table(&["DOMAIN", "USERNAME", "TITLE", "GROUP"], &rows);
     Ok(())
 }
 

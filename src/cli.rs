@@ -71,6 +71,9 @@ pub enum Command {
     /// Probe recoverable TLK share function names.
     #[command(hide = true)]
     ProbeTlks,
+    /// List private and shared CloudKit zones.
+    #[command(hide = true)]
+    ProbeZones,
     /// Count snapshot records by kind.
     #[command(hide = true)]
     ProbeStats,
@@ -91,7 +94,15 @@ pub enum Command {
 #[derive(Debug, Subcommand)]
 pub enum PwCommand {
     /// List logins, optionally filtered by a domain, title, or username.
-    List { query: Option<String> },
+    List {
+        query: Option<String>,
+        /// Only entries that are not in a shared group.
+        #[arg(long)]
+        personal: bool,
+        /// Only entries from one group.
+        #[arg(long)]
+        group: Option<String>,
+    },
     /// Print the password for a domain, title, or username.
     Get {
         query: String,
@@ -149,11 +160,21 @@ fn execute(cli: Cli) -> Result<()> {
         Command::ProbeSettings => commands::probe::settings(&paths, &mut config, cli.json),
         Command::ProbeZone { zone } => commands::probe::zone(&paths, &mut config, &zone, cli.json),
         Command::ProbeTlks => commands::probe::tlks(&paths, &mut config, cli.json),
+        Command::ProbeZones => commands::probe::zones(&paths, &mut config, cli.json),
         Command::ProbeStats => commands::probe::stats(&paths, &mut config, cli.json),
         Command::Pw { command } => match command {
-            PwCommand::List { query } => {
-                commands::pw::list(&paths, &mut config, query.as_deref(), cli.json)
-            }
+            PwCommand::List {
+                query,
+                personal,
+                group,
+            } => commands::pw::list(
+                &paths,
+                &mut config,
+                query.as_deref(),
+                personal,
+                group.as_deref(),
+                cli.json,
+            ),
             PwCommand::Get { query, username } => {
                 commands::pw::get(&paths, &mut config, &query, username.as_deref(), cli.json)
             }

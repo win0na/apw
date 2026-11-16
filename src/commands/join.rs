@@ -58,7 +58,13 @@ pub fn run(paths: &Paths, config: &mut Config, passcode: Option<String>, json: b
             .identity_for(Some("macos"))
             .await
             .unwrap_or_else(|_| identity.clone());
-        let gateway = Gateway::bootstrap(&session, &mac).await?;
+        let gateway = Gateway::bootstrap(
+            &session,
+            &mac,
+            crate::cloudkit::CONTAINER,
+            crate::cloudkit::Scope::Private,
+        )
+        .await?;
         let escrow = Escrow::new(
             &escrow_url,
             &account,

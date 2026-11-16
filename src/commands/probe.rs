@@ -99,12 +99,18 @@ pub fn zone(paths: &Paths, config: &mut Config, zone: &str, json: bool) -> Resul
             .identity_for(Some("macos"))
             .await
             .unwrap_or_else(|_| identity.clone());
-        let gateway = crate::cloudkit::Gateway::bootstrap(&session, &mac).await?;
+        let gateway = crate::cloudkit::Gateway::bootstrap(
+            &session,
+            &mac,
+            crate::cloudkit::CONTAINER,
+            crate::cloudkit::Scope::Private,
+        )
+        .await?;
         let mut token: Option<Vec<u8>> = None;
         let mut total = 0usize;
         let mut pages = 0usize;
         loop {
-            let page = gateway.record_sync(zone, token.as_deref()).await?;
+            let page = gateway.record_sync(zone, None, token.as_deref()).await?;
             total += page.records.len();
             pages += 1;
             eprintln!(
@@ -161,7 +167,13 @@ pub fn tlks(paths: &Paths, config: &mut Config, json: bool) -> Result<()> {
             .identity_for(Some("macos"))
             .await
             .unwrap_or_else(|_| identity.clone());
-        let gateway = crate::cloudkit::Gateway::bootstrap(&session, &mac).await?;
+        let gateway = crate::cloudkit::Gateway::bootstrap(
+            &session,
+            &mac,
+            crate::cloudkit::CONTAINER,
+            crate::cloudkit::Scope::Private,
+        )
+        .await?;
         let mut out = Vec::new();
         for name in [
             "fetchRecoverableTlkshares",
@@ -234,6 +246,95 @@ pub fn stats(paths: &Paths, config: &mut Config, json: bool) -> Result<()> {
         }
         println!("unique logins: {}", unique.len());
         println!("duplicate rows: {duplicates}");
+    }
+    Ok(())
+}
+
+/// List zones in both database scopes. Read-only; no records are fetched.
+pub fn zones(paths: &Paths, config: &mut Config, json: bool) -> Result<()> {
+    let snapshot = vault::load(paths, config)?;
+    let session = snapshot
+        .session
+        .clone()
+        .ok_or_else(|| Error::Invalid("run `apw login` first".into()))?;
+    let url = config
+        .anisette_url()
+        .ok_or_else(|| Error::Invalid("set an anisette URL in the config".into()))?;
+
+    let zones = block_on(async {
+        let identity = Anisette::new(&url).identity().await?;
+        let mac = Anisette::new(&url)
+            .identity_for(Some("macos"))
+            .await
+            .unwrap_or_else(|_| identity.clone());
+        let mut out = Vec::new();
+        for scope in [
+            crate::cloudkit::Scope::Private,
+            crate::cloudkit::Scope::Shared,
+        ] {
+            if std::env::var_os("APW_DEBUG").is_some() {
+                eprintln!("probe: bootstrap {scope:?}");
+            }
+            let gateway = match crate::cloudkit::Gateway::bootstrap(
+                &session,
+                &mac,
+                crate::cloudkit::CONTAINER,
+                scope,
+            )
+            .await
+            {
+                Ok(gateway) => gateway,
+                Err(error) => {
+                    eprintln!("probe: {scope:?} bootstrap failed: {error}");
+                    continue;
+                }
+            };
+            let mut token: Option<Vec<u8>> = None;
+            let mut pages = 0;
+            loop {
+                let page = match gateway.zone_changes(token.as_deref()).await {
+                    Ok(page) => page,
+                    Err(error) => {
+                        eprintln!("probe: {scope:?} zone sync failed: {error}");
+                        break;
+                    }
+                };
+                pages += 1;
+                for zone in page.zones {
+                    out.push(serde_json::json!({
+                        "scope": format!("{scope:?}"),
+                        "name": zone.name,
+                        "owner": zone.owner,
+                        "change": zone.change_type,
+                    }));
+                }
+                if page.status == 2 {
+                    break;
+                }
+                match page.token {
+                    Some(next) if Some(&next) != token.as_ref() => token = Some(next),
+                    _ => break,
+                }
+                if pages >= 5 {
+                    break;
+                }
+            }
+        }
+        Ok::<_, crate::error::Error>(out)
+    })?;
+
+    if output::use_json(json) {
+        output::print_json(&output::success(serde_json::json!([{ "zones": zones }])));
+    } else {
+        for zone in &zones {
+            println!(
+                "{} {} owner={} change={}",
+                zone["scope"].as_str().unwrap_or("?"),
+                zone["name"].as_str().unwrap_or("?"),
+                zone["owner"].as_str().unwrap_or("?"),
+                zone["change"]
+            );
+        }
     }
     Ok(())
 }

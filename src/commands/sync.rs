@@ -11,6 +11,7 @@ use crate::error::{Error, Result};
 use crate::model::{Entry, EntryKind, Source};
 use crate::octagon::{self, keys::PeerKeys};
 use crate::output;
+use crate::pcs::ServiceKey;
 use crate::vault;
 
 pub fn run(
@@ -86,7 +87,13 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool) -> Result<()> {
             .identity_for(Some("macos"))
             .await
             .unwrap_or_else(|_| identity.clone());
-        let gateway = Gateway::bootstrap(&session, &mac).await?;
+        let gateway = Gateway::bootstrap(
+            &session,
+            &mac,
+            crate::cloudkit::CONTAINER,
+            crate::cloudkit::Scope::Private,
+        )
+        .await?;
 
         let mut tlkshares = Vec::new();
         let mut synckeys = Vec::new();
@@ -120,7 +127,7 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool) -> Result<()> {
                 if std::env::var_os("APW_DEBUG").is_some() {
                     eprintln!("sync: zone {zone} token {:?}", token.as_ref().map(Vec::len));
                 }
-                let page = match gateway.record_sync(zone, token.as_deref()).await {
+                let page = match gateway.record_sync(zone, None, token.as_deref()).await {
                     Ok(page) => page,
                     Err(error) if error.to_string().to_lowercase().contains("zone") => break,
                     Err(error) => return Err(error),
@@ -232,6 +239,48 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool) -> Result<()> {
         }
     }
 
+    let service_keys = service_keys(&decrypted);
+    let mut group_data = Vec::new();
+    if !service_keys.is_empty() {
+        let read = block_on(async {
+            let mac = Anisette::new(&anisette_url)
+                .identity_for(Some("macos"))
+                .await?;
+            let mut out = Vec::new();
+            for scope in [
+                crate::cloudkit::Scope::Private,
+                crate::cloudkit::Scope::Shared,
+            ] {
+                let gateway = match Gateway::bootstrap(
+                    &session,
+                    &mac,
+                    crate::cloudkit::SHARED_CONTAINER,
+                    scope,
+                )
+                .await
+                {
+                    Ok(gateway) => gateway,
+                    Err(error) => {
+                        if std::env::var_os("APW_DEBUG").is_some() {
+                            eprintln!("sync: group container {scope:?} failed: {error}");
+                        }
+                        continue;
+                    }
+                };
+                match crate::groups::read_all(&gateway, &service_keys).await {
+                    Ok(mut groups) => out.append(&mut groups),
+                    Err(error) => {
+                        if std::env::var_os("APW_DEBUG").is_some() {
+                            eprintln!("sync: group read {scope:?} failed: {error}");
+                        }
+                    }
+                }
+            }
+            Ok::<_, Error>(out)
+        })?;
+        group_data = read;
+    }
+
     let mut logins: Vec<Entry> = Vec::new();
     let mut sidecars: Vec<Entry> = Vec::new();
     let mut passkeys: Vec<Entry> = Vec::new();
@@ -270,13 +319,27 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool) -> Result<()> {
         logins.push(entry);
     }
 
-    merge_sidecars(&mut logins, sidecars);
+    crate::model::merge_sidecars(&mut logins, sidecars);
+
+    for data in &group_data {
+        for entry in &data.entries {
+            let duplicate = logins.iter().any(|personal| {
+                personal.domain().eq_ignore_ascii_case(&entry.domain())
+                    && personal.username == entry.username
+                    && personal.password == entry.password
+            });
+            if !duplicate {
+                logins.push(entry.clone());
+            }
+        }
+    }
 
     logins.sort_by(|left, right| left.id.cmp(&right.id));
     passkeys.sort_by(|left, right| left.id.cmp(&right.id));
     logins.append(&mut passkeys);
 
     snapshot.entries = logins;
+    snapshot.groups = group_data.into_iter().map(|data| data.group).collect();
     snapshot.source = Source::Icloud;
     snapshot.generated_at = Some(chrono::Utc::now());
     vault::save(paths, config, &snapshot)?;
@@ -297,44 +360,6 @@ fn is_uuid(value: &str) -> bool {
         })
 }
 
-/// Fold `com.apple.password-manager` metadata records into the login they
-/// describe. The sidecar points at its login by record id, or by domain and
-/// username when it was written without a parent reference.
-fn merge_sidecars(logins: &mut [Entry], sidecars: Vec<Entry>) {
-    for sidecar in sidecars {
-        let domain = sidecar.domain();
-        let index = logins
-            .iter()
-            .position(|login| login.id == domain)
-            .or_else(|| {
-                logins.iter().position(|login| {
-                    login.domain().eq_ignore_ascii_case(&domain)
-                        && match (&login.username, &sidecar.username) {
-                            (Some(left), Some(right)) => left.eq_ignore_ascii_case(right),
-                            _ => true,
-                        }
-                })
-            });
-        let Some(index) = index else {
-            continue;
-        };
-        let login = &mut logins[index];
-        let login_domain = login.domain();
-        if login.title.is_none() || login.title.as_deref() == Some(login_domain.as_str()) {
-            login.title = sidecar.title;
-        }
-        if login.notes.is_none() {
-            login.notes = sidecar.notes;
-        }
-        if login.totp.is_none() {
-            login.totp = sidecar.totp;
-        }
-        if login.username.is_none() {
-            login.username = sidecar.username;
-        }
-    }
-}
-
 fn finish(paths: &Paths, snapshot: &crate::model::Vault, json: bool, note: &str) -> Result<()> {
     let state = State {
         last_sync: snapshot.generated_at,
@@ -344,6 +369,11 @@ fn finish(paths: &Paths, snapshot: &crate::model::Vault, json: bool, note: &str)
         entries: snapshot.login_count() as u32,
         passkeys: snapshot.passkey_count() as u32,
         groups: snapshot.groups.len() as u32,
+        shared_entries: snapshot
+            .entries
+            .iter()
+            .filter(|entry| entry.group.is_some())
+            .count() as u32,
         failures: 0,
         next_attempt: None,
     };
@@ -364,6 +394,32 @@ fn finish(paths: &Paths, snapshot: &crate::model::Vault, json: bool, note: &str)
         println!("synced {} logins from {note}", snapshot.login_count());
     }
     Ok(())
+}
+
+/// The PCS service keys are ordinary Manatee items; collect every candidate and
+/// let the protection match the right one.
+fn service_keys(decrypted: &[(String, plist::Value)]) -> Vec<ServiceKey> {
+    let mut out = Vec::new();
+    for (_, value) in decrypted {
+        let Some(dict) = value.as_dictionary() else {
+            continue;
+        };
+        let agrp = dict.get("agrp").and_then(|value| value.as_string());
+        if agrp != Some("com.apple.ProtectedCloudStorage") {
+            continue;
+        }
+        let vwht = dict.get("vwht").and_then(|value| value.as_string());
+        if vwht != Some("Manatee") {
+            continue;
+        }
+        let Some(body) = dict.get("v_Data").and_then(|value| value.as_data()) else {
+            continue;
+        };
+        if let Ok(key) = ServiceKey::parse_der(body) {
+            out.push(key);
+        }
+    }
+    out
 }
 
 fn decode(value: &str) -> Result<Vec<u8>> {

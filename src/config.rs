@@ -60,6 +60,8 @@ pub struct State {
     #[serde(default)]
     pub groups: u32,
     #[serde(default)]
+    pub shared_entries: u32,
+    #[serde(default)]
     pub failures: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_attempt: Option<chrono::DateTime<chrono::Utc>>,
