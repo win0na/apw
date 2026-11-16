@@ -4,11 +4,15 @@ use crate::model::Vault;
 use crate::output;
 use crate::vault;
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     paths: &Paths,
     config: &mut Config,
     anisette_url: Option<String>,
     account: Option<String>,
+    refresh: bool,
+    join: bool,
+    code: Option<String>,
     json: bool,
 ) -> Result<()> {
     if let Some(url) = anisette_url {
@@ -31,7 +35,11 @@ pub fn run(
 
     config.save(paths)?;
 
-    let session = crate::auth::login(config, &account)?;
+    if refresh {
+        return refresh_services(paths, config, &account, json);
+    }
+
+    let session = crate::auth::login(config, &account, code)?;
 
     let mut snapshot = if paths.snapshot_file.exists() {
         vault::load(paths, config)?
@@ -51,6 +59,16 @@ pub fn run(
     state.failures = 0;
     config::save_state(paths, &state)?;
 
+    if join {
+        crate::commands::join::run(
+            paths,
+            config,
+            std::env::var("APW_ESCROW_PASSCODE").ok(),
+            json,
+        )?;
+        return Ok(());
+    }
+
     let result = serde_json::json!({
         "account": account,
         "dsid": session.dsid,
@@ -66,6 +84,44 @@ pub fn run(
         println!("signed in as {account}");
         println!("run `apw join` to read the keychain");
         println!("snapshot {}", paths.snapshot_file.display());
+    }
+    Ok(())
+}
+
+fn refresh_services(paths: &Paths, config: &mut Config, account: &str, json: bool) -> Result<()> {
+    let mut snapshot = vault::load(paths, config)?;
+    let mut session = snapshot
+        .session
+        .clone()
+        .ok_or_else(|| Error::Invalid("run `apw login` first".into()))?;
+    let url = config
+        .anisette_url()
+        .ok_or_else(|| Error::Invalid("set an anisette URL in the config".into()))?;
+
+    let services = crate::commands::join::block_on(async {
+        let identity = crate::auth::anisette::Anisette::new(&url)
+            .identity()
+            .await?;
+        crate::auth::icloud::account_settings(&identity, &session.dsid, &session.mme_auth_token)
+            .await
+    })?;
+
+    session.ckdatabasews_url = services.ckdatabasews_url.clone();
+    session.escrow_proxy_url = services.escrow_proxy_url.clone();
+    snapshot.session = Some(session.clone());
+    vault::save(paths, config, &snapshot)?;
+
+    let result = serde_json::json!({
+        "account": account,
+        "cloudkit": session.ckdatabasews_url,
+        "escrow": session.escrow_proxy_url,
+        "services": services.names,
+    });
+    if output::use_json(json) {
+        output::print_json(&output::success(serde_json::json!([result])));
+    } else {
+        println!("cloudkit {}", session.ckdatabasews_url.unwrap_or_default());
+        println!("escrow {}", session.escrow_proxy_url.unwrap_or_default());
     }
     Ok(())
 }

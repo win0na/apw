@@ -1,6 +1,7 @@
 //! GSA SRP login over the `GsService2` plist endpoint.
 
 use aes::cipher::{block_padding::Pkcs7, BlockDecryptMut, KeyIvInit};
+use base64::Engine;
 use hmac::{Hmac, Mac};
 use plist::{Dictionary, Value};
 use sha2::Sha256;
@@ -47,13 +48,15 @@ pub struct CompleteResponse {
     pub m2: Vec<u8>,
     pub spd: Option<Vec<u8>>,
     pub status: Status,
+    /// The PET from the `X-Apple-PE-Token` response header.
+    pub pet: Option<String>,
 }
 
 pub struct SpdFields {
     pub adsid: String,
     pub dsid: String,
     pub gs_idms_token: String,
-    pub pet: String,
+    pub pet: Option<String>,
 }
 
 pub struct Gsa {
@@ -69,14 +72,18 @@ impl Gsa {
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| DEFAULT_ENDPOINT.to_string());
         Self {
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .http1_only()
+                .pool_max_idle_per_host(0)
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
             endpoint,
             identity,
         }
     }
 
     pub async fn init(&self, username: &str, public: &[u8]) -> Result<InitResponse> {
-        let response = self
+        let (response, _) = self
             .post(init_request(username, public, &self.identity))
             .await?;
         let dict = response_dict(&response)?;
@@ -98,7 +105,7 @@ impl Gsa {
         continuation: &str,
         m1: &[u8],
     ) -> Result<CompleteResponse> {
-        let response = self
+        let (response, pet) = self
             .post(complete_request(username, continuation, m1, &self.identity))
             .await?;
         let dict = response_dict(&response)?;
@@ -112,10 +119,11 @@ impl Gsa {
                 .to_vec(),
             spd: dict.get("spd").and_then(Value::as_data).map(<[u8]>::to_vec),
             status,
+            pet,
         })
     }
 
-    async fn post(&self, body: Value) -> Result<Value> {
+    async fn post(&self, body: Value) -> Result<(Value, Option<String>)> {
         let mut bytes = Vec::new();
         plist::to_writer_xml(&mut bytes, &body)?;
 
@@ -132,11 +140,18 @@ impl Gsa {
             .await?;
 
         let status = response.status();
+        if std::env::var_os("APW_DEBUG").is_some() {
+            eprintln!(
+                "gsa response headers: {:?}",
+                response.headers().keys().collect::<Vec<_>>()
+            );
+        }
+        let pet = pet_from_headers(response.headers());
         let body = response.bytes().await?;
         if !status.is_success() {
             return Err(Error::Message(format!("GSA answered HTTP {status}")));
         }
-        Ok(plist::Value::from_reader_xml(&body[..])?)
+        Ok((plist::Value::from_reader_xml(&body[..])?, pet))
     }
 }
 
@@ -267,6 +282,22 @@ fn hmac_sha256(key: &[u8], data: &[u8]) -> Result<Vec<u8>> {
     Ok(mac.finalize().into_bytes().to_vec())
 }
 
+pub struct IdmsFields {
+    pub adsid: String,
+    pub gs_idms_token: String,
+}
+
+/// The fields needed to answer a two-factor challenge, before a PET exists.
+pub fn idms_fields(value: &Value) -> Result<IdmsFields> {
+    let dict = value
+        .as_dictionary()
+        .ok_or_else(|| Error::Message("spd is not a plist dictionary".into()))?;
+    Ok(IdmsFields {
+        adsid: required_string(dict, "adsid")?,
+        gs_idms_token: required_string(dict, "GsIdmsToken")?,
+    })
+}
+
 pub fn spd_fields(value: &Value) -> Result<SpdFields> {
     let dict = value
         .as_dictionary()
@@ -276,18 +307,69 @@ pub fn spd_fields(value: &Value) -> Result<SpdFields> {
         .get("t")
         .and_then(Value::as_dictionary)
         .and_then(|t| t.get("com.apple.gs.idms.pet"))
-        .and_then(Value::as_dictionary)
-        .and_then(|pet| pet.get("token"))
-        .and_then(Value::as_string)
-        .ok_or_else(|| Error::Message("spd has no idms PET".into()))?;
+        .and_then(|pet| match pet {
+            Value::String(token) => Some(token.as_str()),
+            Value::Dictionary(pet) => pet.get("token").and_then(Value::as_string),
+            _ => None,
+        })
+        .map(str::to_string);
 
+    let adsid = required_string(dict, "adsid")?;
+    let dsid = dict
+        .get("DsPrsId")
+        .and_then(Value::as_string)
+        .unwrap_or(&adsid)
+        .to_string();
+    let gs_idms_token = dict
+        .get("GsIdmsToken")
+        .and_then(Value::as_string)
+        .unwrap_or_default()
+        .to_string();
     Ok(SpdFields {
-        adsid: required_string(dict, "adsid")?,
-        dsid: required_string(dict, "DsPrsId")?,
-        gs_idms_token: required_string(dict, "GsIdmsToken")?,
-        pet: pet.to_string(),
+        adsid,
+        dsid,
+        gs_idms_token,
+        pet,
     })
 }
+
+pub fn pet_from_headers(headers: &reqwest::header::HeaderMap) -> Option<String> {
+    for value in headers.get_all("x-apple-gs-token").iter() {
+        let Ok(raw) = value.to_str() else { continue };
+        let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(raw) else {
+            continue;
+        };
+        let Ok(text) = String::from_utf8(decoded) else {
+            continue;
+        };
+        let parts: Vec<&str> = text.split(':').collect();
+        if parts.first() == Some(&"com.apple.gs.idms.pet") {
+            if std::env::var_os("APW_DEBUG").is_some() {
+                eprintln!(
+                    "gsa gs-token idms.pet: parts={} pet_len={}",
+                    parts.len(),
+                    parts.get(1).map(|part| part.len()).unwrap_or(0)
+                );
+            }
+            return parts.get(1).map(|part| part.to_string());
+        }
+    }
+
+    let raw = headers.get("x-apple-pe-token")?;
+    let raw = raw.to_str().ok()?;
+    let decoded = base64::engine::general_purpose::STANDARD.decode(raw).ok()?;
+    let text = String::from_utf8(decoded).ok()?;
+    let parts: Vec<&str> = text.split(':').collect();
+    if std::env::var_os("APW_DEBUG").is_some() {
+        eprintln!(
+            "gsa pe-token header: parts={} pet_len={}",
+            parts.len(),
+            parts.get(1).map(|part| part.len()).unwrap_or(0)
+        );
+    }
+    parts.get(1).map(|part| part.to_string())
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -338,6 +420,6 @@ mod tests {
         let value = decrypt_spd(&key, &encrypted).unwrap();
         let fields = spd_fields(&value).unwrap();
         assert_eq!(fields.adsid, "1234");
-        assert_eq!(fields.pet, "pet-token");
+        assert_eq!(fields.pet.as_deref(), Some("pet-token"));
     }
 }

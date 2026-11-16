@@ -35,7 +35,7 @@ pub async fn submit_trusted_device(
     code: &str,
     identity_token: &str,
     identity: &Identity,
-) -> Result<()> {
+) -> Result<Option<String>> {
     let response = client()
         .get(format!("{}/grandslam/GsService2/validate", base()))
         .headers(headers(identity_token, identity)?)
@@ -44,6 +44,7 @@ pub async fn submit_trusted_device(
         .await?;
 
     let status = response.status();
+    let pet = crate::auth::gsa::pet_from_headers(response.headers());
     let body = response.bytes().await?;
     if !status.is_success() {
         return Err(Error::Message(format!(
@@ -51,7 +52,7 @@ pub async fn submit_trusted_device(
         )));
     }
     if body.is_empty() {
-        return Ok(());
+        return Ok(pet);
     }
 
     let value = plist::Value::from_reader_xml(&body[..])?;
@@ -68,7 +69,7 @@ pub async fn submit_trusted_device(
             .unwrap_or("two-factor code rejected");
         return Err(Error::Message(message.to_string()));
     }
-    Ok(())
+    Ok(pet)
 }
 
 fn headers(identity_token: &str, identity: &Identity) -> Result<reqwest::header::HeaderMap> {
@@ -116,5 +117,9 @@ fn base() -> String {
 }
 
 fn client() -> reqwest::Client {
-    reqwest::Client::new()
+    reqwest::Client::builder()
+        .http1_only()
+        .pool_max_idle_per_host(0)
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
 }

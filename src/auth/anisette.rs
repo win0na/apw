@@ -24,6 +24,37 @@ pub struct Identity {
     pub user_agent: String,
 }
 
+/// Keep the platform and OS tokens from a client-info string and replace the
+/// service identity. Apple checks the platform against the ADI backend.
+pub fn with_service(client_info: &str, service: &str) -> String {
+    let mut parts = Vec::new();
+    let mut rest = client_info.trim();
+    while let Some(start) = rest.find('<') {
+        let Some(end) = rest[start..].find('>') else {
+            break;
+        };
+        parts.push(&rest[start..start + end + 1]);
+        rest = &rest[start + end + 1..];
+        if parts.len() == 2 {
+            break;
+        }
+    }
+    if parts.len() == 2 {
+        format!("{} {} <{service}>", parts[0], parts[1])
+    } else {
+        format!("<{service}>")
+    }
+}
+
+pub const AOSKIT_SERVICE: &str = "com.apple.AOSKit/282 (com.apple.accountsd/113)";
+pub const SBD_SERVICE: &str = "com.apple.AuthKit/1 (com.apple.sbd/638.100.48)";
+pub const MAC_AOSKIT: &str =
+    "<MacBookPro18,3> <Mac OS X;13.4.1;22F8> <com.apple.AOSKit/282 (com.apple.accountsd/113)>";
+pub const MAC_AUTHKIT: &str =
+    "<MacBookPro18,3> <Mac OS X;13.4.1;22F8> <com.apple.AuthKit/1 (com.apple.akd/1.0)>";
+pub const MAC_CLOUDKIT: &str =
+    "<MacBookPro18,3> <Mac OS X;13.4.1;22F8> <com.apple.cloudkit.CloudKitDaemon/1970 (com.apple.cloudd/1970)>";
+
 impl Identity {
     pub fn header(&self, name: &str) -> Option<&str> {
         self.headers.get(name).map(String::as_str)

@@ -89,8 +89,25 @@ pub async fn join(
         .into_iter()
         .next()
         .ok_or_else(|| Error::Message("the account has no escrow bottle".into()))?;
+    if std::env::var_os("APW_DEBUG").is_some() {
+        eprintln!(
+            "escrow bottle: label={:?} peer={} id={}",
+            bottle.label, bottle.peer_id, bottle.bottle_id
+        );
+    }
+    if std::env::var_os("APW_DEBUG").is_some() {
+        match escrow.list_records().await {
+            Ok(records) => eprintln!("escrow records: {}", records.len()),
+            Err(error) => eprintln!("escrow records error: {error}"),
+        }
+    }
+    let label = if bottle.label.is_empty() {
+        "com.apple.securebackup.record"
+    } else {
+        &bottle.label
+    };
 
-    let entropy = escrow.entropy(&bottle.label, passcode, adsid).await?;
+    let entropy = escrow.entropy(label, passcode, adsid).await?;
     let sponsor = escrow::recover_identity(&bottle, &entropy, adsid)?;
 
     let mut trust = fetch_changes(gateway).await?;

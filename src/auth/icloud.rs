@@ -21,6 +21,7 @@ pub struct Delegates {
 pub struct Webservices {
     pub ckdatabasews_url: Option<String>,
     pub escrow_proxy_url: Option<String>,
+    pub names: Vec<String>,
 }
 
 pub async fn login_delegates(
@@ -35,6 +36,10 @@ pub async fn login_delegates(
     let mut delegates = Dictionary::new();
     delegates.insert(
         "com.apple.mobileme".into(),
+        Value::Dictionary(Dictionary::new()),
+    );
+    delegates.insert(
+        "com.apple.Dataclass.CloudKit".into(),
         Value::Dictionary(Dictionary::new()),
     );
     body.insert("delegates".into(), Value::Dictionary(delegates));
@@ -83,6 +88,7 @@ pub async fn account_settings(
         .post(format!("{}/setup/get_account_settings", setup_base()))
         .headers(base_headers(identity)?)
         .header("Authorization", format!("Basic {authorization}"))
+        .header("X-Mme-Client-Info", crate::auth::anisette::MAC_AUTHKIT)
         .send()
         .await?;
 
@@ -133,39 +139,64 @@ fn parse_delegates(value: &Value) -> Result<Delegates> {
         .and_then(Value::as_dictionary)
         .ok_or_else(|| Error::Message("loginDelegates response has no tokens".into()))?;
 
+    let mme_auth_token = token(tokens, "mmeAuthToken")?;
+    // Some accounts return no cloudKitToken from the mobileme delegate. Fall
+    // back to the mmeAuthToken; CloudKit bootstrap accepts it as Basic auth.
+    let cloudkit_token = token(tokens, "cloudKitToken").unwrap_or_else(|_| mme_auth_token.clone());
     Ok(Delegates {
         dsid,
-        mme_auth_token: token(tokens, "mmeAuthToken")?,
-        cloudkit_token: token(tokens, "cloudKitToken")?,
+        mme_auth_token,
+        cloudkit_token,
     })
 }
 
 fn parse_webservices(value: &Value) -> Webservices {
-    let Some(webservices) = value
-        .as_dictionary()
-        .and_then(|dict| dict.get("webservices"))
-        .and_then(Value::as_dictionary)
-    else {
+    let Some(dict) = value.as_dictionary() else {
         return Webservices::default();
     };
 
-    let ckdatabasews_url = webservices
-        .get("ckdatabasews")
-        .and_then(Value::as_dictionary)
-        .and_then(|service| service.get("url"))
-        .and_then(Value::as_string)
-        .map(str::to_string);
+    let mut names = Vec::new();
+    let mut ckdatabasews_url = None;
+    let mut escrow_proxy_url = None;
 
-    let escrow_proxy_url = webservices
-        .get("KeychainSync")
-        .and_then(Value::as_dictionary)
-        .and_then(|service| service.get("escrowProxyUrl"))
-        .and_then(Value::as_string)
-        .map(str::to_string);
+    for root in ["webservices", "com.apple.mobileme"] {
+        let Some(services) = dict.get(root).and_then(Value::as_dictionary) else {
+            continue;
+        };
+        for (name, value) in services {
+            names.push(name.clone());
+            let Some(service) = value.as_dictionary() else {
+                continue;
+            };
+            let lower = name.to_ascii_lowercase();
+            let escrow = lower.contains("keychainsync") || lower.contains("escrow");
+            let url = if escrow {
+                service
+                    .get("escrowProxyUrl")
+                    .and_then(Value::as_string)
+                    .or_else(|| service.get("url").and_then(Value::as_string))
+            } else {
+                service
+                    .get("url")
+                    .and_then(Value::as_string)
+                    .or_else(|| service.get("escrowProxyUrl").and_then(Value::as_string))
+            };
+            let Some(url) = url else {
+                continue;
+            };
+            if lower.contains("ckdatabasews") && ckdatabasews_url.is_none() {
+                ckdatabasews_url = Some(url.to_string());
+            }
+            if escrow && escrow_proxy_url.is_none() {
+                escrow_proxy_url = Some(url.to_string());
+            }
+        }
+    }
 
     Webservices {
         ckdatabasews_url,
         escrow_proxy_url,
+        names,
     }
 }
 

@@ -32,6 +32,15 @@ pub enum Command {
         /// Apple ID to sign in with.
         #[arg(long)]
         account: Option<String>,
+        /// Refresh service URLs from the stored session without signing in again.
+        #[arg(long)]
+        refresh: bool,
+        /// Join the trust in the same run, while the PET is fresh.
+        #[arg(long)]
+        join: bool,
+        /// Two-factor code, for a non-interactive run.
+        #[arg(long)]
+        code: Option<String>,
     },
     /// Join the Octagon trust with the escrow passcode.
     Join {
@@ -103,7 +112,19 @@ fn execute(cli: Cli) -> Result<()> {
         Command::Login {
             anisette_url,
             account,
-        } => commands::login::run(&paths, &mut config, anisette_url, account, cli.json),
+            refresh,
+            join,
+            code,
+        } => commands::login::run(
+            &paths,
+            &mut config,
+            anisette_url,
+            account,
+            refresh,
+            join,
+            code,
+            cli.json,
+        ),
         Command::Join { passcode } => commands::join::run(&paths, &mut config, passcode, cli.json),
         Command::Sync { force, fixture } => {
             commands::sync::run(&paths, &mut config, force, fixture, cli.json)

@@ -17,14 +17,13 @@ use plist::{Dictionary, Value};
 use rand::RngCore;
 use sha2::{Digest, Sha256, Sha384};
 
-use crate::auth::anisette::Identity;
+use crate::auth::anisette::{self, Identity};
 use crate::auth::srp;
 use crate::error::{Error, Result};
 use crate::octagon::keys::PeerKeys;
 use crate::wire::Reader;
 
 const ESCROW_USER_AGENT: &str = "com.apple.sbd/638.100.48 com.apple.iCloudHelper/282";
-const ESCROW_SERVICE: &str = "com.apple.AuthKit/1 (com.apple.sbd/638.100.48)";
 const USER_ACTION: &str = "com.apple.sbd: escrow recovery";
 
 const HKDF_SYMMETRIC: &[u8] = b"Escrow Symmetric Key";
@@ -33,7 +32,11 @@ pub struct Escrow {
     http: reqwest::Client,
     base: String,
     email: String,
+    dsid: String,
+    adsid: String,
     pet: String,
+    mme_token: String,
+    cloudkit_token: String,
     identity: Identity,
 }
 
@@ -68,12 +71,30 @@ pub struct Recovered {
 }
 
 impl Escrow {
-    pub fn new(base: &str, email: &str, pet: &str, identity: &Identity) -> Self {
+#[allow(clippy::too_many_arguments)]
+    pub fn new(
+        base: &str,
+        email: &str,
+        dsid: &str,
+        adsid: &str,
+        pet: &str,
+        mme_token: &str,
+        cloudkit_token: &str,
+        identity: &Identity,
+    ) -> Self {
         Self {
-            http: reqwest::Client::new(),
+            http: reqwest::Client::builder()
+                .http1_only()
+                .pool_max_idle_per_host(0)
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
             base: base.trim_end_matches('/').to_string(),
             email: email.to_string(),
+            dsid: dsid.to_string(),
+            adsid: adsid.to_string(),
             pet: pet.to_string(),
+            mme_token: mme_token.to_string(),
+            cloudkit_token: cloudkit_token.to_string(),
             identity: identity.clone(),
         }
     }
@@ -224,7 +245,7 @@ impl Escrow {
 
         let version = be32(&recovery.header, 4)?;
         let plaintext = match version {
-            0 => aes_cbc_decrypt(&key, &recovery.sections[1], &recovery.sections[2])?,
+            0 => aes256_cbc_decrypt(&key, &recovery.sections[1], &recovery.sections[2])?,
             2 => aes_gcm_decrypt(&key, &recovery.sections[1], &recovery.sections[2], &[])?,
             other => {
                 return Err(Error::Message(format!(
@@ -251,10 +272,61 @@ impl Escrow {
         let mut body = Vec::new();
         plist::to_writer_xml(&mut body, &Value::Dictionary(request))?;
 
+        let mut last_status = reqwest::StatusCode::UNAUTHORIZED;
+        let mut last_value = Value::Dictionary(Dictionary::new());
+        let candidates: [(&str, &str, &str); 8] = [
+            (&self.email, &self.pet, "email:pet"),
+            (&self.dsid, &self.pet, "dsid:pet"),
+            (&self.adsid, &self.mme_token, "adsid:mme"),
+            (&self.dsid, &self.mme_token, "dsid:mme"),
+            (&self.email, &self.mme_token, "email:mme"),
+            (&self.adsid, &self.pet, "adsid:pet"),
+            (&self.dsid, &self.cloudkit_token, "dsid:ck"),
+            (&self.email, &self.cloudkit_token, "email:ck"),
+        ];
+        for (user, secret, label) in candidates {
+            if std::env::var_os("APW_DEBUG").is_some() {
+                eprintln!(
+                    "escrow auth: {label} user={user} secret_len={} slug={slug}",
+                    secret.len()
+                );
+            }
+            let response = self.send(slug, user, secret, &body).await?;
+            let status = response.status();
+            let bytes = response.bytes().await?.to_vec();
+            let value: Value = plist::from_bytes(&bytes)
+                .map_err(|error| Error::Message(format!("invalid escrow response: {error}")))?;
+            if status.is_success() {
+                return value
+                    .as_dictionary()
+                    .cloned()
+                    .ok_or_else(|| Error::Message("escrow response is not a dictionary".into()));
+            }
+            if status != reqwest::StatusCode::UNAUTHORIZED {
+                return Err(Error::Message(format!(
+                    "escrowproxy/{slug} returned {status}: {value:?}"
+                )));
+            }
+            last_status = status;
+            last_value = value;
+        }
+
+        Err(Error::Message(format!(
+            "escrowproxy/{slug} returned {last_status}: {last_value:?}"
+        )))
+    }
+
+    async fn send(
+        &self,
+        slug: &str,
+        user: &str,
+        secret: &str,
+        body: &[u8],
+    ) -> Result<reqwest::Response> {
         let mut http = self
             .http
             .post(format!("{}/escrowproxy/api/{slug}", self.base))
-            .basic_auth(&self.email, Some(&self.pet))
+            .basic_auth(user, Some(secret))
             .header("user-agent", ESCROW_USER_AGENT)
             .header("accept", "*/*")
             .header("accept-language", "en-US,en;q=0.9")
@@ -263,29 +335,26 @@ impl Escrow {
             .header("content-type", "application/x-apple-plst")
             .header(
                 "x-mme-client-info",
-                format!("<{ESCROW_SERVICE}> {}", self.identity.client_info),
+                anisette::with_service(&self.identity.client_info, anisette::SBD_SERVICE),
             )
-            .body(body);
+            .body(body.to_vec());
 
         for (name, value) in &self.identity.headers {
+            if name.eq_ignore_ascii_case("x-mme-client-info") {
+                continue;
+            }
             http = http.header(name, value);
         }
-
-        let response = http.send().await?;
-        let status = response.status();
-        let bytes = response.bytes().await?.to_vec();
-        let value: Value = plist::from_bytes(&bytes)
-            .map_err(|error| Error::Message(format!("invalid escrow response: {error}")))?;
-
-        if !status.is_success() {
-            return Err(Error::Message(format!(
-                "escrowproxy/{slug} returned {status}: {value:?}"
-            )));
+        let request = http.build()?;
+        if std::env::var_os("APW_DEBUG").is_some() {
+            eprintln!(
+                "escrow request: url={} headers={:?} body_len={}",
+                request.url(),
+                request.headers().keys().collect::<Vec<_>>(),
+                body.len()
+            );
         }
-        value
-            .as_dictionary()
-            .cloned()
-            .ok_or_else(|| Error::Message("escrow response is not a dictionary".into()))
+        Ok(self.http.execute(request).await?)
     }
 }
 
@@ -303,7 +372,15 @@ pub fn parse_bottles(data: &[u8]) -> Result<Vec<Bottle>> {
         while let Some(item) = entry.next()? {
             match item.number {
                 1 => label = item.string()?.to_string(),
-                2 => bottle = Some(parse_bottle(item.bytes()?)?),
+                2 => {
+                    // EscrowData.bottle wraps the serialized OTBottle in field 2.
+                    let mut wrapper = item.message()?;
+                    while let Some(inner) = wrapper.next()? {
+                        if inner.number == 2 {
+                            bottle = Some(parse_bottle(inner.bytes()?)?);
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -457,6 +534,16 @@ fn aes_gcm_decrypt(key: &[u8], iv: &[u8], ct: &[u8], tag: &[u8]) -> Result<Vec<u
             },
         )
         .map_err(|_| Error::Message("bottle decrypt failed: wrong entropy or account".into()))
+}
+
+fn aes256_cbc_decrypt(key: &[u8], iv: &[u8], ct: &[u8]) -> Result<Vec<u8>> {
+    type Decryptor = cbc::Decryptor<aes::Aes256>;
+    let mut buffer = ct.to_vec();
+    let plaintext = Decryptor::new_from_slices(key, iv)
+        .map_err(|_| Error::Message("invalid AES-256-CBC key or IV".into()))?
+        .decrypt_padded_mut::<Pkcs7>(&mut buffer)
+        .map_err(|_| Error::Message("escrow record padding is invalid".into()))?;
+    Ok(plaintext.to_vec())
 }
 
 fn aes_cbc_decrypt(key: &[u8], iv: &[u8], ct: &[u8]) -> Result<Vec<u8>> {

@@ -55,7 +55,16 @@ pub fn run(paths: &Paths, config: &mut Config, passcode: Option<String>, json: b
     let (peer, trust, sponsor) = block_on(async {
         let identity = Anisette::new(&anisette_url).identity().await?;
         let gateway = Gateway::bootstrap(&session, &identity).await?;
-        let escrow = Escrow::new(&escrow_url, &account, &session.pet, &identity);
+        let escrow = Escrow::new(
+            &escrow_url,
+            &account,
+            &session.dsid,
+            &session.adsid,
+            &session.pet,
+            &session.mme_auth_token,
+            &session.cloudkit_token,
+            &identity,
+        );
         let peer = Peer::generate(&octagon::machine_id(), "MacBookPro18,3")?;
         let (trust, _bottle, sponsor) = octagon::join(
             &gateway,
