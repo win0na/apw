@@ -29,13 +29,13 @@ async fn login_async(config: &Config, account: &str, code: Option<String>) -> Re
         .ok_or_else(|| Error::Invalid("set --anisette-url or APW_ANISETTE_URL".into()))?;
 
     let anisette = anisette::Anisette::new(&url);
-    let mut identity = anisette.identity().await?;
-    // Account settings and CloudKit want the macOS profile; GSA, delegates and
-    // escrow want the Windows one. A single-backend server falls back.
-    let mac = anisette
+    let windows_identity = anisette.identity().await?;
+    // The macOS chain is the primary one: it yields the modern service map and
+    // the cloudKitToken. The Windows chain supplies the escrow PET.
+    let mut identity = anisette
         .identity_for(Some("macos"))
         .await
-        .unwrap_or_else(|_| identity.clone());
+        .unwrap_or_else(|_| windows_identity.clone());
 
     let password = match std::env::var("APW_PASSWORD") {
         Ok(password) if !password.is_empty() => password,
@@ -94,14 +94,35 @@ async fn login_async(config: &Config, account: &str, code: Option<String>) -> Re
         Error::Message("GSA returned no PET; sign in again or check the account".into())
     })?;
     let delegates = icloud::login_delegates(&identity, account, &fields.adsid, &pet).await?;
-    let services =
-        icloud::account_settings(&mac, &delegates.dsid, &delegates.mme_auth_token).await?;
+    // A platform mismatch here is recoverable: the caller keeps the service
+    // URLs and tokens from the previous session.
+    let services = icloud::account_settings(&identity, &delegates.dsid, &delegates.mme_auth_token)
+        .await
+        .unwrap_or_default();
+    let mut pet = pet;
+    if let Ok(mut windows) = anisette.identity_for(None).await {
+        if let Ok((_, spd, header_pet)) =
+            authenticate(&anisette, &mut windows, account, &password).await
+        {
+            if let Some(escrow_pet) = gsa::spd_fields(&spd)
+                .ok()
+                .and_then(|fields| fields.pet)
+                .or(header_pet)
+            {
+                pet = escrow_pet;
+            }
+        }
+    }
+
     Ok(Session {
         adsid: fields.adsid,
         dsid: delegates.dsid,
         pet,
         mme_auth_token: delegates.mme_auth_token,
-        cloudkit_token: delegates.cloudkit_token,
+        cloudkit_token: services
+            .cloudkit_token
+            .clone()
+            .unwrap_or(delegates.cloudkit_token),
         ckdatabasews_url: services.ckdatabasews_url,
         escrow_proxy_url: services.escrow_proxy_url,
         logged_in_at: chrono::Utc::now(),

@@ -5,6 +5,7 @@ use crate::model::Entry;
 pub mod join;
 pub mod login;
 pub mod otp;
+pub mod probe;
 pub mod pw;
 pub mod status;
 pub mod sync;

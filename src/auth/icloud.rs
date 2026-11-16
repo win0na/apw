@@ -21,6 +21,7 @@ pub struct Delegates {
 pub struct Webservices {
     pub ckdatabasews_url: Option<String>,
     pub escrow_proxy_url: Option<String>,
+    pub cloudkit_token: Option<String>,
     pub names: Vec<String>,
 }
 
@@ -106,6 +107,26 @@ pub async fn account_settings(
         )));
     }
     let value = plist::Value::from_reader_xml(&body[..])?;
+    if std::env::var_os("APW_DEBUG").is_some() {
+        if let Some(dict) = value.as_dictionary() {
+            eprintln!("settings top-level: {:?}", dict.keys().collect::<Vec<_>>());
+            if let Some(tokens) = dict.get("tokens").and_then(Value::as_dictionary) {
+                eprintln!("settings tokens: {:?}", tokens.keys().collect::<Vec<_>>());
+            }
+            if let Some(mm) = dict
+                .get("com.apple.mobileme")
+                .and_then(Value::as_dictionary)
+            {
+                eprintln!("settings mobileme: {:?}", mm.keys().collect::<Vec<_>>());
+            }
+            if let Some(delegates) = dict.get("delegates").and_then(Value::as_dictionary) {
+                eprintln!(
+                    "settings delegates: {:?}",
+                    delegates.keys().collect::<Vec<_>>()
+                );
+            }
+        }
+    }
     Ok(parse_webservices(&value))
 }
 
@@ -210,9 +231,17 @@ fn parse_webservices(value: &Value) -> Webservices {
         }
     }
 
+    let cloudkit_token = dict
+        .get("tokens")
+        .and_then(Value::as_dictionary)
+        .and_then(|tokens| tokens.get("cloudKitToken"))
+        .and_then(Value::as_string)
+        .map(str::to_string);
+
     Webservices {
         ckdatabasews_url,
         escrow_proxy_url,
+        cloudkit_token,
         names,
     }
 }

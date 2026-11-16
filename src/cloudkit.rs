@@ -277,7 +277,7 @@ impl Gateway {
             .header("x-cloudkit-databasescope", "Private")
             .header("x-cloudkit-duetpreclearedmode", "None")
             .header("x-cloudkit-environment", "Production")
-            .header("x-mme-client-info", crate::auth::anisette::MAC_AUTHKIT)
+            .header("x-mme-client-info", &self.identity.client_info)
             .header("x-cloudkit-userid", &self.user_id)
             .header("x-cloudkit-authtoken", &self.token)
             .body(body);

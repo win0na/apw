@@ -59,6 +59,12 @@ pub enum Command {
     },
     /// Show the account, snapshot age, and entry counts.
     Status,
+    /// Probe escrow authentication without spending an attempt.
+    #[command(hide = true)]
+    ProbeEscrow,
+    /// Probe the account service map.
+    #[command(hide = true)]
+    ProbeSettings,
     /// Read logins.
     Pw {
         #[command(subcommand)]
@@ -130,6 +136,8 @@ fn execute(cli: Cli) -> Result<()> {
             commands::sync::run(&paths, &mut config, force, fixture, cli.json)
         }
         Command::Status => commands::status::run(&paths, &config, cli.json),
+        Command::ProbeEscrow => commands::probe::escrow(&paths, &mut config, cli.json),
+        Command::ProbeSettings => commands::probe::settings(&paths, &mut config, cli.json),
         Command::Pw { command } => match command {
             PwCommand::List { query } => {
                 commands::pw::list(&paths, &mut config, query.as_deref(), cli.json)
