@@ -370,7 +370,6 @@ pub fn pet_from_headers(headers: &reqwest::header::HeaderMap) -> Option<String> 
     parts.get(1).map(|part| part.to_string())
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

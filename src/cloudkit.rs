@@ -141,7 +141,7 @@ impl Gateway {
             .header("x-cloudkit-bundleid", BUNDLE_RECORDS)
             .header("x-cloudkit-databasescope", "Private")
             .header("x-cloudkit-environment", "Production")
-            .header("x-mme-client-info", crate::auth::anisette::MAC_CLOUDKIT);
+            .header("x-mme-client-info", &identity.client_info);
 
         for (name, value) in &identity.headers {
             request = request.header(name, value);
@@ -277,7 +277,7 @@ impl Gateway {
             .header("x-cloudkit-databasescope", "Private")
             .header("x-cloudkit-duetpreclearedmode", "None")
             .header("x-cloudkit-environment", "Production")
-            .header("x-mme-client-info", crate::auth::anisette::MAC_CLOUDKIT)
+            .header("x-mme-client-info", crate::auth::anisette::MAC_AUTHKIT)
             .header("x-cloudkit-userid", &self.user_id)
             .header("x-cloudkit-authtoken", &self.token)
             .body(body);

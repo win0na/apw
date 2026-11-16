@@ -71,7 +71,7 @@ pub struct Recovered {
 }
 
 impl Escrow {
-#[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         base: &str,
         email: &str,

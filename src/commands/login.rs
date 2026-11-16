@@ -39,13 +39,24 @@ pub fn run(
         return refresh_services(paths, config, &account, json);
     }
 
-    let session = crate::auth::login(config, &account, code)?;
-
     let mut snapshot = if paths.snapshot_file.exists() {
         vault::load(paths, config)?
     } else {
         Vault::default()
     };
+    let previous = snapshot.session.clone();
+
+    let mut session = crate::auth::login(config, &account, code)?;
+    // A profile can return a reduced service map. Keep the URLs we already
+    // discovered rather than dropping a working escrow or CloudKit endpoint.
+    if let Some(previous) = previous {
+        if session.escrow_proxy_url.is_none() {
+            session.escrow_proxy_url = previous.escrow_proxy_url;
+        }
+        if session.ckdatabasews_url.is_none() {
+            session.ckdatabasews_url = previous.ckdatabasews_url;
+        }
+    }
     snapshot.account = Some(account.clone());
     snapshot.session = Some(session.clone());
     vault::save(paths, config, &snapshot)?;

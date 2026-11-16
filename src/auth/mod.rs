@@ -90,13 +90,6 @@ async fn login_async(config: &Config, account: &str, code: Option<String>) -> Re
     let delegates = icloud::login_delegates(&identity, account, &fields.adsid, &pet).await?;
     let services =
         icloud::account_settings(&identity, &delegates.dsid, &delegates.mme_auth_token).await?;
-    if services.escrow_proxy_url.is_none() {
-        return Err(Error::Message(format!(
-            "account settings has no escrow proxy; services: {}",
-            services.names.join(", ")
-        )));
-    }
-
     Ok(Session {
         adsid: fields.adsid,
         dsid: delegates.dsid,

@@ -140,9 +140,20 @@ fn parse_delegates(value: &Value) -> Result<Delegates> {
         .ok_or_else(|| Error::Message("loginDelegates response has no tokens".into()))?;
 
     let mme_auth_token = token(tokens, "mmeAuthToken")?;
-    // Some accounts return no cloudKitToken from the mobileme delegate. Fall
-    // back to the mmeAuthToken; CloudKit bootstrap accepts it as Basic auth.
-    let cloudkit_token = token(tokens, "cloudKitToken").unwrap_or_else(|_| mme_auth_token.clone());
+    // The CloudKit delegate carries its own token; some accounts omit it from
+    // the mobileme delegate.
+    let cloudkit_token = dict
+        .get("delegates")
+        .and_then(Value::as_dictionary)
+        .and_then(|delegates| delegates.get("com.apple.Dataclass.CloudKit"))
+        .and_then(Value::as_dictionary)
+        .and_then(|delegate| delegate.get("service-data"))
+        .and_then(Value::as_dictionary)
+        .and_then(|data| data.get("tokens"))
+        .and_then(Value::as_dictionary)
+        .and_then(|tokens| token(tokens, "cloudKitToken").ok())
+        .or_else(|| token(tokens, "cloudKitToken").ok())
+        .unwrap_or_else(|| mme_auth_token.clone());
     Ok(Delegates {
         dsid,
         mme_auth_token,
