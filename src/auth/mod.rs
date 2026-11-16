@@ -30,6 +30,12 @@ async fn login_async(config: &Config, account: &str, code: Option<String>) -> Re
 
     let anisette = anisette::Anisette::new(&url);
     let mut identity = anisette.identity().await?;
+    // Account settings and CloudKit want the macOS profile; GSA, delegates and
+    // escrow want the Windows one. A single-backend server falls back.
+    let mac = anisette
+        .identity_for(Some("macos"))
+        .await
+        .unwrap_or_else(|_| identity.clone());
 
     let password = match std::env::var("APW_PASSWORD") {
         Ok(password) if !password.is_empty() => password,
@@ -89,7 +95,7 @@ async fn login_async(config: &Config, account: &str, code: Option<String>) -> Re
     })?;
     let delegates = icloud::login_delegates(&identity, account, &fields.adsid, &pet).await?;
     let services =
-        icloud::account_settings(&identity, &delegates.dsid, &delegates.mme_auth_token).await?;
+        icloud::account_settings(&mac, &delegates.dsid, &delegates.mme_auth_token).await?;
     Ok(Session {
         adsid: fields.adsid,
         dsid: delegates.dsid,

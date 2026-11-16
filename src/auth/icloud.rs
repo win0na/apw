@@ -88,7 +88,13 @@ pub async fn account_settings(
         .post(format!("{}/setup/get_account_settings", setup_base()))
         .headers(base_headers(identity)?)
         .header("Authorization", format!("Basic {authorization}"))
-        .header("X-Mme-Client-Info", crate::auth::anisette::MAC_AUTHKIT)
+        .header(
+            "X-Mme-Client-Info",
+            crate::auth::anisette::with_service(
+                &identity.client_info,
+                crate::auth::anisette::AOSKIT_SERVICE,
+            ),
+        )
         .send()
         .await?;
 

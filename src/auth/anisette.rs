@@ -83,7 +83,16 @@ impl Anisette {
     }
 
     pub async fn identity(&self) -> Result<Identity> {
-        let headers = self.headers().await?;
+        self.identity_for(None).await
+    }
+
+    /// Fetch an identity from one backend (`?backend=macos|windows`) when the
+    /// server hosts more than one.
+    pub async fn identity_for(&self, backend: Option<&str>) -> Result<Identity> {
+        let query = backend
+            .map(|name| format!("?backend={name}"))
+            .unwrap_or_default();
+        let headers = self.headers(&query).await?;
 
         for required in ["X-Apple-I-MD", "X-Apple-I-MD-M"] {
             if !headers.contains_key(required) {
@@ -93,7 +102,7 @@ impl Anisette {
             }
         }
 
-        let info = self.client_info().await.unwrap_or_default();
+        let info = self.client_info(&query).await.unwrap_or_default();
         Ok(Identity {
             headers,
             client_info: info
@@ -107,10 +116,10 @@ impl Anisette {
         })
     }
 
-    async fn headers(&self) -> Result<BTreeMap<String, String>> {
+    async fn headers(&self, query: &str) -> Result<BTreeMap<String, String>> {
         let response = self
             .client
-            .get(format!("{}/", self.base))
+            .get(format!("{}/{query}", self.base))
             .send()
             .await?
             .error_for_status()?;
@@ -126,10 +135,10 @@ impl Anisette {
             .collect())
     }
 
-    async fn client_info(&self) -> Result<ClientInfo> {
+    async fn client_info(&self, query: &str) -> Result<ClientInfo> {
         let response = self
             .client
-            .get(format!("{}/v3/client_info", self.base))
+            .get(format!("{}/v3/client_info{query}", self.base))
             .send()
             .await?
             .error_for_status()?;

@@ -54,7 +54,11 @@ pub fn run(paths: &Paths, config: &mut Config, passcode: Option<String>, json: b
 
     let (peer, trust, sponsor) = block_on(async {
         let identity = Anisette::new(&anisette_url).identity().await?;
-        let gateway = Gateway::bootstrap(&session, &identity).await?;
+        let mac = Anisette::new(&anisette_url)
+            .identity_for(Some("macos"))
+            .await
+            .unwrap_or_else(|_| identity.clone());
+        let gateway = Gateway::bootstrap(&session, &mac).await?;
         let escrow = Escrow::new(
             &escrow_url,
             &account,
