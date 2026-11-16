@@ -231,7 +231,8 @@ pub struct Passkey {
 /// Fold `com.apple.password-manager` metadata records into the login they
 /// describe. The sidecar points at its login by record id, or by domain and
 /// username when it was written without a parent reference.
-pub fn merge_sidecars(logins: &mut [Entry], sidecars: Vec<Entry>) {
+pub fn merge_sidecars(logins: &mut [Entry], sidecars: Vec<Entry>) -> Vec<Entry> {
+    let mut unmatched = Vec::new();
     for sidecar in sidecars {
         let domain = sidecar.domain();
         let index = logins
@@ -247,6 +248,7 @@ pub fn merge_sidecars(logins: &mut [Entry], sidecars: Vec<Entry>) {
                 })
             });
         let Some(index) = index else {
+            unmatched.push(sidecar);
             continue;
         };
         let login = &mut logins[index];
@@ -264,6 +266,7 @@ pub fn merge_sidecars(logins: &mut [Entry], sidecars: Vec<Entry>) {
             login.username = sidecar.username;
         }
     }
+    unmatched
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

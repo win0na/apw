@@ -74,6 +74,9 @@ pub enum Command {
     /// List private and shared CloudKit zones.
     #[command(hide = true)]
     ProbeZones,
+    /// Inspect one group zone.
+    #[command(hide = true)]
+    ProbeGroup { zone: String },
     /// Count snapshot records by kind.
     #[command(hide = true)]
     ProbeStats,
@@ -161,6 +164,9 @@ fn execute(cli: Cli) -> Result<()> {
         Command::ProbeZone { zone } => commands::probe::zone(&paths, &mut config, &zone, cli.json),
         Command::ProbeTlks => commands::probe::tlks(&paths, &mut config, cli.json),
         Command::ProbeZones => commands::probe::zones(&paths, &mut config, cli.json),
+        Command::ProbeGroup { zone } => {
+            commands::probe::group(&paths, &mut config, &zone, cli.json)
+        }
         Command::ProbeStats => commands::probe::stats(&paths, &mut config, cli.json),
         Command::Pw { command } => match command {
             PwCommand::List {

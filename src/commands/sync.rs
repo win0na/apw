@@ -319,7 +319,19 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool) -> Result<()> {
         logins.push(entry);
     }
 
-    crate::model::merge_sidecars(&mut logins, sidecars);
+    let unmatched = crate::model::merge_sidecars(&mut logins, sidecars);
+    if std::env::var_os("APW_DEBUG").is_some() {
+        eprintln!("sync: {} sidecars without a login", unmatched.len());
+        for entry in unmatched.iter().take(12) {
+            eprintln!(
+                "sync: unmatched id={} domain={} title={:?} notes={}",
+                entry.id,
+                entry.domain(),
+                entry.title,
+                entry.notes.as_ref().map(String::len).unwrap_or(0)
+            );
+        }
+    }
 
     for data in &group_data {
         for entry in &data.entries {

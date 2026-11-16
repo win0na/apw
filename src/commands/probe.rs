@@ -278,7 +278,7 @@ pub fn zones(paths: &Paths, config: &mut Config, json: bool) -> Result<()> {
             let gateway = match crate::cloudkit::Gateway::bootstrap(
                 &session,
                 &mac,
-                crate::cloudkit::CONTAINER,
+                crate::cloudkit::SHARED_CONTAINER,
                 scope,
             )
             .await
@@ -335,6 +335,75 @@ pub fn zones(paths: &Paths, config: &mut Config, json: bool) -> Result<()> {
                 zone["change"]
             );
         }
+    }
+    Ok(())
+}
+
+/// Inspect one group zone: protection blobs and record inventory.
+pub fn group(paths: &Paths, config: &mut Config, zone: &str, json: bool) -> Result<()> {
+    let snapshot = vault::load(paths, config)?;
+    let session = snapshot
+        .session
+        .clone()
+        .ok_or_else(|| Error::Invalid("run `apw login` first".into()))?;
+    let url = config
+        .anisette_url()
+        .ok_or_else(|| Error::Invalid("set an anisette URL in the config".into()))?;
+
+    let report = block_on(async {
+        let identity = Anisette::new(&url).identity().await?;
+        let mac = Anisette::new(&url)
+            .identity_for(Some("macos"))
+            .await
+            .unwrap_or_else(|_| identity.clone());
+        let gateway = crate::cloudkit::Gateway::bootstrap(
+            &session,
+            &mac,
+            crate::cloudkit::SHARED_CONTAINER,
+            crate::cloudkit::Scope::Private,
+        )
+        .await?;
+        let owner = gateway.user_id().to_string();
+        let zone_info = gateway.zone_retrieve(zone, &owner).await?;
+
+        let mut records = Vec::new();
+        let mut token: Option<Vec<u8>> = None;
+        let mut status = 0;
+        let mut pages = 0;
+        loop {
+            let page = gateway
+                .record_sync(zone, Some(&owner), token.as_deref())
+                .await?;
+            status = status.max(page.status);
+            pages += 1;
+            records.extend(
+                page.records
+                    .iter()
+                    .map(|record| format!("{}/{}", record.name, record.record_type)),
+            );
+            if page.status != 1 || pages >= 5 {
+                break;
+            }
+            match page.token {
+                Some(next) if Some(&next) != token.as_ref() => token = Some(next),
+                _ => break,
+            }
+        }
+        Ok::<_, crate::error::Error>(serde_json::json!({
+            "zone": zone_info.name,
+            "owner": zone_info.owner,
+            "protection_bytes": zone_info.protection_info.as_ref().map(Vec::len),
+            "record_protection_bytes": zone_info.record_protection_info.as_ref().map(Vec::len),
+            "pages": pages,
+            "status": status,
+            "records": records,
+        }))
+    })?;
+
+    if output::use_json(json) {
+        output::print_json(&output::success(serde_json::json!([report])));
+    } else {
+        println!("{report}");
     }
     Ok(())
 }

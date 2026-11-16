@@ -82,9 +82,31 @@ async fn read_zone(
     let zone = gateway.zone_retrieve(zone_name, owner).await?;
     let records = records(gateway, zone_name, owner).await?;
 
-    let share = records
-        .iter()
-        .find(|record| record.name == "cloudkit.zoneshare")
+    if std::env::var_os("APW_DEBUG").is_some() {
+        let names: Vec<String> = records
+            .iter()
+            .map(|record| format!("{}/{}", record.name, record.record_type))
+            .collect();
+        eprintln!(
+            "groups: {} records {:?}",
+            records.len(),
+            &names[..names.len().min(12)]
+        );
+    }
+    let share_record = records.iter().find(|record| {
+        record.name == "cloudkit.zoneshare" || record.record_type == "cloudkit.share"
+    });
+    if std::env::var_os("APW_DEBUG").is_some() {
+        if let Some(record) = share_record {
+            eprintln!(
+                "groups: share record {} fields {:?} share_info {}",
+                record.name,
+                record.fields.keys().collect::<Vec<_>>(),
+                record.share_info.is_some()
+            );
+        }
+    }
+    let share = share_record
         .and_then(|record| record.share_info.as_ref())
         .ok_or_else(|| Error::Message("group zone has no share record".into()))?;
 
@@ -144,7 +166,7 @@ async fn read_zone(
         }
     }
 
-    crate::model::merge_sidecars(&mut entries, sidecars);
+    let _ = crate::model::merge_sidecars(&mut entries, sidecars);
 
     let name = records
         .iter()
