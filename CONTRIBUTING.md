@@ -34,6 +34,16 @@ cargo test
 
 All three must pass before a pull request.
 
+## Icon
+
+The icon is a Liquid Glass recipe. The PNGs and the `.icon` package are generated files, so edit `assets/icon/icon.json` or the SVGs in `assets/icon/src/` and run:
+
+```sh
+npx -y liquid-composer apply assets/icon/icon.json --out assets/icon/renders
+```
+
+Rendering needs Node 22.12 or later and Google Chrome. The binary needs neither. [Icon](docs/icon.md) covers the appearances, the Icon Composer package, and what the engine cannot match.
+
 ## Fixtures
 
 A fixture is the same JSON model as the vault:
@@ -91,6 +101,7 @@ apw otp get example.com
 | `src/vault/` | Snapshot load and save, fixture reader |
 | `src/totp.rs` | RFC 6238 |
 | `tests/` | CLI integration tests and fixtures |
+| `assets/icon/` | Icon recipe, SVG layers, renders, Icon Composer package |
 | `packaging/` | systemd units and package manifests |
 | `legacy/` | Deno macOS implementation, reference only |
 | `docs/` | User and design docs |

@@ -1,5 +1,8 @@
 <h1>
-  <img alt="apw" src="./assets/icon.png" width="70" valign="middle">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./assets/icon/renders/icon-512-dark.png">
+    <img alt="apw" src="./assets/icon/renders/icon-512.png" width="70" valign="middle">
+  </picture>
   &nbsp;apw
 </h1>
 
