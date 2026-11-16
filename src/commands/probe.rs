@@ -82,3 +82,110 @@ pub fn settings(paths: &Paths, config: &mut Config, json: bool) -> Result<()> {
     }
     Ok(())
 }
+
+pub fn zone(paths: &Paths, config: &mut Config, zone: &str, json: bool) -> Result<()> {
+    let snapshot = vault::load(paths, config)?;
+    let session = snapshot
+        .session
+        .clone()
+        .ok_or_else(|| Error::Invalid("run `apw login` first".into()))?;
+    let url = config
+        .anisette_url()
+        .ok_or_else(|| Error::Invalid("set an anisette URL in the config".into()))?;
+
+    let changes = block_on(async {
+        let identity = Anisette::new(&url).identity().await?;
+        let mac = Anisette::new(&url)
+            .identity_for(Some("macos"))
+            .await
+            .unwrap_or_else(|_| identity.clone());
+        let gateway = crate::cloudkit::Gateway::bootstrap(&session, &mac).await?;
+        let mut token: Option<Vec<u8>> = None;
+        let mut total = 0usize;
+        let mut pages = 0usize;
+        loop {
+            let page = gateway.record_sync(zone, token.as_deref()).await?;
+            total += page.records.len();
+            pages += 1;
+            eprintln!(
+                "page {pages}: {} records, status {}, token {:?}",
+                page.records.len(),
+                page.status,
+                page.token.as_ref().map(Vec::len)
+            );
+            if page.status == 1 {
+                match page.token {
+                    Some(next) if Some(&next) != token.as_ref() => token = Some(next),
+                    _ => break,
+                }
+            } else {
+                break;
+            }
+            if pages >= 5 {
+                break;
+            }
+        }
+        Ok::<_, crate::error::Error>((total, pages))
+    })?;
+    let (total, pages) = changes;
+
+    if output::use_json(json) {
+        output::print_json(&output::success(serde_json::json!([{
+            "zone": zone,
+            "records": total,
+            "pages": pages,
+        }])));
+    } else {
+        println!("{zone}: {total} records over {pages} pages");
+    }
+    Ok(())
+}
+
+pub fn tlks(paths: &Paths, config: &mut Config, json: bool) -> Result<()> {
+    let snapshot = vault::load(paths, config)?;
+    let session = snapshot
+        .session
+        .clone()
+        .ok_or_else(|| Error::Invalid("run `apw login` first".into()))?;
+    let peer = snapshot
+        .peer
+        .clone()
+        .ok_or_else(|| Error::Invalid("run `apw join` first".into()))?;
+    let url = config
+        .anisette_url()
+        .ok_or_else(|| Error::Invalid("set an anisette URL in the config".into()))?;
+
+    let results = block_on(async {
+        let identity = Anisette::new(&url).identity().await?;
+        let mac = Anisette::new(&url)
+            .identity_for(Some("macos"))
+            .await
+            .unwrap_or_else(|_| identity.clone());
+        let gateway = crate::cloudkit::Gateway::bootstrap(&session, &mac).await?;
+        let mut out = Vec::new();
+        for name in [
+            "fetchRecoverableTlkshares",
+            "fetchRecoverableTLKShares",
+            "fetchRecoverableTlkShares",
+        ] {
+            let mut request = crate::wire::Writer::new();
+            request.string(1, &peer.id);
+            match gateway.invoke(name, request.as_slice()).await {
+                Ok(result) => out.push(serde_json::json!({"name": name, "bytes": result.len()})),
+                Err(error) => {
+                    out.push(serde_json::json!({"name": name, "error": error.to_string()}))
+                }
+            }
+        }
+        Ok::<_, crate::error::Error>(out)
+    })?;
+
+    if output::use_json(json) {
+        output::print_json(&output::success(serde_json::json!([results])));
+    } else {
+        for result in results {
+            println!("{result}");
+        }
+    }
+    Ok(())
+}

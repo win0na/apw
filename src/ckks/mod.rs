@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 
 use aes_gcm::aead::{Aead, Payload};
-use aes_gcm::{Aes256Gcm, KeyInit as AeadKeyInit, Nonce};
+use aes_gcm::KeyInit as AeadKeyInit;
 use aes_siv::siv::Aes256Siv;
 use base64::Engine;
 use p384::ecdh::diffie_hellman;
@@ -41,18 +41,28 @@ pub fn unwrap_tlkshares(
     encryption: &SecretKey,
 ) -> BTreeMap<String, Vec<u8>> {
     let mut out = BTreeMap::new();
+    let (mut matched, mut archive_fail, mut ecies_fail, mut parse_fail) = (0, 0, 0, 0);
     for record in records {
         if record.text("receiver") != Some(peer_id) {
             continue;
         }
+        matched += 1;
         let Some(wrapped) = record.text("wrappedkey") else {
             continue;
         };
         let Ok(wrapped) = base64_decode(wrapped) else {
             continue;
         };
-        let Ok(fields) = expand_archive(&wrapped) else {
-            continue;
+        let fields = match expand_archive(&wrapped) {
+            Ok(fields) => fields,
+            Err(error) => {
+                if std::env::var_os("APW_DEBUG").is_some() && archive_fail == 0 {
+                    let _ = std::fs::write("/tmp/opencode/wrappedkey.bin", &wrapped);
+                    eprintln!("ckks: archive error: {error}");
+                }
+                archive_fail += 1;
+                continue;
+            }
         };
         let (Some(ephemeral), Some(ciphertext), Some(tag)) = (
             fields.get("SFEphemeralSenderPublicKeyExternaRepresentation"),
@@ -68,11 +78,21 @@ pub fn unwrap_tlkshares(
             ciphertext.as_slice()
         };
         let Ok(plaintext) = ecies_decrypt(encryption, ephemeral, ciphertext, tag) else {
+            ecies_fail += 1;
             continue;
         };
-        if let Ok((uuid, key)) = parse_serialized_key(&plaintext) {
-            out.insert(uuid, key);
+        match parse_serialized_key(&plaintext) {
+            Ok((uuid, key)) => {
+                out.insert(uuid, key);
+            }
+            Err(_) => parse_fail += 1,
         }
+    }
+    if std::env::var_os("APW_DEBUG").is_some() {
+        eprintln!(
+            "ckks: {peer_id} matched {matched}, archive {archive_fail}, ecies {ecies_fail}, parse {parse_fail}, ok {}",
+            out.len()
+        );
     }
     out
 }
@@ -386,13 +406,17 @@ fn ecies_decrypt(
     let shared = diffie_hellman(key.to_nonzero_scalar(), public.as_affine());
     let secret = shared.raw_secret_bytes();
     let derived = x963_kdf(secret.as_slice(), ephemeral, 48);
-    let cipher = Aes256Gcm::new_from_slice(&derived[..32])
+    use aes_gcm::aead::consts::U16;
+    use aes_gcm::aead::generic_array::GenericArray;
+
+    type Aes256Gcm16 = aes_gcm::AesGcm<aes::Aes256, U16>;
+    let cipher = Aes256Gcm16::new_from_slice(&derived[..32])
         .map_err(|_| Error::Message("invalid ECIES key".into()))?;
     let mut combined = ciphertext.to_vec();
     combined.extend_from_slice(tag);
     cipher
         .decrypt(
-            Nonce::from_slice(&derived[32..48]),
+            GenericArray::<u8, U16>::from_slice(&derived[32..48]),
             Payload {
                 msg: &combined,
                 aad: &[],
@@ -443,12 +467,22 @@ fn expand_archive(data: &[u8]) -> Result<BTreeMap<String, Vec<u8>>> {
         .get("$objects")
         .and_then(Value::as_array)
         .ok_or_else(|| Error::Message("archive has no objects".into()))?;
-    let root = dict
+    let top = dict
         .get("$top")
         .and_then(Value::as_dictionary)
-        .and_then(|top| top.get("root"))
-        .ok_or_else(|| Error::Message("archive has no root".into()))?;
-    let root = resolve(objects, root)?;
+        .ok_or_else(|| Error::Message("archive has no top".into()))?;
+
+    if top.get("root").is_none() {
+        let mut out = BTreeMap::new();
+        for (name, value) in top {
+            if let Some(bytes) = archive_bytes(resolve(objects, value)?) {
+                out.insert(name.clone(), bytes);
+            }
+        }
+        return Ok(out);
+    }
+
+    let root = resolve(objects, top.get("root").expect("checked"))?;
     let root = root
         .as_dictionary()
         .ok_or_else(|| Error::Message("archive root is not a dictionary".into()))?;

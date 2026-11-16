@@ -82,7 +82,11 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool) -> Result<()> {
 
     let (tlkshares, synckeys, items) = block_on(async {
         let identity = Anisette::new(&anisette_url).identity().await?;
-        let gateway = Gateway::bootstrap(&session, &identity).await?;
+        let mac = Anisette::new(&anisette_url)
+            .identity_for(Some("macos"))
+            .await
+            .unwrap_or_else(|_| identity.clone());
+        let gateway = Gateway::bootstrap(&session, &mac).await?;
 
         let mut tlkshares = Vec::new();
         let mut synckeys = Vec::new();
@@ -93,15 +97,29 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool) -> Result<()> {
             peers.push(sponsor.clone());
         }
         for peer in peers {
-            let response = octagon::tlk_shares(&gateway, &peer).await?;
-            let (mut shares, mut keys) = ckks::shares_from_response(&response)?;
-            tlkshares.append(&mut shares);
-            synckeys.append(&mut keys);
+            if std::env::var_os("APW_DEBUG").is_some() {
+                eprintln!("sync: tlk shares for {peer}");
+            }
+            match octagon::tlk_shares(&gateway, &peer).await {
+                Ok(response) => {
+                    let (mut shares, mut keys) = ckks::shares_from_response(&response)?;
+                    tlkshares.append(&mut shares);
+                    synckeys.append(&mut keys);
+                }
+                Err(error) => {
+                    if std::env::var_os("APW_DEBUG").is_some() {
+                        eprintln!("sync: tlk shares for {peer} failed: {error}");
+                    }
+                }
+            }
         }
 
         for zone in ["Passwords", "Manatee"] {
             let mut token: Option<Vec<u8>> = None;
             loop {
+                if std::env::var_os("APW_DEBUG").is_some() {
+                    eprintln!("sync: zone {zone} token {:?}", token.as_ref().map(Vec::len));
+                }
                 let page = match gateway.record_sync(zone, token.as_deref()).await {
                     Ok(page) => page,
                     Err(error) if error.to_string().to_lowercase().contains("zone") => break,
@@ -128,9 +146,65 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool) -> Result<()> {
         Ok::<_, Error>((tlkshares, synckeys, items))
     })?;
 
-    let tlks = ckks::unwrap_tlkshares(&tlkshares, &peer_state.id, &encryption.encryption);
+    if std::env::var_os("APW_DEBUG").is_some() {
+        let receivers: Vec<&str> = tlkshares
+            .iter()
+            .filter_map(|record| record.text("receiver"))
+            .collect();
+        eprintln!(
+            "sync: peer {} receivers {:?}",
+            peer_state.id,
+            &receivers[..receivers.len().min(4)]
+        );
+        if let Some(record) = tlkshares.first() {
+            eprintln!(
+                "sync: tlkshare fields {:?}",
+                record.fields.keys().collect::<Vec<_>>()
+            );
+        }
+        let mine = tlkshares
+            .iter()
+            .filter(|record| record.text("receiver") == Some(peer_state.id.as_str()))
+            .count();
+        let sponsor = peer_state
+            .sponsor_id
+            .as_deref()
+            .map(|id| {
+                tlkshares
+                    .iter()
+                    .filter(|record| record.text("receiver") == Some(id))
+                    .count()
+            })
+            .unwrap_or(0);
+        eprintln!("sync: shares for me {mine}, sponsor {sponsor}");
+    }
+    let mut tlks = ckks::unwrap_tlkshares(&tlkshares, &peer_state.id, &encryption.encryption);
+    if let (Some(sponsor_id), Some(sponsor_key)) =
+        (&peer_state.sponsor_id, &peer_state.sponsor_encryption_key)
+    {
+        if let Ok(sponsor) =
+            PeerKeys::from_x963(&decode(&peer_state.signing_key)?, &decode(sponsor_key)?)
+        {
+            tlks.extend(ckks::unwrap_tlkshares(
+                &tlkshares,
+                sponsor_id,
+                &sponsor.encryption,
+            ));
+        }
+    }
     let class_keys = ckks::unwrap_class_keys(&synckeys, &tlks);
     let decrypted = ckks::decrypt_items(&items, &class_keys);
+    if std::env::var_os("APW_DEBUG").is_some() {
+        eprintln!(
+            "sync: {} tlk shares, {} synckeys, {} items, {} tlks, {} class keys, {} decrypted",
+            tlkshares.len(),
+            synckeys.len(),
+            items.len(),
+            tlks.len(),
+            class_keys.len(),
+            decrypted.len()
+        );
+    }
     let mut entries: Vec<Entry> = decrypted
         .iter()
         .filter_map(|(id, value)| ckks::entry_from_plist(id, value))

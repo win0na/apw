@@ -170,7 +170,7 @@ pub async fn tlk_shares(gateway: &Gateway, peer_id: &str) -> Result<Vec<u8>> {
     let mut request = Writer::new();
     request.string(1, peer_id);
     gateway
-        .invoke("fetchRecoverableTlkshares", request.as_slice())
+        .invoke("fetchRecoverableTLKShares", request.as_slice())
         .await
 }
 

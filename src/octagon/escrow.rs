@@ -6,7 +6,7 @@
 
 use aes::Aes128;
 use aes_gcm::aead::{Aead, Payload};
-use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
+use aes_gcm::{Aes256Gcm, KeyInit};
 use base64::Engine;
 use cbc::cipher::block_padding::Pkcs7;
 use cbc::cipher::{BlockDecryptMut, KeyIvInit};
@@ -520,20 +520,51 @@ fn hkdf(entropy: &[u8], adsid: &str, info: &[u8], length: usize) -> Result<Vec<u
 }
 
 fn aes_gcm_decrypt(key: &[u8], iv: &[u8], ct: &[u8], tag: &[u8]) -> Result<Vec<u8>> {
-    let cipher = Aes256Gcm::new_from_slice(key)
-        .map_err(|_| Error::Message("invalid AES-256-GCM key".into()))?;
-    let nonce = Nonce::from_slice(iv);
+    use aes_gcm::aead::consts::{U12, U16, U32};
+    use aes_gcm::aead::generic_array::GenericArray;
+
     let mut combined = ct.to_vec();
     combined.extend_from_slice(tag);
-    cipher
-        .decrypt(
-            nonce,
-            Payload {
-                msg: &combined,
-                aad: &[],
-            },
-        )
-        .map_err(|_| Error::Message("bottle decrypt failed: wrong entropy or account".into()))
+    let payload = Payload {
+        msg: &combined,
+        aad: &[],
+    };
+
+    // Apple uses both 12-byte and 16-byte GCM nonces.
+    match iv.len() {
+        12 => {
+            let cipher = Aes256Gcm::new_from_slice(key)
+                .map_err(|_| Error::Message("invalid AES-256-GCM key".into()))?;
+            cipher
+                .decrypt(GenericArray::<u8, U12>::from_slice(iv), payload)
+                .map_err(|_| {
+                    Error::Message("bottle decrypt failed: wrong entropy or account".into())
+                })
+        }
+        16 => {
+            type Aes256Gcm16 = aes_gcm::AesGcm<aes::Aes256, U16>;
+            let cipher = Aes256Gcm16::new_from_slice(key)
+                .map_err(|_| Error::Message("invalid AES-256-GCM key".into()))?;
+            cipher
+                .decrypt(GenericArray::<u8, U16>::from_slice(iv), payload)
+                .map_err(|_| {
+                    Error::Message("bottle decrypt failed: wrong entropy or account".into())
+                })
+        }
+        32 => {
+            type Aes256Gcm32 = aes_gcm::AesGcm<aes::Aes256, U32>;
+            let cipher = Aes256Gcm32::new_from_slice(key)
+                .map_err(|_| Error::Message("invalid AES-256-GCM key".into()))?;
+            cipher
+                .decrypt(GenericArray::<u8, U32>::from_slice(iv), payload)
+                .map_err(|_| {
+                    Error::Message("bottle decrypt failed: wrong entropy or account".into())
+                })
+        }
+        other => Err(Error::Message(format!(
+            "unsupported AES-GCM nonce length {other}"
+        ))),
+    }
 }
 
 fn aes256_cbc_decrypt(key: &[u8], iv: &[u8], ct: &[u8]) -> Result<Vec<u8>> {
@@ -682,6 +713,7 @@ fn base64_decode(value: &str) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aes_gcm::Nonce;
     use crate::wire::Writer;
 
     #[test]

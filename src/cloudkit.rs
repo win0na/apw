@@ -293,8 +293,10 @@ impl Gateway {
         let status = response.status();
         let body = response.bytes().await?.to_vec();
         if !status.is_success() {
+            let decoded = wire::maybe_gunzip(body.clone()).unwrap_or(body);
+            let preview = String::from_utf8_lossy(&decoded[..decoded.len().min(400)]);
             return Err(Error::Message(format!(
-                "CloudKit gateway returned {status}"
+                "CloudKit gateway returned {status}: {preview}"
             )));
         }
 
@@ -322,6 +324,7 @@ impl Gateway {
         header.string(18, "5.0");
         header.uint64(19, 1);
         header.string(21, "apw");
+        header.string(22, &self.device.name);
         header.uint64(23, 1);
         header.uint64(25, 1);
         header.uint64(29, 0);
@@ -461,7 +464,23 @@ fn parse_record_field(mut reader: Reader<'_>) -> Result<(String, FieldValue)> {
     let mut value = FieldValue::Bytes(Vec::new());
     while let Some(field) = reader.next()? {
         match field.number {
-            1 => name = field.string()?.to_string(),
+            1 => {
+                // The name is normally a string, but some responses wrap it in
+                // a one-field message.
+                name = match field.string() {
+                    Ok(text) if !text.starts_with('\n') => text.to_string(),
+                    _ => {
+                        let mut inner = field.message()?;
+                        let mut text = String::new();
+                        while let Some(item) = inner.next()? {
+                            if item.number == 1 {
+                                text = item.string()?.to_string();
+                            }
+                        }
+                        text
+                    }
+                };
+            }
             2 => value = parse_value(field.message()?)?,
             _ => {}
         }

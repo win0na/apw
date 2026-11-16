@@ -65,6 +65,12 @@ pub enum Command {
     /// Probe the account service map.
     #[command(hide = true)]
     ProbeSettings,
+    /// Probe one CloudKit zone.
+    #[command(hide = true)]
+    ProbeZone { zone: String },
+    /// Probe recoverable TLK share function names.
+    #[command(hide = true)]
+    ProbeTlks,
     /// Read logins.
     Pw {
         #[command(subcommand)]
@@ -138,6 +144,8 @@ fn execute(cli: Cli) -> Result<()> {
         Command::Status => commands::status::run(&paths, &config, cli.json),
         Command::ProbeEscrow => commands::probe::escrow(&paths, &mut config, cli.json),
         Command::ProbeSettings => commands::probe::settings(&paths, &mut config, cli.json),
+        Command::ProbeZone { zone } => commands::probe::zone(&paths, &mut config, &zone, cli.json),
+        Command::ProbeTlks => commands::probe::tlks(&paths, &mut config, cli.json),
         Command::Pw { command } => match command {
             PwCommand::List { query } => {
                 commands::pw::list(&paths, &mut config, query.as_deref(), cli.json)
