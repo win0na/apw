@@ -64,7 +64,8 @@ pub fn run(
     let mut state = config::load_state(paths)?;
     state.account = Some(account.clone());
     state.source = Some("icloud".into());
-    state.entries = snapshot.entries.len() as u32;
+    state.entries = snapshot.login_count() as u32;
+    state.passkeys = snapshot.passkey_count() as u32;
     state.groups = snapshot.groups.len() as u32;
     state.last_status = Some("logged-in".into());
     state.failures = 0;

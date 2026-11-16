@@ -129,31 +129,48 @@ pub fn decrypt_items(
     class_keys: &BTreeMap<String, Vec<u8>>,
 ) -> Vec<(String, Value)> {
     let mut out = Vec::new();
+    let (mut no_parent, mut no_key, mut no_data, mut no_wrapped, mut bad_key, mut bad_plain) =
+        (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
     for record in records {
         let Some(parent) = record.reference("parentkeyref") else {
+            no_parent += 1;
             continue;
         };
         let Some(class_key) = class_keys.get(parent) else {
+            no_key += 1;
             continue;
         };
         let Some(data) = record.bytes("data") else {
+            no_data += 1;
             continue;
         };
         let Some(wrapped) = record.text("wrappedkey") else {
+            no_wrapped += 1;
             continue;
         };
         let Ok(wrapped) = base64_decode(wrapped) else {
+            bad_key += 1;
             continue;
         };
         let Ok(item_key) = siv_unwrap(class_key, &wrapped) else {
+            bad_key += 1;
             continue;
         };
         let headers = item_headers(record);
-        if let Ok(plaintext) = decrypt_item(&item_key, data, &headers) {
-            if let Ok(value) = plist::from_bytes::<Value>(&plaintext) {
-                out.push((record.name.clone(), value));
-            }
+        match decrypt_item(&item_key, data, &headers)
+            .ok()
+            .and_then(|plaintext| plist::from_bytes::<Value>(&plaintext).ok())
+        {
+            Some(value) => out.push((record.name.clone(), value)),
+            None => bad_plain += 1,
         }
+    }
+    if std::env::var_os("APW_DEBUG").is_some() {
+        eprintln!(
+            "ckks: items {} ok {}, no-parent {no_parent}, no-class-key {no_key}, no-data {no_data}, no-wrapped {no_wrapped}, bad-key {bad_key}, bad-plain {bad_plain}",
+            records.len(),
+            out.len()
+        );
     }
     out
 }
@@ -266,6 +283,7 @@ pub fn entry_from_plist(record_name: &str, value: &Value) -> Option<Entry> {
     Some(Entry {
         id: record_name.to_string(),
         kind,
+        agrp: Some(agrp),
         title,
         url,
         sites,

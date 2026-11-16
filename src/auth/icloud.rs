@@ -207,6 +207,21 @@ fn parse_webservices(value: &Value) -> Webservices {
                 continue;
             };
             let lower = name.to_ascii_lowercase();
+            if std::env::var_os("APW_DEBUG").is_some() && lower.contains("keychainsync") {
+                eprintln!(
+                    "keychainsync keys: {:?}",
+                    service.keys().collect::<Vec<_>>()
+                );
+                for (key, value) in service {
+                    let key_lower = key.to_ascii_lowercase();
+                    if key_lower.contains("group")
+                        || key_lower.contains("zone")
+                        || key_lower.contains("share")
+                    {
+                        eprintln!("  {key}: {value:?}");
+                    }
+                }
+            }
             let escrow = lower.contains("keychainsync") || lower.contains("escrow");
             let url = if escrow {
                 service

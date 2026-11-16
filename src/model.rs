@@ -69,6 +69,21 @@ impl Vault {
     fn version_default() -> u32 {
         1
     }
+
+    /// Passwords the user can read, excluding passkeys and key material.
+    pub fn login_count(&self) -> usize {
+        self.entries
+            .iter()
+            .filter(|entry| entry.kind == EntryKind::Login)
+            .count()
+    }
+
+    pub fn passkey_count(&self) -> usize {
+        self.entries
+            .iter()
+            .filter(|entry| entry.kind == EntryKind::Passkey)
+            .count()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -93,6 +108,9 @@ pub struct Entry {
     pub id: String,
     #[serde(default)]
     pub kind: EntryKind,
+    /// The keychain access group the record came from.
+    #[serde(default)]
+    pub agrp: Option<String>,
     #[serde(default)]
     pub title: Option<String>,
     #[serde(default)]

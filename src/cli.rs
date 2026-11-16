@@ -71,6 +71,9 @@ pub enum Command {
     /// Probe recoverable TLK share function names.
     #[command(hide = true)]
     ProbeTlks,
+    /// Count snapshot records by kind.
+    #[command(hide = true)]
+    ProbeStats,
     /// Read logins.
     Pw {
         #[command(subcommand)]
@@ -146,6 +149,7 @@ fn execute(cli: Cli) -> Result<()> {
         Command::ProbeSettings => commands::probe::settings(&paths, &mut config, cli.json),
         Command::ProbeZone { zone } => commands::probe::zone(&paths, &mut config, &zone, cli.json),
         Command::ProbeTlks => commands::probe::tlks(&paths, &mut config, cli.json),
+        Command::ProbeStats => commands::probe::stats(&paths, &mut config, cli.json),
         Command::Pw { command } => match command {
             PwCommand::List { query } => {
                 commands::pw::list(&paths, &mut config, query.as_deref(), cli.json)

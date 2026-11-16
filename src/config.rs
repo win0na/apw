@@ -56,6 +56,8 @@ pub struct State {
     #[serde(default)]
     pub entries: u32,
     #[serde(default)]
+    pub passkeys: u32,
+    #[serde(default)]
     pub groups: u32,
     #[serde(default)]
     pub failures: u32,

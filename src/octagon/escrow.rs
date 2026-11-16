@@ -713,8 +713,8 @@ fn base64_decode(value: &str) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aes_gcm::Nonce;
     use crate::wire::Writer;
+    use aes_gcm::Nonce;
 
     #[test]
     fn pack_unpack_round_trip() {

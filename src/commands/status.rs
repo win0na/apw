@@ -19,6 +19,7 @@ pub fn run(paths: &Paths, config: &Config, json: bool) -> Result<()> {
         "account": state.account,
         "source": state.source,
         "entries": state.entries,
+        "passkeys": state.passkeys,
         "groups": state.groups,
         "last_sync": state.last_sync,
         "snapshot": paths.snapshot_file,
@@ -42,6 +43,7 @@ pub fn run(paths: &Paths, config: &Config, json: bool) -> Result<()> {
             result["source"].as_str().unwrap_or("-").to_string(),
         ),
         ("entries", result["entries"].to_string()),
+        ("passkeys", result["passkeys"].to_string()),
         ("groups", result["groups"].to_string()),
         (
             "last sync",

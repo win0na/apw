@@ -189,3 +189,51 @@ pub fn tlks(paths: &Paths, config: &mut Config, json: bool) -> Result<()> {
     }
     Ok(())
 }
+
+/// Count what the snapshot actually holds, split by access group.
+pub fn stats(paths: &Paths, config: &mut Config, json: bool) -> Result<()> {
+    let snapshot = vault::load(paths, config)?;
+    let mut groups: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for entry in &snapshot.entries {
+        let agrp = entry.agrp.clone().unwrap_or_else(|| "<none>".into());
+        *groups.entry(agrp).or_default() += 1;
+    }
+
+    let mut unique: std::collections::BTreeSet<(String, String)> =
+        std::collections::BTreeSet::new();
+    let mut duplicates = 0usize;
+    for entry in snapshot
+        .entries
+        .iter()
+        .filter(|entry| entry.kind == crate::model::EntryKind::Login)
+    {
+        let key = (
+            entry.domain().to_lowercase(),
+            entry.username.clone().unwrap_or_default().to_lowercase(),
+        );
+        if !unique.insert(key) {
+            duplicates += 1;
+        }
+    }
+
+    if output::use_json(json) {
+        output::print_json(&output::success(serde_json::json!([{
+            "total": snapshot.entries.len(),
+            "logins": snapshot.login_count(),
+            "passkeys": snapshot.passkey_count(),
+            "groups": groups,
+            "unique_logins": unique.len(),
+            "duplicate_rows": duplicates,
+        }])));
+    } else {
+        println!("total entries: {}", snapshot.entries.len());
+        println!("logins: {}", snapshot.login_count());
+        println!("passkeys: {}", snapshot.passkey_count());
+        for (agrp, count) in &groups {
+            println!("  {agrp}: {count}");
+        }
+        println!("unique logins: {}", unique.len());
+        println!("duplicate rows: {duplicates}");
+    }
+    Ok(())
+}
