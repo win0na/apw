@@ -81,19 +81,37 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool) -> Result<()> {
         &decode(&peer_state.encryption_key)?,
     )?;
 
-    let (tlkshares, synckeys, items) = block_on(async {
+    let (tlkshares, synckeys, items, session) = block_on(async {
+        let mut session = session;
         let identity = Anisette::new(&anisette_url).identity().await?;
         let mac = Anisette::new(&anisette_url)
             .identity_for(Some("macos"))
             .await
             .unwrap_or_else(|_| identity.clone());
-        let gateway = Gateway::bootstrap(
+        let gateway = match Gateway::bootstrap(
             &session,
             &mac,
             crate::cloudkit::CONTAINER,
             crate::cloudkit::Scope::Private,
         )
-        .await?;
+        .await
+        {
+            Ok(gateway) => gateway,
+            Err(error) if crate::auth::is_auth_error(&error) => {
+                if std::env::var_os("APW_DEBUG").is_some() {
+                    eprintln!("sync: session rejected, refreshing from stored GSA material");
+                }
+                session = crate::auth::refresh_async(config, &session).await?;
+                Gateway::bootstrap(
+                    &session,
+                    &mac,
+                    crate::cloudkit::CONTAINER,
+                    crate::cloudkit::Scope::Private,
+                )
+                .await?
+            }
+            Err(error) => return Err(error),
+        };
 
         let mut tlkshares = Vec::new();
         let mut synckeys = Vec::new();
@@ -150,8 +168,9 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool) -> Result<()> {
                 }
             }
         }
-        Ok::<_, Error>((tlkshares, synckeys, items))
+        Ok::<_, Error>((tlkshares, synckeys, items, session))
     })?;
+    snapshot.session = Some(session.clone());
 
     if std::env::var_os("APW_DEBUG").is_some() {
         let receivers: Vec<&str> = tlkshares

@@ -291,6 +291,16 @@ pub struct Group {
     pub shared: bool,
 }
 
+/// The GSA session material that can mint a fresh PET without the password.
+/// `sk` and `c` are base64 because the snapshot is JSON.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GsaSession {
+    pub adsid: String,
+    pub idms_token: String,
+    pub sk: String,
+    pub c: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
     pub adsid: String,
@@ -302,5 +312,7 @@ pub struct Session {
     pub ckdatabasews_url: Option<String>,
     #[serde(default)]
     pub escrow_proxy_url: Option<String>,
+    #[serde(default)]
+    pub gsa: Option<GsaSession>,
     pub logged_in_at: chrono::DateTime<chrono::Utc>,
 }

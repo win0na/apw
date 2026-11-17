@@ -71,6 +71,9 @@ pub enum Command {
     /// Probe recoverable TLK share function names.
     #[command(hide = true)]
     ProbeTlks,
+    /// Renew the session from the stored GSA material.
+    #[command(hide = true)]
+    ProbeRefresh,
     /// List private and shared CloudKit zones.
     #[command(hide = true)]
     ProbeZones,
@@ -163,6 +166,7 @@ fn execute(cli: Cli) -> Result<()> {
         Command::ProbeSettings => commands::probe::settings(&paths, &mut config, cli.json),
         Command::ProbeZone { zone } => commands::probe::zone(&paths, &mut config, &zone, cli.json),
         Command::ProbeTlks => commands::probe::tlks(&paths, &mut config, cli.json),
+        Command::ProbeRefresh => commands::probe::refresh(&paths, &mut config, cli.json),
         Command::ProbeZones => commands::probe::zones(&paths, &mut config, cli.json),
         Command::ProbeGroup { zone } => {
             commands::probe::group(&paths, &mut config, &zone, cli.json)
