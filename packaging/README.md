@@ -27,11 +27,13 @@ nix build
 
 ## Notes
 
-- The package is published on the AUR as `apw-cli`, version 0.1.5-1. The binary
+- The package is published on the AUR as `apw-cli`, version 0.1.5-2. The binary
   is still `/usr/bin/apw`; the recipe declares `conflicts=('apw')` because an
   unrelated wrapper already owns that path.
 - On a release, run `updpkgsums` and regenerate `.SRCINFO` with
   `makepkg --printsrcinfo`, then push both to
   `ssh://aur@aur.archlinux.org/apw-cli.git`.
-- The AUR `check()` runs the test suite with `--offline`; it needs no network.
+- Arch's `LDFLAGS` break the aws-lc static link, so `build()` and `check()`
+  clear them for cargo. The tests are not run offline: `build()` does not fetch
+  dev-dependencies.
 - `flake.nix` pins `nixos-unstable` and has no `flake.lock` committed.
