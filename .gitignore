@@ -22,3 +22,6 @@ apw
 
 # Deepwork
 .slim/deepwork/
+
+# Serena tool state
+.serena/

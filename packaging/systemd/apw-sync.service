@@ -1,6 +1,6 @@
 [Unit]
 Description=Sync the apw password snapshot
-Documentation=https://github.com/bendews/apw
+Documentation=https://github.com/win0na/apw
 
 [Service]
 Type=oneshot

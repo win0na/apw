@@ -1,0 +1,35 @@
+# Maintainer: win0na <winona@winneon.moe>
+pkgname=apw
+pkgver=2.0.0
+pkgrel=1
+pkgdesc='Read Apple Passwords on Linux'
+arch=('x86_64' 'aarch64')
+url='https://github.com/win0na/apw'
+license=('GPL-3.0-only')
+depends=('gcc-libs' 'glibc')
+makedepends=('cargo' 'rust')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
+# Replace SKIP with the sha256 of the release tarball before submitting to the AUR:
+#   updpkgsums
+sha256sums=('SKIP')
+
+build() {
+  cd "$pkgname-$pkgver"
+  # No --frozen: the crates are not vendored, so cargo fetches them here.
+  cargo build --release --locked
+}
+
+check() {
+  cd "$pkgname-$pkgver"
+  # build() has already populated the cargo cache.
+  cargo test --release --locked --offline
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+  install -Dm755 "target/release/$pkgname" "$pkgdir/usr/bin/$pkgname"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+  install -d "$pkgdir/usr/share/doc/$pkgname/docs"
+  install -m644 docs/*.md "$pkgdir/usr/share/doc/$pkgname/docs/"
+}

@@ -104,7 +104,7 @@ Apple's iCloud terms prohibit automated access. `apw` stays polite: paced syncs,
 | `sync` from iCloud | Works; 383 items, 370 logins, 33 passkeys, 47 codes |
 | Shared groups | Read path implemented; the test account has no shared items |
 | Passkeys, notes, cards | Read and listed |
-| Packaging: AUR, .deb, Nix | Not started |
+| Packaging: tarball, .deb, AUR, Nix | Recipes in `packaging/`; not yet published |
 
 The Deno implementation for macOS stays under `legacy/` for reference. It is not built or supported.
 
