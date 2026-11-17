@@ -4,8 +4,8 @@ Four artifacts, all built from a release binary.
 
 | Artifact | Source | Output |
 | --- | --- | --- |
-| Tarball | `packaging/tarball.sh` | `dist/apw-2.0.0-<host-target>.tar.gz` |
-| Debian package | `packaging/debian/build.sh` | `dist/apw_2.0.0_<arch>.deb` |
+| Tarball | `packaging/tarball.sh` | `dist/apw-0.1.2-<host-target>.tar.gz` |
+| Debian package | `packaging/debian/build.sh` | `dist/apw_0.1.2_<arch>.deb` |
 | AUR | `packaging/aur/PKGBUILD` | `makepkg -si` output |
 | Nix flake | `flake.nix` | `nix build` output |
 
@@ -31,5 +31,5 @@ nix build
   release checksum (`updpkgsums`) before submitting to the AUR.
 - The AUR `check()` runs the test suite with `--offline`; it needs no network.
 - `flake.nix` pins `nixos-unstable` and has no `flake.lock` committed.
-- The AUR source points at the `v2.0.0` tag, which must exist on the remote
+- The AUR source points at the `v0.1.2` tag, which must exist on the remote
   before `makepkg` can fetch it.

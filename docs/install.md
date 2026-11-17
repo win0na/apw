@@ -50,18 +50,18 @@ cargo build --release
 install -m755 target/release/apw ~/.local/bin/apw
 ```
 
-`apw --version` prints `2.0.0`.
+`apw --version` prints `0.1.2`.
 
 Prebuilt formats live in `packaging/`:
 
 | Format | Command | Output |
 | --- | --- | --- |
-| Tarball | `packaging/tarball.sh` | `dist/apw-2.0.0-<target>.tar.gz` |
-| Debian | `packaging/debian/build.sh` | `dist/apw_2.0.0_<arch>.deb` |
+| Tarball | `packaging/tarball.sh` | `dist/apw-0.1.2-<target>.tar.gz` |
+| Debian | `packaging/debian/build.sh` | `dist/apw_0.1.2_<arch>.deb` |
 | AUR | `cd packaging/aur && makepkg -si` | installed package |
 | Nix | `nix build` | `result/bin/apw` |
 
-The AUR recipe builds from the `v2.0.0` tag and needs `updpkgsums` before submission. The tarball and Debian scripts build the release binary first; set `APW_SKIP_BUILD=1` to reuse an existing one.
+The AUR recipe builds from the `v0.1.2` tag and needs `updpkgsums` before submission. The tarball and Debian scripts build the release binary first; set `APW_SKIP_BUILD=1` to reuse an existing one.
 
 ## Sign in
 
