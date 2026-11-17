@@ -8,8 +8,8 @@ This build signs in, joins the trust, and syncs against a live account. See [Pro
 
 | Command | Does |
 | --- | --- |
-| `apw login [--anisette-url URL] [--account EMAIL]` | Save the anisette URL, sign in, write the first snapshot. |
-| `apw join [--passcode CODE]` | Join the Octagon trust. Spends one escrow attempt. |
+| `apw login [--anisette-url URL] [--account EMAIL] [--passcode CODE] [--join] [--no-join] [--refresh]` | Sign in. On the first run it joins the trust and syncs. |
+| `apw join [--passcode CODE]` | Join the trust again with a new peer. Spends one escrow attempt. |
 | `apw sync [--force] [--fixture PATH]` | Refresh the snapshot. |
 | `apw status` | Print account, counts, last sync, and snapshot path. |
 | `apw pw list [QUERY] [--personal] [--group UUID]` | List logins, filtered by domain, title, or username. |

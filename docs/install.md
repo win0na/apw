@@ -27,10 +27,10 @@ podman run -d --name apw-anisette \
   ghcr.io/fdkevin0/anisette-server-rs:0.2.1 --backend windows
 ```
 
-The URL is `http://127.0.0.1:6969`. `anisette-v3-server` in Docker also works if it answers the same routes.
+`apw` uses `http://127.0.0.1:6969` by default. Pass `--anisette-url` or set `APW_ANISETTE_URL` when the server runs elsewhere. `anisette-v3-server` in Docker also works if it answers the same routes.
 
 ```sh
-apw login --anisette-url http://127.0.0.1:6969 --account you@example.com
+apw login --account you@example.com
 ```
 
 `APW_ANISETTE_URL` overrides the config file. The server holds a device identity that Apple ties to your account. Self-host it or use a host you trust.
@@ -50,33 +50,32 @@ cargo build --release
 install -m755 target/release/apw ~/.local/bin/apw
 ```
 
-`apw --version` prints `0.1.2`.
+`apw --version` prints `0.1.3`.
 
 Prebuilt formats live in `packaging/`:
 
 | Format | Command | Output |
 | --- | --- | --- |
-| Tarball | `packaging/tarball.sh` | `dist/apw-0.1.2-<target>.tar.gz` |
-| Debian | `packaging/debian/build.sh` | `dist/apw_0.1.2_<arch>.deb` |
+| Tarball | `packaging/tarball.sh` | `dist/apw-0.1.3-<target>.tar.gz` |
+| Debian | `packaging/debian/build.sh` | `dist/apw_0.1.3_<arch>.deb` |
 | AUR | `cd packaging/aur && makepkg -si` | installed package |
 | Nix | `nix build` | `result/bin/apw` |
 
-The AUR recipe builds from the `v0.1.2` tag and needs `updpkgsums` before submission. The tarball and Debian scripts build the release binary first; set `APW_SKIP_BUILD=1` to reuse an existing one.
+The AUR recipe builds from the `v0.1.3` tag and needs `updpkgsums` before submission. The tarball and Debian scripts build the release binary first; set `APW_SKIP_BUILD=1` to reuse an existing one.
 
 ## Sign in
 
 ```sh
 apw login --account you@example.com
-apw join
 ```
 
-`apw login` prompts for the Apple ID password, then for the two-factor code from a trusted device. It writes the session to the snapshot.
+`apw login` prompts for the Apple ID password, then for the two-factor code from a trusted device. On the first run it also joins the Octagon trust circle and syncs, so one command leaves you with a usable snapshot.
 
-`apw join` joins the Octagon trust circle. It prompts for the device passcode or iCloud Security Code and recovers the keychain keys from the escrow record.
+The join prompts for the device passcode or iCloud Security Code and recovers the keychain keys from the escrow record. Later logins keep the existing peer and only sync. Pass `--no-join` to skip the join, or `--join` to replace the peer. `apw join` does the same join on its own.
 
-Escrow allows about ten attempts before Apple destroys the recovery record. `apw join` makes one attempt per run and never retries on its own. A wrong passcode stops the command.
+Escrow allows about ten attempts before Apple destroys the recovery record. Each join makes one attempt and never retries on its own. A wrong passcode stops the command.
 
-On success the snapshot is written. `apw status` shows the account and entry count.
+`apw status` shows the account and entry count.
 
 ## Run the sync timer
 

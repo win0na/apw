@@ -12,6 +12,8 @@ pub fn run(
     account: Option<String>,
     refresh: bool,
     join: bool,
+    no_join: bool,
+    passcode: Option<String>,
     code: Option<String>,
     json: bool,
 ) -> Result<()> {
@@ -71,22 +73,36 @@ pub fn run(
     state.failures = 0;
     config::save_state(paths, &state)?;
 
-    if join {
-        crate::commands::join::run(
-            paths,
-            config,
-            std::env::var("APW_ESCROW_PASSCODE").ok(),
-            json,
-        )?;
-        return Ok(());
+    let had_peer = snapshot.peer.is_some();
+    let should_join = join_plan(join, no_join, had_peer);
+
+    let joined = if should_join {
+        let passcode = passcode.or_else(|| std::env::var("APW_ESCROW_PASSCODE").ok());
+        Some(crate::commands::join::perform(paths, config, passcode)?)
+    } else {
+        None
+    };
+
+    let synced = should_join || had_peer;
+    if synced {
+        crate::commands::sync::run_silent(paths, config)?;
     }
 
+    let state = config::load_state(paths)?;
     let result = serde_json::json!({
         "account": account,
         "dsid": session.dsid,
         "adsid": session.adsid,
         "cloudkit": session.ckdatabasews_url,
         "escrow": session.escrow_proxy_url,
+        "peer": joined.as_ref().map(|joined| &joined.peer),
+        "sponsor": joined.as_ref().map(|joined| &joined.sponsor),
+        "restore_point": joined.as_ref().map(|joined| joined.restore_point),
+        "entries": state.entries,
+        "logins": state.logins,
+        "passkeys": state.passkeys,
+        "groups": state.groups,
+        "shared_entries": state.shared_entries,
         "snapshot": paths.snapshot_file,
     });
 
@@ -94,7 +110,17 @@ pub fn run(
         output::print_json(&output::success(serde_json::json!([result])));
     } else {
         println!("signed in as {account}");
-        println!("run `apw join` to read the keychain");
+        if let Some(joined) = &joined {
+            println!("joined the trust as {}", joined.peer);
+        }
+        if synced {
+            println!(
+                "synced {} logins and {} passkeys",
+                state.logins, state.passkeys
+            );
+        } else {
+            println!("run `apw join` to read the keychain");
+        }
         println!("snapshot {}", paths.snapshot_file.display());
     }
     Ok(())
@@ -138,4 +164,30 @@ fn refresh_services(paths: &Paths, config: &mut Config, account: &str, json: boo
         println!("escrow {}", session.escrow_proxy_url.unwrap_or_default());
     }
     Ok(())
+}
+
+/// Join on first login; keep later logins cheap unless forced.
+fn join_plan(force: bool, no_join: bool, has_peer: bool) -> bool {
+    force || (!no_join && !has_peer)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::join_plan;
+
+    #[test]
+    fn joins_a_fresh_account() {
+        assert!(join_plan(false, false, false));
+    }
+
+    #[test]
+    fn skips_an_joined_account() {
+        assert!(!join_plan(false, false, true));
+    }
+
+    #[test]
+    fn no_join_wins_unless_forced() {
+        assert!(!join_plan(false, true, false));
+        assert!(join_plan(true, true, false));
+    }
 }

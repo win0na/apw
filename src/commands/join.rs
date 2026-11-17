@@ -16,6 +16,36 @@ use crate::vault;
 ///
 /// This spends one of the ten escrow attempts.
 pub fn run(paths: &Paths, config: &mut Config, passcode: Option<String>, json: bool) -> Result<()> {
+    let joined = perform(paths, config, passcode)?;
+
+    let mut state = config::load_state(paths)?;
+    state.last_status = Some("joined".into());
+    config::save_state(paths, &state)?;
+
+    let result = serde_json::json!({
+        "peer": joined.peer,
+        "sponsor": joined.sponsor,
+        "restore_point": joined.restore_point,
+        "account": joined.account,
+    });
+    if output::use_json(json) {
+        output::print_json(&output::success(serde_json::json!([result])));
+    } else {
+        println!("joined the trust as {}", joined.peer);
+        println!("run `apw sync` to read the keychain");
+    }
+    Ok(())
+}
+
+/// The result of a join, so `login` can report it in its own envelope.
+pub struct Joined {
+    pub account: String,
+    pub peer: String,
+    pub sponsor: String,
+    pub restore_point: usize,
+}
+
+pub fn perform(paths: &Paths, config: &mut Config, passcode: Option<String>) -> Result<Joined> {
     if !paths.snapshot_file.exists() {
         return Err(Error::Invalid("run `apw login` first".into()));
     }
@@ -99,23 +129,12 @@ pub fn run(paths: &Paths, config: &mut Config, passcode: Option<String>, json: b
     });
     vault::save(paths, config, &snapshot)?;
 
-    let mut state = config::load_state(paths)?;
-    state.last_status = Some("joined".into());
-    config::save_state(paths, &state)?;
-
-    let result = serde_json::json!({
-        "peer": peer.id,
-        "sponsor": sponsor.peer_id,
-        "restore_point": trust.restore_point.len(),
-        "account": account,
-    });
-    if output::use_json(json) {
-        output::print_json(&output::success(serde_json::json!([result])));
-    } else {
-        println!("joined the trust as {}", peer.id);
-        println!("run `apw sync` to read the keychain");
-    }
-    Ok(())
+    Ok(Joined {
+        account,
+        peer: peer.id,
+        sponsor: sponsor.peer_id,
+        restore_point: trust.restore_point.len(),
+    })
 }
 
 pub fn block_on<F, T>(future: F) -> Result<T>

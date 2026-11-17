@@ -4,6 +4,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 
+/// Local anisette sidecar. Most installs run it on the default port.
+pub const DEFAULT_ANISETTE_URL: &str = "http://127.0.0.1:6969";
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -136,7 +139,8 @@ impl Config {
         std::env::var("APW_ANISETTE_URL")
             .ok()
             .filter(|value| !value.is_empty())
-            .or_else(|| self.anisette_url.clone())
+            .or_else(|| self.anisette_url.clone().filter(|value| !value.is_empty()))
+            .or_else(|| Some(DEFAULT_ANISETTE_URL.to_string()))
     }
 }
 
@@ -171,4 +175,17 @@ pub fn write_private(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
     std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
     std::fs::rename(&tmp, path)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Config, DEFAULT_ANISETTE_URL};
+
+    #[test]
+    fn anisette_defaults_to_the_local_sidecar() {
+        if std::env::var_os("APW_ANISETTE_URL").is_none() {
+            let config = Config::default();
+            assert_eq!(config.anisette_url().as_deref(), Some(DEFAULT_ANISETTE_URL));
+        }
+    }
 }

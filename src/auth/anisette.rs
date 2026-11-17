@@ -121,8 +121,10 @@ impl Anisette {
             .client
             .get(format!("{}/{query}", self.base))
             .send()
-            .await?
-            .error_for_status()?;
+            .await
+            .map_err(|error| self.offline(error))?
+            .error_for_status()
+            .map_err(|error| self.offline(error))?;
         let value: BTreeMap<String, Value> = response.json().await?;
 
         Ok(value
@@ -133,6 +135,15 @@ impl Anisette {
                 _ => None,
             })
             .collect())
+    }
+
+    fn offline(&self, error: impl std::fmt::Display) -> Error {
+        Error::Message(format!(
+            "cannot use the anisette server at {}: {error}\nstart it with:\n  \
+             podman run -d --name apw-anisette --network host -v apw-anisette:/data \
+             ghcr.io/fdkevin0/anisette-server-rs:0.2.1 --backend windows",
+            self.base
+        ))
     }
 
     async fn client_info(&self, query: &str) -> Result<ClientInfo> {

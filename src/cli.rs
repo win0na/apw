@@ -35,9 +35,15 @@ pub enum Command {
         /// Refresh service URLs from the stored session without signing in again.
         #[arg(long)]
         refresh: bool,
-        /// Join the trust in the same run, while the PET is fresh.
+        /// Join the trust in the same run, even when a peer already exists.
         #[arg(long)]
         join: bool,
+        /// Do not join the trust after signing in.
+        #[arg(long)]
+        no_join: bool,
+        /// Escrow passcode for the automatic join.
+        #[arg(long)]
+        passcode: Option<String>,
         /// Two-factor code, for a non-interactive run.
         #[arg(long)]
         code: Option<String>,
@@ -146,6 +152,8 @@ fn execute(cli: Cli) -> Result<()> {
             account,
             refresh,
             join,
+            no_join,
+            passcode,
             code,
         } => commands::login::run(
             &paths,
@@ -154,6 +162,8 @@ fn execute(cli: Cli) -> Result<()> {
             account,
             refresh,
             join,
+            no_join,
+            passcode,
             code,
             cli.json,
         ),

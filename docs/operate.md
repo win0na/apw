@@ -35,7 +35,7 @@ apw status --json
 
 ## Re-authenticate
 
-A 401 from CloudKit first re-fetches the service map once. That renews `cloudKitToken` while `mmeAuthToken` is still accepted. If the re-fetch also 401s, the session is dead: run `apw login` again. `mmeAuthToken` cannot be renewed from stored material, because only a password login mints a fresh PET. The escrow step makes one attempt per run.
+A 401 from CloudKit first re-fetches the service map once. That renews `cloudKitToken` while `mmeAuthToken` is still accepted. If the re-fetch also 401s, the session is dead: run `apw login` again. It keeps the existing peer and syncs, so no escrow attempt is spent. `mmeAuthToken` cannot be renewed from stored material, because only a password login mints a fresh PET. The escrow step makes one attempt per run.
 
 The snapshot keeps working while the tokens are expired, so `pw` and `otp` continue to answer.
 

@@ -28,7 +28,7 @@ The passphrase is wrong, the keyring entry changed, or the file is damaged. Use 
 
 ## apw login stops before the two-factor prompt
 
-The anisette URL is missing, unreachable, or not returning a device identity. Check the URL and the server:
+The anisette server is not answering at the configured URL. The default is `http://127.0.0.1:6969`. Check the URL and the server:
 
 ```sh
 curl -s http://127.0.0.1:6969/

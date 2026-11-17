@@ -42,7 +42,7 @@ pub fn run(
 
     match fixture {
         Some(fixture) => sync_fixture(paths, config, &fixture, json),
-        None => sync_live(paths, config, json),
+        None => sync_live(paths, config, json, true),
     }
 }
 
@@ -56,10 +56,17 @@ fn sync_fixture(paths: &Paths, config: &mut Config, fixture: &Path, json: bool) 
         &snapshot,
         json,
         &format!("fixture {}", fixture.display()),
+        true,
     )
 }
 
-fn sync_live(paths: &Paths, config: &mut Config, json: bool) -> Result<()> {
+/// Sync without printing. `login` calls this so one command produces one
+/// envelope.
+pub fn run_silent(paths: &Paths, config: &mut Config) -> Result<()> {
+    sync_live(paths, config, false, false)
+}
+
+fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Result<()> {
     if !paths.snapshot_file.exists() {
         return Err(Error::Invalid("run `apw login` first".into()));
     }
@@ -430,7 +437,7 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool) -> Result<()> {
         tlks.len(),
         class_keys.len()
     );
-    finish(paths, &snapshot, json, &note)
+    finish(paths, &snapshot, json, &note, emit)
 }
 
 fn is_uuid(value: &str) -> bool {
@@ -441,7 +448,13 @@ fn is_uuid(value: &str) -> bool {
         })
 }
 
-fn finish(paths: &Paths, snapshot: &crate::model::Vault, json: bool, note: &str) -> Result<()> {
+fn finish(
+    paths: &Paths,
+    snapshot: &crate::model::Vault,
+    json: bool,
+    note: &str,
+    emit: bool,
+) -> Result<()> {
     let state = State {
         last_sync: snapshot.generated_at,
         last_status: Some("ok".into()),
@@ -471,10 +484,12 @@ fn finish(paths: &Paths, snapshot: &crate::model::Vault, json: bool, note: &str)
         "snapshot": paths.snapshot_file,
     });
 
-    if output::use_json(json) {
-        output::print_json(&output::success(serde_json::json!([result])));
-    } else {
-        println!("synced {} logins from {note}", snapshot.login_count());
+    if emit {
+        if output::use_json(json) {
+            output::print_json(&output::success(serde_json::json!([result])));
+        } else {
+            println!("synced {} logins from {note}", snapshot.login_count());
+        }
     }
     Ok(())
 }

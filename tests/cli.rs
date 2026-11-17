@@ -172,11 +172,14 @@ fn status_reports_the_snapshot() {
 }
 
 #[test]
-fn login_requires_an_anisette_url() {
+fn login_explains_how_to_start_anisette() {
     let dir = TempDir::new().unwrap();
     apw(&dir)
-        .args(["login", "--json"])
+        .env("APW_PASSWORD", "test password")
+        .env("APW_ANISETTE_URL", "::bad")
+        .args(["login", "--account", "a@b.c"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("--anisette-url"));
+        .stderr(predicate::str::contains("podman run"))
+        .stderr(predicate::str::contains("anisette-server-rs"));
 }
