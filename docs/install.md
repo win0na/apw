@@ -58,10 +58,10 @@ Prebuilt formats live in `packaging/`:
 | --- | --- | --- |
 | Tarball | `packaging/tarball.sh` | `dist/apw-0.1.5-<target>.tar.gz` |
 | Debian | `packaging/debian/build.sh` | `dist/apw_0.1.5_<arch>.deb` |
-| AUR | `cd packaging/aur && makepkg -si` | installed package |
+| AUR | `yay -S apw-cli` | installed package |
 | Nix | `nix build` | `result/bin/apw` |
 
-The AUR recipe builds from the `v0.1.5` tag and needs `updpkgsums` before submission. The tarball and Debian scripts build the release binary first; set `APW_SKIP_BUILD=1` to reuse an existing one.
+The AUR package is `apw-cli`; it installs `/usr/bin/apw` and conflicts with the unrelated `apw` wrapper. The recipe builds from the `v0.1.5` tag. The tarball and Debian scripts build the release binary first; set `APW_SKIP_BUILD=1` to reuse an existing one.
 
 ## Sign in
 

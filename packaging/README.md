@@ -27,9 +27,11 @@ nix build
 
 ## Notes
 
-- `packaging/aur/PKGBUILD` carries `sha256sums=('SKIP')`. Replace it with the
-  release checksum (`updpkgsums`) before submitting to the AUR.
+- The package is published on the AUR as `apw-cli`, version 0.1.5-1. The binary
+  is still `/usr/bin/apw`; the recipe declares `conflicts=('apw')` because an
+  unrelated wrapper already owns that path.
+- On a release, run `updpkgsums` and regenerate `.SRCINFO` with
+  `makepkg --printsrcinfo`, then push both to
+  `ssh://aur@aur.archlinux.org/apw-cli.git`.
 - The AUR `check()` runs the test suite with `--offline`; it needs no network.
 - `flake.nix` pins `nixos-unstable` and has no `flake.lock` committed.
-- The AUR source points at the `v0.1.5` tag, which must exist on the remote
-  before `makepkg` can fetch it.
