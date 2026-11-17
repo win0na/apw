@@ -497,6 +497,10 @@ fn dump_items(decrypted: &[(String, plist::Value)]) {
         out.push(serde_json::json!({
             "id": id,
             "data_len": data.map(|bytes| bytes.len()),
+            "data": data.map(|bytes| {
+                use base64::Engine;
+                base64::engine::general_purpose::STANDARD.encode(bytes)
+            }),
             "data_sha": data.map(|bytes| {
                 use sha2::{Digest, Sha256};
                 data_encoding::HEXLOWER.encode(&Sha256::digest(bytes))
