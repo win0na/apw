@@ -9,9 +9,7 @@ license=('GPL-3.0-only')
 depends=('gcc-libs' 'glibc')
 makedepends=('cargo' 'rust')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
-# Replace SKIP with the sha256 of the release tarball before submitting to the AUR:
-#   updpkgsums
-sha256sums=('SKIP')
+sha256sums=('a13f7fd55261ccd7b99fe13964136f7ecee021f0da10ae3fcc0a2202e8df75b0')
 
 build() {
   cd "$pkgname-$pkgver"
