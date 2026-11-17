@@ -1,0 +1,159 @@
+{
+ "name": "apw",
+ "background": {
+  "colors": [
+   "#ffffff",
+   "#ffffff"
+  ]
+ },
+ "layers": [
+  {
+   "type": "layer",
+   "name": "Key blue",
+   "src": "src/tall/dark/key-blue.svg",
+   "layout": {
+    "x": 0,
+    "y": -100.0,
+    "scale": 300.0
+   },
+   "opacity": 100,
+   "blendMode": "normal",
+   "fill": {
+    "type": "none"
+   },
+   "liquidGlass": {
+    "enabled": true,
+    "specular": "inside",
+    "specularIntensity": 100,
+    "refraction": {
+     "enabled": true
+    },
+    "blur": {
+     "enabled": false,
+     "value": 0
+    },
+    "translucency": {
+     "enabled": true,
+     "value": 24
+    },
+    "shadow": {
+     "enabled": false,
+     "value": 0
+    },
+    "aberration": 0,
+    "effects": {
+     "refraction": 6,
+     "bevel": 2,
+     "keyHighlight": 150,
+     "fillHighlight": 150,
+     "darklight": 150,
+     "frostiness": 0
+    }
+   }
+  },
+  {
+   "type": "layer",
+   "name": "Key green",
+   "src": "src/tall/dark/key-green.svg",
+   "layout": {
+    "x": 0,
+    "y": -100.0,
+    "scale": 300.0
+   },
+   "opacity": 100,
+   "blendMode": "normal",
+   "fill": {
+    "type": "none"
+   },
+   "liquidGlass": {
+    "enabled": true,
+    "specular": "inside",
+    "specularIntensity": 100,
+    "refraction": {
+     "enabled": true
+    },
+    "blur": {
+     "enabled": false,
+     "value": 0
+    },
+    "translucency": {
+     "enabled": true,
+     "value": 24
+    },
+    "shadow": {
+     "enabled": false,
+     "value": 0
+    },
+    "aberration": 0,
+    "effects": {
+     "refraction": 6,
+     "bevel": 2,
+     "keyHighlight": 150,
+     "fillHighlight": 150,
+     "darklight": 150,
+     "frostiness": 0
+    }
+   }
+  },
+  {
+   "type": "layer",
+   "name": "Key yellow",
+   "src": "src/tall/dark/key-yellow.svg",
+   "layout": {
+    "x": 0,
+    "y": -100.0,
+    "scale": 300.0
+   },
+   "opacity": 100,
+   "blendMode": "normal",
+   "fill": {
+    "type": "none"
+   },
+   "liquidGlass": {
+    "enabled": true,
+    "specular": "inside",
+    "specularIntensity": 100,
+    "refraction": {
+     "enabled": true
+    },
+    "blur": {
+     "enabled": false,
+     "value": 0
+    },
+    "translucency": {
+     "enabled": false,
+     "value": 0
+    },
+    "shadow": {
+     "enabled": false,
+     "value": 0
+    },
+    "aberration": 0,
+    "effects": {
+     "refraction": 6,
+     "bevel": 2,
+     "keyHighlight": 150,
+     "fillHighlight": 150,
+     "darklight": 150,
+     "frostiness": 0
+    }
+   }
+  }
+ ],
+ "appearance": "dark",
+ "outputs": [
+  {
+   "format": "png",
+   "sizes": [
+    1024,
+    512,
+    256,
+    70,
+    40
+   ],
+   "modes": [
+    "dark"
+   ]
+  }
+ ]
+}

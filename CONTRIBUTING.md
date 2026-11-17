@@ -36,13 +36,17 @@ All three must pass before a pull request.
 
 ## Icon
 
-The icon is a Liquid Glass recipe. The PNGs and the `.icon` package are generated files, so edit `assets/icon/icon.json` or the SVGs in `assets/icon/src/` and run:
+The icon is three Liquid Glass keys built from four Liquid Composer recipes. The PNGs and the `.icon` package are generated files, so edit a recipe or the SVGs in `assets/icon/src/` and render again:
 
 ```sh
-npx -y liquid-composer apply assets/icon/icon.json --out assets/icon/renders
+cd assets/icon
+for r in icon.json icon-dark.json icon-clear.json; do
+  npx -y liquid-composer apply "$r" --out renders
+done
+npx -y liquid-composer apply icon-bundle.json --out .
 ```
 
-Rendering needs Node 22.12 or later and Google Chrome. The binary needs neither. [Icon](docs/icon.md) covers the appearances, the Icon Composer package, and what the engine cannot match.
+Rendering needs Node 22.12 or later and Google Chrome. The binary needs neither. [Icon](docs/icon.md) covers the mark, the appearances, the Icon Composer package, and what the engine cannot match; `assets/icon/NOTES.md` has the measured geometry and the registration checks.
 
 ## Fixtures
 
@@ -101,7 +105,7 @@ apw otp get example.com
 | `src/vault/` | Snapshot load and save, fixture reader |
 | `src/totp.rs` | RFC 6238 |
 | `tests/` | CLI integration tests and fixtures |
-| `assets/icon/` | Icon recipe, SVG layers, renders, Icon Composer package |
+| `assets/icon/` | Icon recipes, SVG layers, renders, Icon Composer package |
 | `packaging/` | systemd units and package manifests |
 | `legacy/` | Deno macOS implementation, reference only |
 | `docs/` | User and design docs |

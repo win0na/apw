@@ -1,203 +1,159 @@
 {
-  "name": "apw",
-  "appearance": "default",
-  "background": {
-    "colors": [
-      "#ffffff",
-      "#ffffff"
-    ]
-  },
-  "layers": [
-    {
-      "name": "Plate rim",
-      "src": "src/plate-rim.svg",
-      "layout": {
-        "scale": 100
-      },
-      "blendMode": "multiply",
-      "opacity": 100,
-      "fill": {
-        "type": "solid",
-        "color": "#9aa8bc"
-      },
-      "liquidGlass": {
-        "enabled": false
-      }
-    },
-    {
-      "name": "Key wall light",
-      "src": "src/key-wall-light.svg",
-      "layout": {
-        "scale": 100
-      },
-      "blendMode": "screen",
-      "opacity": 80,
-      "fill": {
-        "type": "solid",
-        "color": "#d6eaff"
-      },
-      "liquidGlass": {
-        "enabled": false
-      }
-    },
-    {
-      "name": "Key wall shade",
-      "src": "src/key-wall-shade.svg",
-      "layout": {
-        "scale": 100
-      },
-      "blendMode": "multiply",
-      "opacity": 40,
-      "fill": {
-        "type": "solid",
-        "color": "#0030a0"
-      },
-      "liquidGlass": {
-        "enabled": false
-      }
-    },
-    {
-      "name": "Key",
-      "src": "src/key.svg",
-      "layout": {
-        "scale": 100
-      },
-      "fill": {
-        "type": "gradient",
-        "stops": [
-          {
-            "offset": 0,
-            "color": "#067eff"
-          },
-          {
-            "offset": 1,
-            "color": "#0068ee"
-          }
-        ],
-        "angle": 90
-      },
-      "liquidGlass": {
-        "enabled": true,
-        "specular": true,
-        "specularIntensity": 100,
-        "refraction": {
-          "enabled": true
-        },
-        "translucency": {
-          "enabled": true,
-          "value": 40
-        },
-        "blur": {
-          "enabled": true,
-          "value": 15
-        },
-        "shadow": {
-          "enabled": true,
-          "value": 20
-        },
-        "aberration": 10,
-        "effects": {
-          "refraction": 55,
-          "bevel": 36,
-          "keyHighlight": 240,
-          "fillHighlight": 240,
-          "darklight": 200,
-          "frostiness": 0
-        }
-      }
-    },
-    {
-      "name": "Key glow",
-      "src": "src/key-glow.svg",
-      "layout": {
-        "scale": 100
-      },
-      "opacity": 35,
-      "blendMode": "screen",
-      "fill": {
-        "type": "solid",
-        "color": "#3aa0ff"
-      },
-      "liquidGlass": {
-        "enabled": false
-      }
-    },
-    {
-      "name": "Plate",
-      "src": "src/plate.svg",
-      "opacity": 60,
-      "blendMode": "soft-light",
-      "layout": {
-        "scale": 100
-      },
-      "fill": {
-        "type": "solid",
-        "color": "#ffffff"
-      },
-      "liquidGlass": {
-        "enabled": true,
-        "specular": true,
-        "specularIntensity": 100,
-        "refraction": {
-          "enabled": false
-        },
-        "translucency": {
-          "enabled": true,
-          "value": 60
-        },
-        "blur": {
-          "enabled": true,
-          "value": 60
-        },
-        "shadow": {
-          "enabled": false
-        },
-        "aberration": 0,
-        "effects": {
-          "frostiness": 50
-        }
-      }
-    },
-    {
-      "name": "Plate tint",
-      "src": "src/plate-tint.svg",
-      "blendMode": "multiply",
-      "opacity": 100,
-      "layout": {
-        "scale": 100
-      },
-      "liquidGlass": {
-        "enabled": false
-      }
-    }
-  ],
-  "outputs": [
-    {
-      "format": "png",
-      "sizes": [
-        1024,
-        512,
-        256
-      ],
-      "modes": [
-        "default",
-        "dark",
-        "clear",
-        "clearDark"
-      ]
-    },
-    {
-      "format": "png",
-      "sizes": [
-        70
-      ],
-      "modes": [
-        "default",
-        "dark"
-      ]
-    },
-    {
-      "icon": true
-    }
+ "name": "apw",
+ "background": {
+  "colors": [
+   "#ffffff",
+   "#ffffff"
   ]
+ },
+ "layers": [
+  {
+   "type": "layer",
+   "name": "Key blue",
+   "src": "src/tall/default/key-blue.svg",
+   "layout": {
+    "x": 0,
+    "y": -100.0,
+    "scale": 300.0
+   },
+   "opacity": 100,
+   "blendMode": "normal",
+   "fill": {
+    "type": "none"
+   },
+   "liquidGlass": {
+    "enabled": true,
+    "specular": "inside",
+    "specularIntensity": 100,
+    "refraction": {
+     "enabled": true
+    },
+    "blur": {
+     "enabled": false,
+     "value": 0
+    },
+    "translucency": {
+     "enabled": true,
+     "value": 36
+    },
+    "shadow": {
+     "enabled": false,
+     "value": 0
+    },
+    "aberration": 0,
+    "effects": {
+     "refraction": 6,
+     "bevel": 2,
+     "keyHighlight": 150,
+     "fillHighlight": 150,
+     "darklight": 150,
+     "frostiness": 0
+    }
+   }
+  },
+  {
+   "type": "layer",
+   "name": "Key green",
+   "src": "src/tall/default/key-green.svg",
+   "layout": {
+    "x": 0,
+    "y": -100.0,
+    "scale": 300.0
+   },
+   "opacity": 100,
+   "blendMode": "normal",
+   "fill": {
+    "type": "none"
+   },
+   "liquidGlass": {
+    "enabled": true,
+    "specular": "inside",
+    "specularIntensity": 100,
+    "refraction": {
+     "enabled": true
+    },
+    "blur": {
+     "enabled": false,
+     "value": 0
+    },
+    "translucency": {
+     "enabled": true,
+     "value": 36
+    },
+    "shadow": {
+     "enabled": false,
+     "value": 0
+    },
+    "aberration": 0,
+    "effects": {
+     "refraction": 6,
+     "bevel": 2,
+     "keyHighlight": 150,
+     "fillHighlight": 150,
+     "darklight": 150,
+     "frostiness": 0
+    }
+   }
+  },
+  {
+   "type": "layer",
+   "name": "Key yellow",
+   "src": "src/tall/default/key-yellow.svg",
+   "layout": {
+    "x": 0,
+    "y": -100.0,
+    "scale": 300.0
+   },
+   "opacity": 100,
+   "blendMode": "normal",
+   "fill": {
+    "type": "none"
+   },
+   "liquidGlass": {
+    "enabled": true,
+    "specular": "inside",
+    "specularIntensity": 100,
+    "refraction": {
+     "enabled": true
+    },
+    "blur": {
+     "enabled": false,
+     "value": 0
+    },
+    "translucency": {
+     "enabled": false,
+     "value": 0
+    },
+    "shadow": {
+     "enabled": false,
+     "value": 0
+    },
+    "aberration": 0,
+    "effects": {
+     "refraction": 6,
+     "bevel": 2,
+     "keyHighlight": 150,
+     "fillHighlight": 150,
+     "darklight": 150,
+     "frostiness": 0
+    }
+   }
+  }
+ ],
+ "appearance": "default",
+ "outputs": [
+  {
+   "format": "png",
+   "sizes": [
+    1024,
+    512,
+    256,
+    70,
+    40
+   ],
+   "modes": [
+    "default"
+   ]
+  }
+ ]
 }
