@@ -307,6 +307,11 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool) -> Result<()> {
             continue;
         }
         if entry.kind == EntryKind::Passkey {
+            // The Apple ID credential is system-managed and does not appear in
+            // the app's Passkeys list.
+            if entry.title.as_deref() == Some("apple.com") {
+                continue;
+            }
             passkeys.push(entry);
             continue;
         }
