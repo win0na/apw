@@ -63,7 +63,9 @@ impl Identity {
 
 pub struct Anisette {
     base: String,
-    client: reqwest::Client,
+    // Building the client fails on systems without a CA store. Keep the error
+    // instead of panicking, as `reqwest::Client::new` does.
+    client: std::result::Result<reqwest::Client, String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -76,10 +78,17 @@ struct ClientInfo {
 
 impl Anisette {
     pub fn new(base: &str) -> Self {
-        Self {
-            base: base.trim_end_matches('/').to_string(),
-            client: reqwest::Client::new(),
-        }
+        let base = base.trim_end_matches('/').to_string();
+        let client = reqwest::Client::builder().build().map_err(|error| {
+            format!("cannot create the HTTP client for the anisette server at {base}: {error}")
+        });
+        Self { base, client }
+    }
+
+    fn client(&self) -> Result<&reqwest::Client> {
+        self.client
+            .as_ref()
+            .map_err(|error| Error::Message(error.clone()))
     }
 
     pub async fn identity(&self) -> Result<Identity> {
@@ -118,7 +127,7 @@ impl Anisette {
 
     async fn headers(&self, query: &str) -> Result<BTreeMap<String, String>> {
         let response = self
-            .client
+            .client()?
             .get(format!("{}/{query}", self.base))
             .send()
             .await
@@ -148,7 +157,7 @@ impl Anisette {
 
     async fn client_info(&self, query: &str) -> Result<ClientInfo> {
         let response = self
-            .client
+            .client()?
             .get(format!("{}/v3/client_info{query}", self.base))
             .send()
             .await?
@@ -160,7 +169,7 @@ impl Anisette {
         let body = serde_json::json!({
             "sim": base64::engine::general_purpose::STANDARD.encode(machine_data),
         });
-        self.client
+        self.client()?
             .post(format!("{}/v1/resync", self.base))
             .json(&body)
             .send()

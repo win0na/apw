@@ -28,6 +28,10 @@
           export AWS_LC_SYS_USE_SYSTEM=0
         '';
 
+        # The CLI tests need a CA store, which the build sandbox does not have.
+        # CI runs them on a normal runner.
+        doCheck = false;
+
         meta = {
           description = "Read Apple Passwords on Linux";
           homepage = "https://github.com/win0na/apw";
