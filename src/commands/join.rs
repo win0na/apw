@@ -16,6 +16,7 @@ use crate::vault;
 ///
 /// This spends one of the ten escrow attempts.
 pub fn run(paths: &Paths, config: &mut Config, passcode: Option<String>, json: bool) -> Result<()> {
+    vault::ensure_passphrase(paths)?;
     let joined = perform(paths, config, passcode)?;
 
     let mut state = config::load_state(paths)?;
@@ -67,7 +68,10 @@ pub fn perform(paths: &Paths, config: &mut Config, passcode: Option<String>) -> 
         .clone()
         .ok_or_else(|| Error::Message("the session has no escrow URL".into()))?;
 
-    let passcode = match passcode {
+    let passcode = match passcode
+        .or_else(|| std::env::var("APW_ESCROW_PASSCODE").ok())
+        .or_else(|| std::env::var("APW_PASSPHRASE").ok())
+    {
         Some(passcode) => passcode,
         None => {
             if !std::io::stdin().is_terminal() {

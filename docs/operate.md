@@ -39,6 +39,8 @@ A 401 from CloudKit first re-fetches the service map once. That renews `cloudKit
 
 The snapshot keeps working while the tokens are expired, so `pw` and `otp` continue to answer.
 
+The apw passcode is also the default escrow passcode. If you encrypted the snapshot with something other than your device passcode, pass `--passcode` when a join runs.
+
 ## Shared groups
 
 Shared groups live in the `com.apple.security.shared.keychain` container, one zone per group. `apw sync` reads the zones directly and decrypts the items with PCS share keys. It does not accept invites; the shared database is per account, so a group that was already joined on any device is readable.

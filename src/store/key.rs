@@ -48,6 +48,16 @@ pub fn load_or_create(config: &mut Config, paths: &Paths) -> Result<SnapshotKey>
     derive_from_passphrase(config, paths, &passphrase)
 }
 
+/// True when a Secret Service key already exists. Used to skip a passphrase
+/// prompt that `load_or_create` would not need.
+#[cfg(feature = "keyring")]
+pub fn has_secret_service_key() -> Result<bool> {
+    match keyring::Entry::new(SERVICE, ACCOUNT) {
+        Ok(entry) => Ok(entry.get_password().is_ok()),
+        Err(_) => Ok(false),
+    }
+}
+
 #[cfg(feature = "keyring")]
 fn secret_service_key() -> Result<Option<[u8; KEY_LEN]>> {
     let entry = match keyring::Entry::new(SERVICE, ACCOUNT) {

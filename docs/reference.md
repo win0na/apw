@@ -8,7 +8,7 @@ This build signs in, joins the trust, and syncs against a live account. See [Pro
 
 | Command | Does |
 | --- | --- |
-| `apw login [--anisette-url URL] [--account EMAIL] [--passcode CODE] [--join] [--no-join] [--refresh]` | Sign in. On the first run it joins the trust and syncs. |
+| `apw login [--anisette-url URL] [--account EMAIL] [--passcode CODE] [--join] [--no-join] [--refresh]` | Sign in. On the first run it joins the trust and syncs; the apw passcode is reused for escrow unless `--passcode` is given. |
 | `apw join [--passcode CODE]` | Join the trust again with a new peer. Spends one escrow attempt. |
 | `apw sync [--force] [--fixture PATH]` | Refresh the snapshot. |
 | `apw status` | Print account, counts, last sync, and snapshot path. |

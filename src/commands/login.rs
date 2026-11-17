@@ -53,6 +53,9 @@ pub fn run(
     };
     config.account = Some(account.clone());
 
+    // One prompt for the whole run: the snapshot key, then escrow reuse it.
+    let passphrase = vault::ensure_passphrase(paths)?;
+
     config.save(paths)?;
 
     if refresh {
@@ -95,7 +98,9 @@ pub fn run(
     let should_join = join_plan(join, no_join, had_peer);
 
     let joined = if should_join {
-        let passcode = passcode.or_else(|| std::env::var("APW_ESCROW_PASSCODE").ok());
+        let passcode = passcode
+            .or_else(|| std::env::var("APW_ESCROW_PASSCODE").ok())
+            .or(passphrase);
         Some(crate::commands::join::perform(paths, config, passcode)?)
     } else {
         None

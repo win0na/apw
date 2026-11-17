@@ -50,18 +50,18 @@ cargo build --release
 install -m755 target/release/apw ~/.local/bin/apw
 ```
 
-`apw --version` prints `0.1.3`.
+`apw --version` prints `0.1.4`.
 
 Prebuilt formats live in `packaging/`:
 
 | Format | Command | Output |
 | --- | --- | --- |
-| Tarball | `packaging/tarball.sh` | `dist/apw-0.1.3-<target>.tar.gz` |
-| Debian | `packaging/debian/build.sh` | `dist/apw_0.1.3_<arch>.deb` |
+| Tarball | `packaging/tarball.sh` | `dist/apw-0.1.4-<target>.tar.gz` |
+| Debian | `packaging/debian/build.sh` | `dist/apw_0.1.4_<arch>.deb` |
 | AUR | `cd packaging/aur && makepkg -si` | installed package |
 | Nix | `nix build` | `result/bin/apw` |
 
-The AUR recipe builds from the `v0.1.3` tag and needs `updpkgsums` before submission. The tarball and Debian scripts build the release binary first; set `APW_SKIP_BUILD=1` to reuse an existing one.
+The AUR recipe builds from the `v0.1.4` tag and needs `updpkgsums` before submission. The tarball and Debian scripts build the release binary first; set `APW_SKIP_BUILD=1` to reuse an existing one.
 
 ## Sign in
 
@@ -69,9 +69,11 @@ The AUR recipe builds from the `v0.1.3` tag and needs `updpkgsums` before submis
 apw login --account you@example.com
 ```
 
-`apw login` prompts for the Apple ID password, then for the two-factor code from a trusted device. On the first run it also joins the Octagon trust circle and syncs, so one command leaves you with a usable snapshot.
+On the first run `apw login` asks for the Apple ID, a new apw passcode, the Apple ID password, and a two-factor code. It then joins the Octagon trust circle and syncs, so one command leaves you with a usable snapshot.
 
-The join prompts for the device passcode or iCloud Security Code and recovers the keychain keys from the escrow record. Later logins keep the existing peer and only sync. Pass `--no-join` to skip the join, or `--join` to replace the peer. `apw join` does the same join on its own.
+The apw passcode encrypts the local snapshot and is reused as the escrow passcode. Enter your device passcode, or the iCloud Security Code if you set one, so the join needs no second prompt. Pass `--passcode` to use a different code for escrow.
+
+Later logins keep the existing peer and only sync. Pass `--no-join` to skip the join, or `--join` to replace the peer. `apw join` does the same join on its own.
 
 Escrow allows about ten attempts before Apple destroys the recovery record. Each join makes one attempt and never retries on its own. A wrong passcode stops the command.
 

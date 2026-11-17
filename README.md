@@ -37,7 +37,7 @@ The binary lands in `~/.cargo/bin/apw`. [Install](docs/install.md) covers the an
 apw login --account you@example.com
 ```
 
-`apw login` prompts for the Apple ID password and a two-factor code, joins the trust with the escrow passcode, and writes the first snapshot. The anisette server defaults to `http://127.0.0.1:6969`; pass `--anisette-url` only when yours runs elsewhere.
+`apw login` asks for the Apple ID, a new apw passcode, the Apple ID password, and a two-factor code, then joins the trust and writes the first snapshot. The apw passcode encrypts the snapshot and is reused for escrow, so enter your device passcode. The anisette server defaults to `http://127.0.0.1:6969`; pass `--anisette-url` only when yours runs elsewhere.
 
 Escrow allows about ten attempts before the record is destroyed, so read [Troubleshooting](docs/troubleshooting.md) before retrying a failed sign-in.
 
