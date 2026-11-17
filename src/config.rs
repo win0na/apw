@@ -63,6 +63,8 @@ pub struct State {
     #[serde(default)]
     pub passkeys: u32,
     #[serde(default)]
+    pub wifi: u32,
+    #[serde(default)]
     pub groups: u32,
     #[serde(default)]
     pub shared_entries: u32,

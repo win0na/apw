@@ -78,11 +78,19 @@ impl Vault {
             .count()
     }
 
-    /// Every item that is not a passkey; the app's All count minus passkeys.
+    /// Every item that is not a passkey or a Wi-Fi network; the app's All
+    /// count minus those two tabs.
     pub fn item_count(&self) -> usize {
         self.entries
             .iter()
-            .filter(|entry| entry.kind != EntryKind::Passkey)
+            .filter(|entry| !matches!(entry.kind, EntryKind::Passkey | EntryKind::Wifi))
+            .count()
+    }
+
+    pub fn wifi_count(&self) -> usize {
+        self.entries
+            .iter()
+            .filter(|entry| entry.kind == EntryKind::Wifi)
             .count()
     }
 

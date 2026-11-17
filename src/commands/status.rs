@@ -21,6 +21,7 @@ pub fn run(paths: &Paths, config: &Config, json: bool) -> Result<()> {
         "entries": state.entries,
         "logins": state.logins,
         "passkeys": state.passkeys,
+        "wifi": state.wifi,
         "groups": state.groups,
         "shared_entries": state.shared_entries,
         "last_sync": state.last_sync,
@@ -47,6 +48,7 @@ pub fn run(paths: &Paths, config: &Config, json: bool) -> Result<()> {
         ("entries", result["entries"].to_string()),
         ("logins", result["logins"].to_string()),
         ("passkeys", result["passkeys"].to_string()),
+        ("wifi", result["wifi"].to_string()),
         ("groups", result["groups"].to_string()),
         ("shared", result["shared_entries"].to_string()),
         (

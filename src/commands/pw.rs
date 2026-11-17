@@ -62,6 +62,32 @@ pub fn list(
     Ok(())
 }
 
+pub fn wifi(paths: &Paths, config: &mut Config, query: Option<&str>, json: bool) -> Result<()> {
+    let vault = vault::load(paths, config)?;
+    let entries: Vec<_> = vault
+        .entries
+        .iter()
+        .filter(|entry| entry.kind == EntryKind::Wifi)
+        .filter(|entry| query.is_none_or(|value| entry.matches(value)))
+        .collect();
+
+    if output::use_json(json) {
+        let results = entries
+            .iter()
+            .map(|entry| login_result(entry, false))
+            .collect::<Vec<_>>();
+        output::print_json(&output::success(results.into()));
+        return Ok(());
+    }
+
+    let rows = entries
+        .iter()
+        .map(|entry| vec![entry.domain()])
+        .collect::<Vec<_>>();
+    output::print_table(&["NETWORK"], &rows);
+    Ok(())
+}
+
 pub fn get(
     paths: &Paths,
     config: &mut Config,
@@ -73,7 +99,7 @@ pub fn get(
     let entries: Vec<_> = vault
         .entries
         .iter()
-        .filter(|entry| entry.kind == EntryKind::Login)
+        .filter(|entry| matches!(entry.kind, EntryKind::Login | EntryKind::Wifi))
         .filter(|entry| entry.matches(query))
         .filter(|entry| match username {
             Some(name) => entry

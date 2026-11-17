@@ -70,7 +70,7 @@ CloudKit is not the JSON web services API. The `cloudKitToken` authenticates the
 
 ## Data model
 
-CKKS keeps records in per-view private zones, including `Passwords` and `Manatee`.
+CKKS keeps records in per-view private zones. `apw` reads `Passwords` (logins, notes, cards, passkeys), `Manatee` (keys), and `WiFi` (saved networks, which use the generic `apple` access group and store the SSID in `acct`).
 
 | Record | Purpose | Decryption |
 | --- | --- | --- |

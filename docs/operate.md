@@ -17,7 +17,7 @@ The timer runs hourly, well above the floor.
 
 1. Refresh `cloudKitToken` from `mmeAuthToken` through `setup.icloud.com`.
 2. Fetch the TLK shares for the recovered sponsor and union them with the new peer's shares.
-3. Read `tlkshare`, `synckey`, `item`, and `currentitem` records from the private zones.
+3. Read `tlkshare`, `synckey`, `item`, and `currentitem` records from the private `Passwords`, `Manatee`, and `WiFi` zones.
 4. Decrypt each item with AES-SIV and write the snapshot.
 
 Fetching only the new peer's shares returns a clean, empty keychain. The union in step 2 is what makes the data appear.

@@ -222,6 +222,16 @@ fn record_wrapper(data: &[u8]) -> Result<Option<Record>> {
 
 /// Map a decrypted item plist to a vault entry.
 pub fn entry_from_plist(record_name: &str, value: &Value) -> Option<Entry> {
+    entry_from_plist_kind(record_name, value, None)
+}
+
+/// Build an entry, forcing the kind for records whose access group does not
+/// name it. Wi-Fi items use the generic `apple` access group.
+pub fn entry_from_plist_kind(
+    record_name: &str,
+    value: &Value,
+    forced: Option<EntryKind>,
+) -> Option<Entry> {
     let dict = value.as_dictionary()?;
     let agrp = string(dict, "agrp").unwrap_or_default();
     let srvr = string(dict, "srvr");
@@ -245,19 +255,21 @@ pub fn entry_from_plist(record_name: &str, value: &Value) -> Option<Entry> {
         .and_then(|meta| text(meta, "notes"))
         .or_else(|| string(dict, "notes"));
 
-    let kind = if agrp.contains("webauthn") {
-        EntryKind::Passkey
-    } else if agrp.contains("credit-cards") {
-        EntryKind::Card
-    } else if agrp.contains("wifi") {
-        EntryKind::Wifi
-    } else if srvr.is_some() {
-        EntryKind::Login
-    } else if agrp.contains("password-manager") || notes.is_some() {
-        EntryKind::Note
-    } else {
-        EntryKind::Other
-    };
+    let kind = forced.unwrap_or_else(|| {
+        if agrp.contains("webauthn") {
+            EntryKind::Passkey
+        } else if agrp.contains("credit-cards") {
+            EntryKind::Card
+        } else if agrp.contains("wifi") {
+            EntryKind::Wifi
+        } else if srvr.is_some() {
+            EntryKind::Login
+        } else if agrp.contains("password-manager") || notes.is_some() {
+            EntryKind::Note
+        } else {
+            EntryKind::Other
+        }
+    });
 
     let password = data.and_then(|value| match value {
         Value::String(text) => Some(text.clone()),
@@ -278,7 +290,11 @@ pub fn entry_from_plist(record_name: &str, value: &Value) -> Option<Entry> {
     });
 
     let url = srvr.as_ref().map(|domain| format!("https://{domain}"));
-    let sites = srvr.iter().cloned().collect();
+    let sites = if kind == EntryKind::Wifi {
+        acct.iter().cloned().collect()
+    } else {
+        srvr.iter().cloned().collect()
+    };
 
     Some(Entry {
         id: record_name.to_string(),
@@ -288,7 +304,7 @@ pub fn entry_from_plist(record_name: &str, value: &Value) -> Option<Entry> {
         url,
         sites,
         username: acct,
-        password: if kind == EntryKind::Login {
+        password: if matches!(kind, EntryKind::Login | EntryKind::Wifi) {
             password
         } else {
             None

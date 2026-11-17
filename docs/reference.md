@@ -13,7 +13,8 @@ This build signs in, joins the trust, and syncs against a live account. See [Pro
 | `apw sync [--force] [--fixture PATH]` | Refresh the snapshot. |
 | `apw status` | Print account, counts, last sync, and snapshot path. |
 | `apw pw list [QUERY] [--personal] [--group UUID]` | List logins, filtered by domain, title, or username. |
-| `apw pw get QUERY [--username NAME]` | Print the password for the matches. |
+| `apw pw get QUERY [--username NAME]` | Print the password for the matches, including a Wi-Fi network. |
+| `apw pw wifi [QUERY]` | List saved Wi-Fi networks. |
 | `apw otp list [QUERY]` | List current one-time codes. |
 | `apw otp get QUERY` | Print the current one-time code. |
 | `apw install-units` | Write the systemd user service and timer. |
@@ -84,7 +85,7 @@ Failure goes to stderr, and the process exits with the status code:
 
 The codes match the macOS apw build, so scripts that check `status` keep working.
 
-`pw list` results carry `id`, `username`, `domain`, `sites`, `title`, `notes`, and `group` when present. `pw get` adds `password`. `otp` results carry `id`, `username`, `domain`, `source`, and `code`.
+`pw wifi` results use the same shape as `pw list`, with the network name in `domain`. `pw list` results carry `id`, `username`, `domain`, `sites`, `title`, `notes`, and `group` when present. `pw get` adds `password`. `otp` results carry `id`, `username`, `domain`, `source`, and `code`.
 
 ## Snapshot format
 

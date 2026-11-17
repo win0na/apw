@@ -47,6 +47,7 @@ Escrow allows about ten attempts before the record is destroyed, so read [Troubl
 apw sync
 apw pw list example.com
 apw pw get example.com
+apw pw wifi
 apw otp get example.com
 ```
 

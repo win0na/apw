@@ -8,7 +8,10 @@
       "kind": "login",
       "title": "Example",
       "url": "https://example.com",
-      "sites": ["example.com", "www.example.com"],
+      "sites": [
+        "example.com",
+        "www.example.com"
+      ],
       "username": "alice",
       "password": "hunter2",
       "notes": "recovery code in the drawer",
@@ -26,7 +29,9 @@
       "kind": "login",
       "title": "GitHub",
       "url": "https://github.com",
-      "sites": ["github.com"],
+      "sites": [
+        "github.com"
+      ],
       "username": "bob",
       "password": "correct horse battery staple",
       "group": "family"
@@ -36,9 +41,23 @@
       "kind": "note",
       "title": "Guest Wi-Fi",
       "notes": "ssid guest, password in the router"
+    },
+    {
+      "id": "wifi-home",
+      "kind": "wifi",
+      "title": "HomeNet",
+      "sites": [
+        "HomeNet"
+      ],
+      "username": "HomeNet",
+      "password": "wifi-secret"
     }
   ],
   "groups": [
-    { "id": "family", "name": "Family", "shared": true }
+    {
+      "id": "family",
+      "name": "Family",
+      "shared": true
+    }
   ]
 }

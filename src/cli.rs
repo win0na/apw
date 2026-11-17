@@ -115,12 +115,14 @@ pub enum PwCommand {
         #[arg(long)]
         group: Option<String>,
     },
-    /// Print the password for a domain, title, or username.
+    /// Print the password for a domain, title, username, or network.
     Get {
         query: String,
         #[arg(long)]
         username: Option<String>,
     },
+    /// List saved Wi-Fi networks.
+    Wifi { query: Option<String> },
 }
 
 #[derive(Debug, Subcommand)]
@@ -197,6 +199,9 @@ fn execute(cli: Cli) -> Result<()> {
             ),
             PwCommand::Get { query, username } => {
                 commands::pw::get(&paths, &mut config, &query, username.as_deref(), cli.json)
+            }
+            PwCommand::Wifi { query } => {
+                commands::pw::wifi(&paths, &mut config, query.as_deref(), cli.json)
             }
         },
         Command::Otp { command } => match command {

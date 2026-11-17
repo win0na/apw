@@ -88,7 +88,7 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Resu
         &decode(&peer_state.encryption_key)?,
     )?;
 
-    let (tlkshares, synckeys, items, session) = block_on(async {
+    let (tlkshares, synckeys, items, wifi_records, session) = block_on(async {
         let mut session = session;
         let identity = Anisette::new(&anisette_url).identity().await?;
         let mac = Anisette::new(&anisette_url)
@@ -152,7 +152,8 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Resu
             }
         }
 
-        for zone in ["Passwords", "Manatee"] {
+        let mut wifi_records = Vec::new();
+        for zone in ["Passwords", "Manatee", "WiFi"] {
             let mut token: Option<Vec<u8>> = None;
             loop {
                 if std::env::var_os("APW_DEBUG").is_some() {
@@ -167,6 +168,7 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Resu
                     match record.record_type.as_str() {
                         "tlkshare" => tlkshares.push(record),
                         "synckey" => synckeys.push(record),
+                        "item" if zone == "WiFi" => wifi_records.push(record),
                         "item" => items.push(record),
                         _ => {}
                     }
@@ -181,7 +183,7 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Resu
                 }
             }
         }
-        Ok::<_, Error>((tlkshares, synckeys, items, session))
+        Ok::<_, Error>((tlkshares, synckeys, items, wifi_records, session))
     })?;
     snapshot.session = Some(session.clone());
 
@@ -233,6 +235,7 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Resu
     }
     let class_keys = ckks::unwrap_class_keys(&synckeys, &tlks);
     let decrypted = ckks::decrypt_items(&items, &class_keys);
+    let wifi_decrypted = ckks::decrypt_items(&wifi_records, &class_keys);
     if std::env::var_os("APW_DEBUG").is_some() {
         eprintln!(
             "sync: {} tlk shares, {} synckeys, {} items, {} tlks, {} class keys, {} decrypted",
@@ -422,9 +425,30 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Resu
         }
     }
 
+    let mut wifi: Vec<Entry> = wifi_decrypted
+        .iter()
+        .filter(|(_, value)| {
+            value
+                .as_dictionary()
+                .and_then(|dict| dict.get("acct"))
+                .and_then(|value| value.as_string())
+                .is_some_and(|acct| !acct.is_empty())
+        })
+        .filter_map(|(id, value)| ckks::entry_from_plist_kind(id, value, Some(EntryKind::Wifi)))
+        .collect();
+    if std::env::var_os("APW_DEBUG").is_some() {
+        eprintln!(
+            "sync: {} wifi records, {} wifi entries",
+            wifi_records.len(),
+            wifi.len()
+        );
+    }
+
     logins.sort_by(|left, right| left.id.cmp(&right.id));
     passkeys.sort_by(|left, right| left.id.cmp(&right.id));
+    wifi.sort_by(|left, right| left.id.cmp(&right.id));
     logins.append(&mut passkeys);
+    logins.append(&mut wifi);
 
     snapshot.entries = logins;
     snapshot.groups = group_data.into_iter().map(|data| data.group).collect();
@@ -463,6 +487,7 @@ fn finish(
         entries: snapshot.item_count() as u32,
         logins: snapshot.login_count() as u32,
         passkeys: snapshot.passkey_count() as u32,
+        wifi: snapshot.wifi_count() as u32,
         groups: snapshot.groups.len() as u32,
         shared_entries: snapshot
             .entries
@@ -480,6 +505,7 @@ fn finish(
         "entries": snapshot.item_count(),
         "logins": snapshot.login_count(),
         "passkeys": snapshot.passkey_count(),
+        "wifi": snapshot.wifi_count(),
         "groups": snapshot.groups.len(),
         "snapshot": paths.snapshot_file,
     });

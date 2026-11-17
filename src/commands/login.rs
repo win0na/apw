@@ -124,6 +124,7 @@ pub fn run(
         "entries": state.entries,
         "logins": state.logins,
         "passkeys": state.passkeys,
+        "wifi": state.wifi,
         "groups": state.groups,
         "shared_entries": state.shared_entries,
         "snapshot": paths.snapshot_file,
@@ -138,8 +139,8 @@ pub fn run(
         }
         if synced {
             println!(
-                "synced {} logins and {} passkeys",
-                state.logins, state.passkeys
+                "synced {} logins, {} passkeys, and {} Wi-Fi networks",
+                state.logins, state.passkeys, state.wifi
             );
         } else {
             println!("run `apw join` to read the keychain");
