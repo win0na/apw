@@ -1,3 +1,5 @@
+use std::io::{IsTerminal, Write};
+
 use crate::config::{self, Config, Paths};
 use crate::error::{Error, Result};
 use crate::model::Vault;
@@ -30,10 +32,26 @@ pub fn run(
         ));
     }
 
-    let account = config
-        .account
-        .clone()
-        .ok_or_else(|| Error::Invalid("set --account or an account in the config".into()))?;
+    let account = match config.account.clone() {
+        Some(account) => account,
+        None if std::io::stdin().is_terminal() => {
+            print!("Apple ID: ");
+            std::io::stdout().flush()?;
+            let mut line = String::new();
+            std::io::stdin().read_line(&mut line)?;
+            let account = line.trim().to_string();
+            if account.is_empty() {
+                return Err(Error::Invalid("the account is empty".into()));
+            }
+            account
+        }
+        None => {
+            return Err(Error::Invalid(
+                "set --account or an account in the config".into(),
+            ))
+        }
+    };
+    config.account = Some(account.clone());
 
     config.save(paths)?;
 

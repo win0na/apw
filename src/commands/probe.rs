@@ -41,6 +41,16 @@ pub fn escrow(paths: &Paths, config: &mut Config, json: bool) -> Result<()> {
         escrow.list_records().await
     })?;
 
+    if std::env::var_os("APW_DEBUG").is_some() {
+        for (label, value) in &records {
+            let keys: Vec<&str> = value
+                .as_dictionary()
+                .map(|dict| dict.keys().map(String::as_str).collect())
+                .unwrap_or_default();
+            eprintln!("record {label}: {keys:?}");
+        }
+    }
+
     if output::use_json(json) {
         output::print_json(&output::success(serde_json::json!([{
             "records": records.len(),

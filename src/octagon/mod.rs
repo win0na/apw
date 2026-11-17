@@ -95,17 +95,44 @@ pub async fn join(
             bottle.label, bottle.peer_id, bottle.bottle_id
         );
     }
-    if std::env::var_os("APW_DEBUG").is_some() {
-        match escrow.list_records().await {
-            Ok(records) => eprintln!("escrow records: {}", records.len()),
-            Err(error) => eprintln!("escrow records error: {error}"),
-        }
-    }
     let label = if bottle.label.is_empty() {
         "com.apple.securebackup.record"
     } else {
         &bottle.label
     };
+
+    // GETRECORDS spends no attempt. Use it to report the budget before the
+    // irreversible RECOVER.
+    if let Ok(records) = escrow.list_records().await {
+        for (record_label, metadata) in &records {
+            if record_label != label {
+                continue;
+            }
+            let Some(dict) = metadata.as_dictionary() else {
+                continue;
+            };
+            if std::env::var_os("APW_DEBUG").is_some() {
+                eprintln!("escrow metadata: {:?}", dict.keys().collect::<Vec<_>>());
+            }
+            let remaining = dict
+                .iter()
+                .find(|(key, _)| key.to_lowercase().contains("remaining"))
+                .and_then(|(_, value)| match value {
+                    plist::Value::Integer(number) => number.as_signed(),
+                    _ => None,
+                });
+            if let Some(remaining) = remaining {
+                if remaining <= 0 {
+                    return Err(Error::Message(
+                        "the escrow record has no attempts left".into(),
+                    ));
+                }
+                if std::env::var_os("APW_DEBUG").is_none() {
+                    eprintln!("escrow attempts remaining: {remaining}");
+                }
+            }
+        }
+    }
 
     let entropy = escrow.entropy(label, passcode, adsid).await?;
     let sponsor = escrow::recover_identity(&bottle, &entropy, adsid)?;
