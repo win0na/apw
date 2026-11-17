@@ -64,7 +64,7 @@ A `Retry-After` header wins over the local schedule. Wait for the stated interva
 
 ## A shared group is empty
 
-The invite was not accepted, or the share keys did not arrive. Run `apw sync` again and read the per-group error. A group that fails does not fail the rest of the sync. Owned groups are the reliable path; shared-with-me is the least proven part of the design.
+The group has no items, or its PCS key did not arrive. `apw sync` reports a locked group and keeps the rest of the sync. Owned groups are the reliable path; shared-with-me is the least proven part of the design.
 
 ## The timer does not fire
 

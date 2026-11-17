@@ -92,7 +92,7 @@ Item decryption authenticates the record metadata in lexicographic key order, wi
 
 Shared groups live in the `com.apple.security.shared.keychain` container, one zone per group named `group-<UUID>`. They are PCS-encrypted with `PCSShareProtection`: AES key wrap, an SP800-108 KDF, and AES-128-GCM v3.
 
-Shared-with-me groups need share keys from the invite. `apw sync` accepts pending invites before reading the zone and reports per-group errors instead of failing the whole sync.
+Owned and shared-with-me zones use different key chains. An owned zone is opened with the account PCS service key. A shared-with-me zone is opened with the participant protection, then the invited PCS in the share record, then the zone protection. `apw sync` reads both databases and reports a locked group instead of failing the whole sync. It never calls `ShareAccept`.
 
 ## Storage
 
@@ -158,7 +158,7 @@ The escrow SRP padding rule is the one unresolved vector: implementations disagr
 - The CloudKit gateway is internal. Its request framing and error codes can change without notice.
 - An anisette server is a hard prerequisite for login.
 - Read-only v1: no save, no passkey assertion.
-- Shared-with-me depends on invite acceptance and share-key delivery. It is the least proven part of the plan.
+- Shared-with-me depends on the owner's PCS key delivery in the share record. It is the least proven part of the plan and the test account has no shared items.
 - Apple's iCloud terms prohibit automated access. The client stays polite: paced syncs, no retries, one login attempt per action. The contract risk is the user's.
 
 ## Prior art
@@ -178,5 +178,5 @@ The crypto was cross-checked against the first two.
 1. Skeleton: Rust crate, CLI, XDG paths, encrypted snapshot, Secret Service and passphrase unlock, fixture backend, `pw` and `otp` end to end.
 2. Auth: GSA SRP, anisette, 2FA, token exchange.
 3. Octagon and CKKS: protobuf gateway, peer keys, escrow, join, TLK recovery, records, decryption.
-4. Shared groups: PCS, invite acceptance, passkey and note surfacing.
+4. Shared groups: PCS, owned and shared-with-me zones, passkey and note surfacing.
 5. Sync timer, packaging, live gate.

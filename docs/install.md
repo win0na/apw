@@ -2,7 +2,7 @@
 
 This page takes a Linux machine to a signed-in snapshot and a systemd timer.
 
-This build signs in, joins the trust, and syncs. None of it has run against a live account yet. See [Project status](../README.md#project-status).
+This build signs in, joins the trust, and syncs against a live account. See [Project status](../README.md#project-status).
 
 ## Requirements
 
@@ -16,10 +16,18 @@ The binary needs glibc and a D-Bus session for Secret Service. It does not need 
 
 ## Set up anisette
 
-Anisette is the device identity Apple expects on account requests. Apple does not document it, and `apw` ships no Apple binary. Run a server and give `apw` its URL:
+Anisette is the device identity Apple expects on account requests. Apple does not document it, and `apw` ships no Apple binary. Run a server and give `apw` its URL.
 
-- `anisette-v3-server` in Docker, on the same machine or a trusted host.
-- A local CoreADI under Wine, as in `Sank6/Anisette-on-Wine`.
+The tested server is `anisette-server-rs` 0.2.1. It serves a Windows identity by default and a macOS one on request; `apw` uses both, so the server must support `?backend=macos`:
+
+```sh
+podman run -d --name apw-anisette \
+  --network host \
+  -v apw-anisette:/data \
+  ghcr.io/fdkevin0/anisette-server-rs:0.2.1 --backend windows
+```
+
+The URL is `http://127.0.0.1:6969`. `anisette-v3-server` in Docker also works if it answers the same routes.
 
 ```sh
 apw login --anisette-url http://127.0.0.1:6969 --account you@example.com

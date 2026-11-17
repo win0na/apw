@@ -2,7 +2,7 @@
 
 Commands, files, configuration, output, and limits.
 
-This page describes the 2.0 target. This build signs in, joins the trust, and syncs. None of it has run against a live account yet. See [Project status](../README.md#project-status).
+This build signs in, joins the trust, and syncs against a live account. See [Project status](../README.md#project-status).
 
 ## Commands
 
@@ -12,7 +12,7 @@ This page describes the 2.0 target. This build signs in, joins the trust, and sy
 | `apw join [--passcode CODE]` | Join the Octagon trust. Spends one escrow attempt. |
 | `apw sync [--force] [--fixture PATH]` | Refresh the snapshot. |
 | `apw status` | Print account, counts, last sync, and snapshot path. |
-| `apw pw list [QUERY]` | List logins, filtered by domain, title, or username. |
+| `apw pw list [QUERY] [--personal] [--group UUID]` | List logins, filtered by domain, title, or username. |
 | `apw pw get QUERY [--username NAME]` | Print the password for the matches. |
 | `apw otp list [QUERY]` | List current one-time codes. |
 | `apw otp get QUERY` | Print the current one-time code. |

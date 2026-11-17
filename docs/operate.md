@@ -2,8 +2,6 @@
 
 Queries read the snapshot. `apw sync` is the only command that talks to iCloud.
 
-This page describes the 2.0 target. Live sync and shared groups arrive in later passes. See [Project status](../README.md#project-status).
-
 ## Sync the snapshot
 
 ```sh
@@ -43,9 +41,11 @@ The snapshot keeps working while the tokens are expired, so `pw` and `otp` conti
 
 ## Shared groups
 
-Shared groups live in the `com.apple.security.shared.keychain` container, one zone per group. `apw sync` accepts pending invites before reading a zone, then decrypts the items with PCS share keys.
+Shared groups live in the `com.apple.security.shared.keychain` container, one zone per group. `apw sync` reads the zones directly and decrypts the items with PCS share keys. It does not accept invites; the shared database is per account, so a group that was already joined on any device is readable.
 
-A group that fails to decrypt is reported per group. It does not fail the whole sync.
+A group whose key or payload cannot be decoded is reported as locked, and the rest of the sync continues.
+
+`apw pw list` shows a GROUP column and includes shared items by default. `--personal` restricts the list to personal items; `--group <uuid>` restricts it to one group.
 
 ## Inspect the timer
 
