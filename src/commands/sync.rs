@@ -239,6 +239,9 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool) -> Result<()> {
         }
     }
 
+    if std::env::var_os("APW_DEBUG").is_some() {
+        dump_items(&decrypted);
+    }
     let service_keys = service_keys(&decrypted);
     let mut group_data = Vec::new();
     if !service_keys.is_empty() {
@@ -307,15 +310,6 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool) -> Result<()> {
             passkeys.push(entry);
             continue;
         }
-        // `com.apple.cfnetwork` keeps an empty placeholder per associated
-        // domain; it is not a credential.
-        let empty = entry
-            .password
-            .as_deref()
-            .is_none_or(|password| password.is_empty());
-        if empty && entry.username.as_deref().unwrap_or("").is_empty() && is_uuid(&entry.domain()) {
-            continue;
-        }
         logins.push(entry);
     }
 
@@ -331,6 +325,51 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool) -> Result<()> {
                 entry.notes.as_ref().map(String::len).unwrap_or(0)
             );
         }
+    }
+
+    // A `com.apple.cfnetwork` record with no secret is a note, a card, or an
+    // associated-domain stub; its title comes from the sidecar that was just
+    // merged. Reclassify so `pw list` keeps showing credentials only.
+    for entry in &mut logins {
+        let empty = entry
+            .password
+            .as_deref()
+            .is_none_or(|password| password.is_empty())
+            && is_uuid(&entry.domain());
+        if !empty {
+            continue;
+        }
+        let title = entry.title.clone().unwrap_or_default();
+        entry.kind = if title.starts_with("Secure Note") || title == "Password" {
+            EntryKind::Note
+        } else if title.starts_with("Credit") || title.starts_with("Debit") {
+            EntryKind::Card
+        } else {
+            EntryKind::Login
+        };
+        if !title.is_empty() && is_uuid(&entry.domain()) {
+            entry.sites = vec![title.clone()];
+            entry.url = None;
+        }
+    }
+
+    // Sidecars whose domain has no cfnetwork record at all describe credentials
+    // that exist only in the metadata store. Keep them visible without a secret.
+    let domains: std::collections::HashSet<String> = logins
+        .iter()
+        .map(|entry| entry.domain().to_lowercase())
+        .collect();
+    for sidecar in unmatched {
+        let domain = sidecar.domain();
+        if domain.is_empty() || is_uuid(&domain) || domains.contains(&domain.to_lowercase()) {
+            continue;
+        }
+        let mut entry = sidecar;
+        entry.password = None;
+        entry.kind = EntryKind::Login;
+        entry.url = Some(format!("https://{domain}"));
+        entry.sites = vec![domain];
+        logins.push(entry);
     }
 
     for data in &group_data {
@@ -378,7 +417,8 @@ fn finish(paths: &Paths, snapshot: &crate::model::Vault, json: bool, note: &str)
         last_status: Some("ok".into()),
         account: snapshot.account.clone(),
         source: Some(snapshot.source.to_string()),
-        entries: snapshot.login_count() as u32,
+        entries: snapshot.item_count() as u32,
+        logins: snapshot.login_count() as u32,
         passkeys: snapshot.passkey_count() as u32,
         groups: snapshot.groups.len() as u32,
         shared_entries: snapshot
@@ -394,7 +434,8 @@ fn finish(paths: &Paths, snapshot: &crate::model::Vault, json: bool, note: &str)
     let result = serde_json::json!({
         "source": snapshot.source.to_string(),
         "account": snapshot.account,
-        "entries": snapshot.login_count(),
+        "entries": snapshot.item_count(),
+        "logins": snapshot.login_count(),
         "passkeys": snapshot.passkey_count(),
         "groups": snapshot.groups.len(),
         "snapshot": paths.snapshot_file,
@@ -432,6 +473,46 @@ fn service_keys(decrypted: &[(String, plist::Value)]) -> Vec<ServiceKey> {
         }
     }
     out
+}
+
+/// Debug helper: write the decrypted record inventory for offline analysis.
+fn dump_items(decrypted: &[(String, plist::Value)]) {
+    let mut out = Vec::new();
+    for (id, value) in decrypted {
+        let Some(dict) = value.as_dictionary() else {
+            continue;
+        };
+        let text = |key: &str| {
+            dict.get(key)
+                .and_then(|value| value.as_string())
+                .map(str::to_string)
+        };
+        let meta = dict
+            .get("v_Data")
+            .and_then(|value| value.as_data())
+            .filter(|bytes| bytes.starts_with(b"bplist00"))
+            .and_then(|bytes| plist::from_bytes::<plist::Value>(bytes).ok())
+            .and_then(|value| serde_json::to_value(value).ok());
+        let data = dict.get("v_Data").and_then(|value| value.as_data());
+        out.push(serde_json::json!({
+            "id": id,
+            "data_len": data.map(|bytes| bytes.len()),
+            "data_sha": data.map(|bytes| {
+                use sha2::{Digest, Sha256};
+                data_encoding::HEXLOWER.encode(&Sha256::digest(bytes))
+            }),
+            "agrp": text("agrp"),
+            "srvr": text("srvr"),
+            "acct": text("acct"),
+            "labl": text("labl"),
+            "type": dict.get("type"),
+            "meta": meta,
+        }));
+    }
+    let _ = std::fs::write(
+        "/tmp/opencode/apw-items.json",
+        serde_json::to_vec_pretty(&out).unwrap_or_default(),
+    );
 }
 
 fn decode(value: &str) -> Result<Vec<u8>> {

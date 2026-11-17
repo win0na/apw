@@ -237,12 +237,12 @@ pub fn entry_from_plist(record_name: &str, value: &Value) -> Option<Entry> {
 
     let title = metadata
         .as_ref()
-        .and_then(|meta| string(meta, "customTitle").or_else(|| string(meta, "title")))
+        .and_then(|meta| text(meta, "customTitle").or_else(|| text(meta, "title")))
         .or(labl)
         .or_else(|| srvr.clone());
     let notes = metadata
         .as_ref()
-        .and_then(|meta| string(meta, "notes"))
+        .and_then(|meta| text(meta, "notes"))
         .or_else(|| string(dict, "notes"));
 
     let kind = if agrp.contains("webauthn") {
@@ -545,6 +545,16 @@ fn archive_bytes(value: &Value) -> Option<Vec<u8>> {
             .get("NS.data")
             .and_then(Value::as_data)
             .map(<[u8]>::to_vec),
+        _ => None,
+    }
+}
+
+/// Metadata strings are sometimes stored as UTF-8 data rather than a plist
+/// string.
+fn text(dict: &Dictionary, key: &str) -> Option<String> {
+    match dict.get(key)? {
+        Value::String(value) => Some(value.clone()),
+        Value::Data(bytes) => String::from_utf8(bytes.clone()).ok(),
         _ => None,
     }
 }

@@ -78,6 +78,14 @@ impl Vault {
             .count()
     }
 
+    /// Every item that is not a passkey; the app's All count minus passkeys.
+    pub fn item_count(&self) -> usize {
+        self.entries
+            .iter()
+            .filter(|entry| entry.kind != EntryKind::Passkey)
+            .count()
+    }
+
     pub fn passkey_count(&self) -> usize {
         self.entries
             .iter()
@@ -253,7 +261,12 @@ pub fn merge_sidecars(logins: &mut [Entry], sidecars: Vec<Entry>) -> Vec<Entry> 
         };
         let login = &mut logins[index];
         let login_domain = login.domain();
-        if login.title.is_none() || login.title.as_deref() == Some(login_domain.as_str()) {
+        let placeholder = login.title.as_deref().is_none_or(|title| {
+            title == login_domain
+                || title.starts_with("Password Manager Metadata")
+                || title.ends_with(" ()")
+        });
+        if placeholder {
             login.title = sidecar.title;
         }
         if login.notes.is_none() {

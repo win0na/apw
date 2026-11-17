@@ -165,7 +165,8 @@ fn status_reports_the_snapshot() {
         .clone();
 
     let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
-    assert_eq!(value["results"][0]["entries"], 2);
+    assert_eq!(value["results"][0]["entries"], 3);
+    assert_eq!(value["results"][0]["logins"], 2);
     assert_eq!(value["results"][0]["groups"], 1);
     assert_eq!(value["results"][0]["source"], "fixture");
 }
