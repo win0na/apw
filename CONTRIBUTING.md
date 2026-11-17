@@ -36,7 +36,7 @@ All three must pass before a pull request.
 
 ## Icon
 
-The icon is three Liquid Glass keys built from four Liquid Composer recipes. The PNGs and the `.icon` package are generated files, so edit a recipe or the SVGs in `assets/icon/src/` and render again:
+The icon is one Liquid Glass key on a white plate, built from four Liquid Composer recipes. The PNGs and the `.icon` package are generated files, so edit a recipe or the SVGs in `assets/icon/src/` and render again:
 
 ```sh
 cd assets/icon

@@ -6,7 +6,7 @@
   "fill" : {
     "linear-gradient" : [
       "srgb:1.00000,1.00000,1.00000,1.00000",
-      "srgb:1.00000,1.00000,1.00000,1.00000"
+      "srgb:0.91373,0.93333,0.96863,1.00000"
     ],
     "orientation" : {
       "start" : {
@@ -30,14 +30,14 @@
           "fill" : "automatic",
           "glass" : true,
           "hidden" : false,
-          "image-name" : "Key blue.svg",
-          "name" : "Key blue",
+          "image-name" : "Key.svg",
+          "name" : "Key",
           "opacity" : 1,
           "position" : {
             "scale" : 1,
             "translation-in-points" : [
               0,
-              0
+              -1024
             ]
           }
         }
@@ -52,9 +52,9 @@
         ]
       },
       "refractivity" : {
-        "depth" : 0.03158,
+        "depth" : 0.13684,
         "enabled" : true,
-        "strength" : 0.06
+        "strength" : -0.1
       },
       "shadow" : {
         "kind" : "none",
@@ -63,7 +63,7 @@
       "specular" : "inside",
       "translucency" : {
         "enabled" : true,
-        "value" : 0.36
+        "value" : 0.4
       }
     },
     {
@@ -74,16 +74,16 @@
         {
           "blend-mode" : "normal",
           "fill" : "automatic",
-          "glass" : true,
+          "glass" : false,
           "hidden" : false,
-          "image-name" : "Key green.svg",
-          "name" : "Key green",
+          "image-name" : "Key face.svg",
+          "name" : "Key face",
           "opacity" : 1,
           "position" : {
             "scale" : 1,
             "translation-in-points" : [
               0,
-              0
+              -1024
             ]
           }
         }
@@ -98,64 +98,18 @@
         ]
       },
       "refractivity" : {
-        "depth" : 0.03158,
-        "enabled" : true,
-        "strength" : 0.06
-      },
-      "shadow" : {
-        "kind" : "none",
-        "opacity" : 0
-      },
-      "specular" : "inside",
-      "translucency" : {
-        "enabled" : true,
-        "value" : 0.36
-      }
-    },
-    {
-      "blend-mode" : "normal",
-      "blur-material" : null,
-      "hidden" : false,
-      "layers" : [
-        {
-          "blend-mode" : "normal",
-          "fill" : "automatic",
-          "glass" : true,
-          "hidden" : false,
-          "image-name" : "Key yellow.svg",
-          "name" : "Key yellow",
-          "opacity" : 1,
-          "position" : {
-            "scale" : 1,
-            "translation-in-points" : [
-              0,
-              0
-            ]
-          }
-        }
-      ],
-      "lighting" : "individual",
-      "opacity" : 1,
-      "position" : {
-        "scale" : 1,
-        "translation-in-points" : [
-          0,
-          0
-        ]
-      },
-      "refractivity" : {
-        "depth" : 0.03158,
-        "enabled" : true,
-        "strength" : 0.06
-      },
-      "shadow" : {
-        "kind" : "none",
-        "opacity" : 0
-      },
-      "specular" : "inside",
-      "translucency" : {
+        "depth" : 0,
         "enabled" : false,
-        "value" : 0
+        "strength" : 0.5
+      },
+      "shadow" : {
+        "kind" : "none",
+        "opacity" : 0
+      },
+      "specular" : true,
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.5
       }
     }
   ],

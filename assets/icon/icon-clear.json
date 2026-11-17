@@ -3,14 +3,14 @@
  "background": {
   "colors": [
    "#ffffff",
-   "#ffffff"
+   "#f5f5f5"
   ]
  },
  "layers": [
   {
    "type": "layer",
-   "name": "Key blue",
-   "src": "src/tall/clear/key-blue.svg",
+   "name": "Key",
+   "src": "src/clear/key.svg",
    "layout": {
     "x": 0,
     "y": -100.0,
@@ -34,27 +34,27 @@
     },
     "translucency": {
      "enabled": true,
-     "value": 20
+     "value": 50
     },
     "shadow": {
      "enabled": false,
      "value": 0
     },
-    "aberration": 0,
+    "aberration": 20,
     "effects": {
-     "refraction": 6,
-     "bevel": 2,
-     "keyHighlight": 150,
-     "fillHighlight": 150,
-     "darklight": 0,
+     "refraction": -10,
+     "bevel": 4.5,
+     "keyHighlight": 220,
+     "fillHighlight": 0,
+     "darklight": 300,
      "frostiness": 0
     }
    }
   },
   {
    "type": "layer",
-   "name": "Key green",
-   "src": "src/tall/clear/key-green.svg",
+   "name": "Key face",
+   "src": "src/clear/key-face.svg",
    "layout": {
     "x": 0,
     "y": -100.0,
@@ -66,76 +66,10 @@
     "type": "none"
    },
    "liquidGlass": {
-    "enabled": true,
-    "specular": "inside",
-    "specularIntensity": 100,
-    "refraction": {
-     "enabled": true
-    },
-    "blur": {
-     "enabled": false,
-     "value": 0
-    },
-    "translucency": {
-     "enabled": true,
-     "value": 32
-    },
+    "enabled": false,
     "shadow": {
      "enabled": false,
      "value": 0
-    },
-    "aberration": 0,
-    "effects": {
-     "refraction": 6,
-     "bevel": 2,
-     "keyHighlight": 150,
-     "fillHighlight": 150,
-     "darklight": 0,
-     "frostiness": 0
-    }
-   }
-  },
-  {
-   "type": "layer",
-   "name": "Key yellow",
-   "src": "src/tall/clear/key-yellow.svg",
-   "layout": {
-    "x": 0,
-    "y": -100.0,
-    "scale": 300.0
-   },
-   "opacity": 100,
-   "blendMode": "normal",
-   "fill": {
-    "type": "none"
-   },
-   "liquidGlass": {
-    "enabled": true,
-    "specular": "inside",
-    "specularIntensity": 100,
-    "refraction": {
-     "enabled": true
-    },
-    "blur": {
-     "enabled": false,
-     "value": 0
-    },
-    "translucency": {
-     "enabled": true,
-     "value": 44
-    },
-    "shadow": {
-     "enabled": false,
-     "value": 0
-    },
-    "aberration": 0,
-    "effects": {
-     "refraction": 6,
-     "bevel": 2,
-     "keyHighlight": 150,
-     "fillHighlight": 150,
-     "darklight": 0,
-     "frostiness": 0
     }
    }
   }
@@ -147,7 +81,9 @@
    "sizes": [
     1024,
     512,
-    256
+    256,
+    70,
+    40
    ],
    "modes": [
     "clear",

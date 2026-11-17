@@ -3,18 +3,18 @@
  "background": {
   "colors": [
    "#ffffff",
-   "#ffffff"
+   "#e9eef7"
   ]
  },
  "layers": [
   {
    "type": "layer",
-   "name": "Key blue",
-   "src": "src/key-blue.svg",
+   "name": "Key",
+   "src": "src/bundle/key.svg",
    "layout": {
     "x": 0,
-    "y": 0.0,
-    "scale": 100.0
+    "y": -100.0,
+    "scale": 300.0
    },
    "opacity": 100,
    "blendMode": "normal",
@@ -34,31 +34,31 @@
     },
     "translucency": {
      "enabled": true,
-     "value": 36
+     "value": 40
     },
     "shadow": {
      "enabled": false,
      "value": 0
     },
-    "aberration": 0,
+    "aberration": 20,
     "effects": {
-     "refraction": 6,
-     "bevel": 2,
-     "keyHighlight": 150,
-     "fillHighlight": 150,
-     "darklight": 150,
+     "refraction": -10,
+     "bevel": 4.5,
+     "keyHighlight": 180,
+     "fillHighlight": 0,
+     "darklight": 240,
      "frostiness": 0
     }
    }
   },
   {
    "type": "layer",
-   "name": "Key green",
-   "src": "src/key-green.svg",
+   "name": "Key face",
+   "src": "src/bundle/key-face.svg",
    "layout": {
     "x": 0,
-    "y": 0.0,
-    "scale": 100.0
+    "y": -100.0,
+    "scale": 300.0
    },
    "opacity": 100,
    "blendMode": "normal",
@@ -66,80 +66,15 @@
     "type": "none"
    },
    "liquidGlass": {
-    "enabled": true,
-    "specular": "inside",
-    "specularIntensity": 100,
-    "refraction": {
-     "enabled": true
-    },
-    "blur": {
-     "enabled": false,
-     "value": 0
-    },
-    "translucency": {
-     "enabled": true,
-     "value": 36
-    },
+    "enabled": false,
     "shadow": {
      "enabled": false,
      "value": 0
-    },
-    "aberration": 0,
-    "effects": {
-     "refraction": 6,
-     "bevel": 2,
-     "keyHighlight": 150,
-     "fillHighlight": 150,
-     "darklight": 150,
-     "frostiness": 0
-    }
-   }
-  },
-  {
-   "type": "layer",
-   "name": "Key yellow",
-   "src": "src/key-yellow.svg",
-   "layout": {
-    "x": 0,
-    "y": 0.0,
-    "scale": 100.0
-   },
-   "opacity": 100,
-   "blendMode": "normal",
-   "fill": {
-    "type": "none"
-   },
-   "liquidGlass": {
-    "enabled": true,
-    "specular": "inside",
-    "specularIntensity": 100,
-    "refraction": {
-     "enabled": true
-    },
-    "blur": {
-     "enabled": false,
-     "value": 0
-    },
-    "translucency": {
-     "enabled": false,
-     "value": 0
-    },
-    "shadow": {
-     "enabled": false,
-     "value": 0
-    },
-    "aberration": 0,
-    "effects": {
-     "refraction": 6,
-     "bevel": 2,
-     "keyHighlight": 150,
-     "fillHighlight": 150,
-     "darklight": 150,
-     "frostiness": 0
     }
    }
   }
  ],
+ "appearance": "default",
  "outputs": [
   {
    "icon": true
