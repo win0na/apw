@@ -62,6 +62,10 @@ This is the rate limit working. Wait, or pass `--force` for a deliberate manual 
 
 A `Retry-After` header wins over the local schedule. Wait for the stated interval; the next timer tick will try again. Do not remove the timer and retry by hand.
 
+## Sync says the session expired
+
+`apw sync` already re-fetched the service map once, and Apple rejected `mmeAuthToken` as well. The token cannot be renewed without a password login, so run `apw login` again. The snapshot still answers `pw` and `otp` while you do.
+
 ## A shared group is empty
 
 The group has no items, or its PCS key did not arrive. `apw sync` reports a locked group and keeps the rest of the sync. Owned groups are the reliable path; shared-with-me is the least proven part of the design.

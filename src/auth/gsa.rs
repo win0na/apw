@@ -57,14 +57,6 @@ pub struct SpdFields {
     pub dsid: String,
     pub gs_idms_token: String,
     pub pet: Option<String>,
-    pub sk: Option<Vec<u8>>,
-    pub c: Option<Vec<u8>>,
-}
-
-#[derive(Debug, Clone)]
-pub struct AppToken {
-    pub token: String,
-    pub expiry: i64,
 }
 
 pub struct Gsa {
@@ -131,57 +123,6 @@ impl Gsa {
         })
     }
 
-    /// Mint an app token, including a fresh PET, from stored GSA material.
-    /// This is the only password-free way to renew a session.
-    pub async fn apptokens(
-        &self,
-        adsid: &str,
-        idms_token: &str,
-        sk: &[u8],
-        c: &[u8],
-        service: &str,
-    ) -> Result<AppToken> {
-        let checksum = apptokens_checksum(sk, adsid, service);
-        let request = apptokens_request(adsid, idms_token, c, &checksum, service, &self.identity);
-        let (response, _) = self.post(request).await?;
-        let dict = response_dict(&response)?;
-        let status = status(dict);
-        if !status.ok() {
-            return Err(Error::Message(format!(
-                "GSA apptokens rejected: {}",
-                status.message()
-            )));
-        }
-        let et = dict
-            .get("et")
-            .and_then(Value::as_data)
-            .ok_or_else(|| Error::Message("GSA apptokens returned no et".into()))?;
-        let plain = decrypt_apptokens(sk, et)?;
-        let value = plist::Value::from_reader_xml(&plain[..])?;
-        let entry = value
-            .as_dictionary()
-            .and_then(|root| root.get("t"))
-            .and_then(Value::as_dictionary)
-            .and_then(|tokens| tokens.get(service))
-            .and_then(Value::as_dictionary)
-            .ok_or_else(|| Error::Message(format!("GSA apptokens has no {service} token")))?;
-        let token = entry
-            .get("token")
-            .and_then(Value::as_string)
-            .ok_or_else(|| Error::Message("GSA apptokens token is not a string".into()))?;
-        let expiry = entry
-            .get("expiry")
-            .and_then(|value| match value {
-                Value::Integer(integer) => integer.as_signed(),
-                _ => None,
-            })
-            .unwrap_or(0);
-        Ok(AppToken {
-            token: token.to_string(),
-            expiry,
-        })
-    }
-
     async fn post(&self, body: Value) -> Result<(Value, Option<String>)> {
         let mut bytes = Vec::new();
         plist::to_writer_xml(&mut bytes, &body)?;
@@ -238,66 +179,6 @@ fn complete_request(username: &str, continuation: &str, m1: &[u8], identity: &Id
     request.insert("o".into(), Value::String("complete".into()));
     request.insert("cpd".into(), cpd(identity));
     envelope(request)
-}
-
-fn apptokens_request(
-    adsid: &str,
-    idms_token: &str,
-    c: &[u8],
-    checksum: &[u8],
-    service: &str,
-    identity: &Identity,
-) -> Value {
-    let mut request = Dictionary::new();
-    request.insert(
-        "app".into(),
-        Value::Array(vec![Value::String(service.into())]),
-    );
-    request.insert("c".into(), Value::Data(c.to_vec()));
-    request.insert("checksum".into(), Value::Data(checksum.to_vec()));
-    request.insert("o".into(), Value::String("apptokens".into()));
-    request.insert("t".into(), Value::String(idms_token.into()));
-    request.insert("u".into(), Value::String(adsid.into()));
-    request.insert("cpd".into(), cpd(identity));
-    envelope(request)
-}
-
-fn apptokens_checksum(sk: &[u8], adsid: &str, service: &str) -> Vec<u8> {
-    let mut mac = Hmac::<Sha256>::new_from_slice(sk).expect("HMAC accepts keys of any length");
-    mac.update(b"apptokens");
-    mac.update(adsid.as_bytes());
-    mac.update(service.as_bytes());
-    mac.finalize().into_bytes().to_vec()
-}
-
-fn decrypt_apptokens(sk: &[u8], et: &[u8]) -> Result<Vec<u8>> {
-    use aes_gcm::aead::consts::U16;
-    use aes_gcm::aead::generic_array::GenericArray;
-    use aes_gcm::aead::{Aead, KeyInit, Payload};
-
-    type Aes256Gcm16 = aes_gcm::AesGcm<aes::Aes256, U16>;
-
-    if et.len() < 3 + 16 + 16 {
-        return Err(Error::Message(
-            "GSA apptokens ciphertext is too short".into(),
-        ));
-    }
-    let cipher = Aes256Gcm16::new_from_slice(sk)
-        .map_err(|_| Error::Message("GSA session key is not 32 bytes".into()))?;
-    let (aad, rest) = et.split_at(3);
-    let (iv, rest) = rest.split_at(16);
-    let (ciphertext, tag) = rest.split_at(rest.len() - 16);
-    let mut combined = ciphertext.to_vec();
-    combined.extend_from_slice(tag);
-    cipher
-        .decrypt(
-            GenericArray::<u8, U16>::from_slice(iv),
-            Payload {
-                msg: &combined,
-                aad,
-            },
-        )
-        .map_err(|_| Error::Message("GSA apptokens decrypt failed".into()))
 }
 
 fn envelope(request: Dictionary) -> Value {
@@ -444,15 +325,11 @@ pub fn spd_fields(value: &Value) -> Result<SpdFields> {
         .and_then(Value::as_string)
         .unwrap_or_default()
         .to_string();
-    let sk = dict.get("sk").and_then(Value::as_data).map(<[u8]>::to_vec);
-    let c = dict.get("c").and_then(Value::as_data).map(<[u8]>::to_vec);
     Ok(SpdFields {
         adsid,
         dsid,
         gs_idms_token,
         pet,
-        sk,
-        c,
     })
 }
 
@@ -543,48 +420,5 @@ mod tests {
         let fields = spd_fields(&value).unwrap();
         assert_eq!(fields.adsid, "1234");
         assert_eq!(fields.pet.as_deref(), Some("pet-token"));
-    }
-}
-
-#[cfg(test)]
-mod apptoken_tests {
-    use super::*;
-
-    #[test]
-    fn checksum_matches_the_documented_construction() {
-        let key = vec![1u8; 32];
-        let sum = apptokens_checksum(&key, "1234567890", "com.apple.gs.idms.pet");
-        assert_eq!(
-            data_encoding::HEXLOWER.encode(&sum),
-            "69f45f0074a23ad953c24e6fe2e262322fdbda3a92fe294d59a78ccc7b9d8b95"
-        );
-    }
-
-    #[test]
-    fn decrypts_the_xyz_framing() {
-        use aes_gcm::aead::consts::U16;
-        use aes_gcm::aead::generic_array::GenericArray;
-        use aes_gcm::aead::{Aead, KeyInit, Payload};
-
-        type Aes256Gcm16 = aes_gcm::AesGcm<aes::Aes256, U16>;
-
-        let key = vec![7u8; 32];
-        let iv = [9u8; 16];
-        let plain = b"<plist><dict><key>t</key><dict/></dict></plist>";
-        let cipher = Aes256Gcm16::new_from_slice(&key).unwrap();
-        let sealed = cipher
-            .encrypt(
-                GenericArray::<u8, U16>::from_slice(&iv),
-                Payload {
-                    msg: plain,
-                    aad: b"XYZ",
-                },
-            )
-            .unwrap();
-
-        let mut et = Vec::from(b"XYZ".as_slice());
-        et.extend_from_slice(&iv);
-        et.extend_from_slice(&sealed);
-        assert_eq!(decrypt_apptokens(&key, &et).unwrap(), plain);
     }
 }

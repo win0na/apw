@@ -99,9 +99,15 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool) -> Result<()> {
             Ok(gateway) => gateway,
             Err(error) if crate::auth::is_auth_error(&error) => {
                 if std::env::var_os("APW_DEBUG").is_some() {
-                    eprintln!("sync: session rejected, refreshing from stored GSA material");
+                    eprintln!("sync: session rejected, re-fetching the service map");
                 }
-                session = crate::auth::refresh_async(config, &session).await?;
+                session = crate::auth::refresh_services_async(config, &session)
+                    .await
+                    .map_err(|refresh| {
+                        Error::Message(format!(
+                            "{error}; refresh failed: {refresh}; run `apw login`"
+                        ))
+                    })?;
                 Gateway::bootstrap(
                     &session,
                     &mac,

@@ -6,7 +6,6 @@ pub mod icloud;
 pub mod srp;
 pub mod twofa;
 
-use base64::Engine;
 use plist::Value;
 
 use crate::config::Config;
@@ -90,18 +89,6 @@ async fn login_async(config: &Config, account: &str, code: Option<String>) -> Re
             fields.pet.as_ref().map(String::len).unwrap_or(0)
         );
     }
-    // Keep the macOS GSA material: it can mint a fresh PET later without the
-    // password. `sk` and `c` are the session key and cookie.
-    let gsa = match (fields.sk.clone(), fields.c.clone()) {
-        (Some(sk), Some(c)) => Some(crate::model::GsaSession {
-            adsid: fields.adsid.clone(),
-            idms_token: fields.gs_idms_token.clone(),
-            sk: base64::engine::general_purpose::STANDARD.encode(sk),
-            c: base64::engine::general_purpose::STANDARD.encode(c),
-        }),
-        _ => None,
-    };
-
     // The `spd` token is the canonical GSA PET; the PE header is a fallback.
     let pet = fields.pet.or(pet).ok_or_else(|| {
         Error::Message("GSA returned no PET; sign in again or check the account".into())
@@ -138,83 +125,44 @@ async fn login_async(config: &Config, account: &str, code: Option<String>) -> Re
             .unwrap_or(delegates.cloudkit_token),
         ckdatabasews_url: services.ckdatabasews_url,
         escrow_proxy_url: services.escrow_proxy_url,
-        gsa,
         logged_in_at: chrono::Utc::now(),
     })
 }
 
-/// Renew the session from stored GSA material: `apptokens` mints a fresh PET,
-/// `loginDelegates` mints fresh `mmeAuthToken` and `cloudKitToken`.
-pub fn refresh(config: &Config, session: &Session) -> Result<Session> {
+/// Re-fetch the service map and `cloudKitToken` with the stored session.
+/// This is the only password-free renewal: `mmeAuthToken` itself cannot be
+/// reissued without a fresh PET, and a PET only comes from a password login.
+pub fn refresh_services(config: &Config, session: &Session) -> Result<Session> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    runtime.block_on(refresh_async(config, session))
+    runtime.block_on(refresh_services_async(config, session))
 }
 
-pub async fn refresh_async(config: &Config, session: &Session) -> Result<Session> {
+pub async fn refresh_services_async(config: &Config, session: &Session) -> Result<Session> {
     let url = config
         .anisette_url()
         .ok_or_else(|| Error::Invalid("set an anisette URL in the config".into()))?;
-    let account = config
-        .account
-        .clone()
-        .ok_or_else(|| Error::Invalid("the config has no account".into()))?;
-    let gsa = session.gsa.as_ref().ok_or_else(|| {
-        Error::Message("the snapshot has no GSA session material; run `apw login` once".into())
-    })?;
-    let sk = base64::engine::general_purpose::STANDARD
-        .decode(&gsa.sk)
-        .map_err(|_| Error::Message("the stored GSA session key is not base64".into()))?;
-    let c = base64::engine::general_purpose::STANDARD
-        .decode(&gsa.c)
-        .map_err(|_| Error::Message("the stored GSA cookie is not base64".into()))?;
-
     let anisette = anisette::Anisette::new(&url);
+    // The token chain is macOS-minted; a Windows identity is rejected.
     let identity = match anisette.identity_for(Some("macos")).await {
         Ok(identity) => identity,
         Err(_) => anisette.identity().await?,
     };
-    let client = gsa::Gsa::new(identity.clone());
-    let pet = client
-        .apptokens(
-            &gsa.adsid,
-            &gsa.idms_token,
-            &sk,
-            &c,
-            "com.apple.gs.idms.pet",
-        )
-        .await?;
-    if std::env::var_os("APW_DEBUG").is_some() {
-        eprintln!(
-            "refresh: minted PET len={} expiry={}",
-            pet.token.len(),
-            pet.expiry
-        );
-    }
-    let delegates = icloud::login_delegates(&identity, &account, &gsa.adsid, &pet.token).await?;
     let services =
-        icloud::account_settings(&identity, &delegates.dsid, &delegates.mme_auth_token).await?;
+        icloud::account_settings(&identity, &session.dsid, &session.mme_auth_token).await?;
 
-    Ok(Session {
-        adsid: session.adsid.clone(),
-        dsid: delegates.dsid,
-        // The escrow PET is the Windows one; a refresh must not replace it.
-        pet: session.pet.clone(),
-        mme_auth_token: delegates.mme_auth_token,
-        cloudkit_token: services
-            .cloudkit_token
-            .clone()
-            .unwrap_or(delegates.cloudkit_token),
-        ckdatabasews_url: services
-            .ckdatabasews_url
-            .or_else(|| session.ckdatabasews_url.clone()),
-        escrow_proxy_url: services
-            .escrow_proxy_url
-            .or_else(|| session.escrow_proxy_url.clone()),
-        gsa: session.gsa.clone(),
-        logged_in_at: chrono::Utc::now(),
-    })
+    let mut next = session.clone();
+    if let Some(token) = services.cloudkit_token {
+        next.cloudkit_token = token;
+    }
+    next.ckdatabasews_url = services
+        .ckdatabasews_url
+        .or_else(|| session.ckdatabasews_url.clone());
+    next.escrow_proxy_url = services
+        .escrow_proxy_url
+        .or_else(|| session.escrow_proxy_url.clone());
+    Ok(next)
 }
 
 pub fn is_auth_error(error: &Error) -> bool {

@@ -111,9 +111,11 @@ fn refresh_services(paths: &Paths, config: &mut Config, account: &str, json: boo
         .ok_or_else(|| Error::Invalid("set an anisette URL in the config".into()))?;
 
     let services = crate::commands::join::block_on(async {
-        let identity = crate::auth::anisette::Anisette::new(&url)
-            .identity()
-            .await?;
+        let anisette = crate::auth::anisette::Anisette::new(&url);
+        let identity = match anisette.identity_for(Some("macos")).await {
+            Ok(identity) => identity,
+            Err(_) => anisette.identity().await?,
+        };
         crate::auth::icloud::account_settings(&identity, &session.dsid, &session.mme_auth_token)
             .await
     })?;

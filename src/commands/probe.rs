@@ -408,31 +408,26 @@ pub fn group(paths: &Paths, config: &mut Config, zone: &str, json: bool) -> Resu
     Ok(())
 }
 
-/// Renew the session from stored GSA material and persist it.
+/// Re-fetch the service map and `cloudKitToken`, then persist the session.
 pub fn refresh(paths: &Paths, config: &mut Config, json: bool) -> Result<()> {
     let mut snapshot = vault::load(paths, config)?;
     let session = snapshot
         .session
         .clone()
         .ok_or_else(|| Error::Invalid("run `apw login` first".into()))?;
-    if session.gsa.is_none() {
-        return Err(Error::Message(
-            "the snapshot has no GSA session material; run `apw login` once".into(),
-        ));
-    }
-    let refreshed = crate::auth::refresh(config, &session)?;
+    let refreshed = crate::auth::refresh_services(config, &session)?;
     snapshot.session = Some(refreshed.clone());
     vault::save(paths, config, &snapshot)?;
 
     if output::use_json(json) {
         output::print_json(&output::success(serde_json::json!([{
             "dsid": refreshed.dsid,
-            "mme_len": refreshed.mme_auth_token.len(),
             "cloudkit_len": refreshed.cloudkit_token.len(),
+            "cloudkit_url": refreshed.ckdatabasews_url,
             "escrow_url": refreshed.escrow_proxy_url,
         }])));
     } else {
-        println!("session refreshed: dsid {}", refreshed.dsid);
+        println!("services refreshed for dsid {}", refreshed.dsid);
     }
     Ok(())
 }

@@ -71,7 +71,7 @@ pub enum Command {
     /// Probe recoverable TLK share function names.
     #[command(hide = true)]
     ProbeTlks,
-    /// Renew the session from the stored GSA material.
+    /// Re-fetch the service map and CloudKit token.
     #[command(hide = true)]
     ProbeRefresh,
     /// List private and shared CloudKit zones.
