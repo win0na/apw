@@ -242,10 +242,19 @@ pub fn entry_from_plist_kind(
 ) -> Option<Entry> {
     let dict = value.as_dictionary()?;
     let agrp = string(dict, "agrp").unwrap_or_default();
-    let srvr = string(dict, "srvr");
-    let acct = string(dict, "acct");
-    let labl = string(dict, "labl");
+    let is_metadata = agrp == "com.apple.password-manager";
+    let mut srvr = text(dict, "srvr");
+    let mut acct = text(dict, "acct");
+    let labl = text(dict, "labl");
     let data = dict.get("v_Data");
+
+    // Older metadata records carry the join key only in the label.
+    if is_metadata && (srvr.is_none() || acct.is_none()) {
+        if let Some((label_srvr, label_acct)) = metadata_label(labl.as_deref()) {
+            srvr = srvr.or(Some(label_srvr));
+            acct = acct.or(Some(label_acct));
+        }
+    }
 
     let metadata = data
         .and_then(Value::as_data)
@@ -253,10 +262,15 @@ pub fn entry_from_plist_kind(
         .and_then(|bytes| plist::from_bytes::<Value>(bytes).ok())
         .and_then(|value| value.as_dictionary().cloned());
 
+    let label_title = labl.filter(|label| {
+        !label
+            .to_lowercase()
+            .starts_with("password manager metadata")
+    });
     let title = metadata
         .as_ref()
         .and_then(|meta| text(meta, "customTitle").or_else(|| text(meta, "title")))
-        .or(labl)
+        .or(label_title)
         .or_else(|| srvr.clone());
     let notes = metadata
         .as_ref()
@@ -575,6 +589,43 @@ fn archive_bytes(value: &Value) -> Option<Vec<u8>> {
 
 /// Metadata strings are sometimes stored as UTF-8 data rather than a plist
 /// string.
+/// Split `Password Manager Metadata: <srvr> (<acct>)` into its join key.
+fn metadata_label(label: Option<&str>) -> Option<(String, String)> {
+    let label = label?;
+    let label = label
+        .strip_prefix("Password Manager Metadata:")
+        .or_else(|| label.strip_prefix("Password Manager Metadata: "))
+        .map(str::trim)
+        .unwrap_or(label.trim());
+    let (srvr, acct) = label.rsplit_once(" (")?;
+    let acct = acct.strip_suffix(')')?;
+    if srvr.is_empty() || acct.is_empty() {
+        return None;
+    }
+    Some((srvr.to_string(), acct.to_string()))
+}
+
+#[cfg(test)]
+mod label_tests {
+    use super::metadata_label;
+
+    #[test]
+    fn parses_the_metadata_label() {
+        assert_eq!(
+            metadata_label(Some(
+                "Password Manager Metadata: accounts.google.com (me@gmail.com)"
+            )),
+            Some(("accounts.google.com".into(), "me@gmail.com".into()))
+        );
+    }
+
+    #[test]
+    fn rejects_other_labels() {
+        assert_eq!(metadata_label(Some("Google")), None);
+        assert_eq!(metadata_label(None), None);
+    }
+}
+
 fn text(dict: &Dictionary, key: &str) -> Option<String> {
     match dict.get(key)? {
         Value::String(value) => Some(value.clone()),

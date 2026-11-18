@@ -278,8 +278,15 @@ fn usernames_compatible(login: Option<&str>, sidecar: Option<&str>) -> bool {
     }
 }
 
+/// Whether two hosts name the same site, allowing a subdomain on either side.
+fn same_site(left: &str, right: &str) -> bool {
+    let left = left.trim_start_matches("www.").to_lowercase();
+    let right = right.trim_start_matches("www.").to_lowercase();
+    left == right || left.ends_with(&format!(".{right}")) || right.ends_with(&format!(".{left}"))
+}
+
 /// The single login a sidecar's domain and username identify, if the match is
-/// unambiguous.
+/// unambiguous. An exact host wins; a parent/subdomain match is the fallback.
 fn unique_domain_match(logins: &[Entry], sidecar: &Entry) -> Option<usize> {
     let domain = sidecar.domain();
     // A sidecar with no domain must not attach itself to a domain-less note
@@ -287,12 +294,16 @@ fn unique_domain_match(logins: &[Entry], sidecar: &Entry) -> Option<usize> {
     if domain.is_empty() {
         return None;
     }
-    let mut candidates = logins.iter().enumerate().filter(|(_, login)| {
-        login.domain().eq_ignore_ascii_case(&domain)
-            && usernames_compatible(login.username.as_deref(), sidecar.username.as_deref())
-    });
-    let (index, _) = candidates.next()?;
-    candidates.next().is_none().then_some(index)
+    let username = sidecar.username.as_deref();
+    let unique = |same: &dyn Fn(&str) -> bool| {
+        let mut candidates = logins.iter().enumerate().filter(|(_, login)| {
+            same(&login.domain()) && usernames_compatible(login.username.as_deref(), username)
+        });
+        let (index, _) = candidates.next()?;
+        candidates.next().is_none().then_some(index)
+    };
+    unique(&|login| login.eq_ignore_ascii_case(&domain))
+        .or_else(|| unique(&|login| same_site(login, &domain)))
 }
 
 /// Fold `com.apple.password-manager` metadata records into the login they
@@ -435,6 +446,18 @@ mod tests {
 
         assert_eq!(logins[0].title.as_deref(), Some("example.com"));
         assert_eq!(logins[0].name(), "");
+    }
+
+    #[test]
+    fn sidecar_joins_a_subdomain_of_the_same_site() {
+        let mut logins = vec![login("id-google", "accounts.google.com", "me@gmail.com")];
+        let mut metadata = sidecar("sidecar", "google.com", Some("me@gmail.com"));
+        metadata.title = Some("Google".to_string());
+
+        merge_sidecars(&mut logins, vec![metadata]);
+
+        assert_eq!(logins[0].title.as_deref(), Some("Google"));
+        assert_eq!(logins[0].display_name(), "Google");
     }
 
     #[test]
