@@ -1,6 +1,6 @@
 # Operate
 
-Queries read the snapshot. `apw sync` is the only command that talks to iCloud.
+Queries read the snapshot. `apw sync`, `apw login`, `apw join`, and the hidden probes talk to iCloud.
 
 ## Sync the snapshot
 

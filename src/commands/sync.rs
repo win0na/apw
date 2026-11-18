@@ -274,9 +274,6 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Resu
         }
     }
 
-    if std::env::var_os("APW_DEBUG").is_some() {
-        dump_items(&decrypted);
-    }
     let service_keys = service_keys(&decrypted);
     let mut group_data = Vec::new();
     if !service_keys.is_empty() {
@@ -450,6 +447,20 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Resu
     logins.append(&mut passkeys);
     logins.append(&mut wifi);
 
+    // A failed TLK unwrap or a transient zone error yields an empty list. Do
+    // not replace a good snapshot with it.
+    if logins.is_empty() && !snapshot.entries.is_empty() {
+        return Err(Error::Message(
+            "sync returned no entries; keeping the previous snapshot".into(),
+        ));
+    }
+    if paths.snapshot_file.exists() {
+        let _ = std::fs::copy(
+            &paths.snapshot_file,
+            paths.snapshot_file.with_extension("bin.prev"),
+        );
+    }
+
     snapshot.entries = logins;
     snapshot.groups = group_data.into_iter().map(|data| data.group).collect();
     snapshot.source = Source::Icloud;
@@ -544,50 +555,6 @@ fn service_keys(decrypted: &[(String, plist::Value)]) -> Vec<ServiceKey> {
         }
     }
     out
-}
-
-/// Debug helper: write the decrypted record inventory for offline analysis.
-fn dump_items(decrypted: &[(String, plist::Value)]) {
-    let mut out = Vec::new();
-    for (id, value) in decrypted {
-        let Some(dict) = value.as_dictionary() else {
-            continue;
-        };
-        let text = |key: &str| {
-            dict.get(key)
-                .and_then(|value| value.as_string())
-                .map(str::to_string)
-        };
-        let meta = dict
-            .get("v_Data")
-            .and_then(|value| value.as_data())
-            .filter(|bytes| bytes.starts_with(b"bplist00"))
-            .and_then(|bytes| plist::from_bytes::<plist::Value>(bytes).ok())
-            .and_then(|value| serde_json::to_value(value).ok());
-        let data = dict.get("v_Data").and_then(|value| value.as_data());
-        out.push(serde_json::json!({
-            "id": id,
-            "data_len": data.map(|bytes| bytes.len()),
-            "data": data.map(|bytes| {
-                use base64::Engine;
-                base64::engine::general_purpose::STANDARD.encode(bytes)
-            }),
-            "data_sha": data.map(|bytes| {
-                use sha2::{Digest, Sha256};
-                data_encoding::HEXLOWER.encode(&Sha256::digest(bytes))
-            }),
-            "agrp": text("agrp"),
-            "srvr": text("srvr"),
-            "acct": text("acct"),
-            "labl": text("labl"),
-            "type": dict.get("type"),
-            "meta": meta,
-        }));
-    }
-    let _ = std::fs::write(
-        "/tmp/opencode/apw-items.json",
-        serde_json::to_vec_pretty(&out).unwrap_or_default(),
-    );
 }
 
 fn decode(value: &str) -> Result<Vec<u8>> {

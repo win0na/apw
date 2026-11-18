@@ -54,7 +54,17 @@ pub fn run(
     config.account = Some(account.clone());
 
     // One prompt for the whole run: the snapshot key, then escrow reuse it.
+    // A passphrase from the environment is not reused for escrow: a timer or
+    // wrapper may set one that is not the device passcode.
+    let env_passphrase = std::env::var("APW_PASSPHRASE")
+        .ok()
+        .filter(|value| !value.is_empty());
     let passphrase = vault::ensure_passphrase(paths)?;
+    let escrow_passphrase = if env_passphrase.is_some() {
+        None
+    } else {
+        passphrase
+    };
 
     config.save(paths)?;
 
@@ -100,7 +110,7 @@ pub fn run(
     let joined = if should_join {
         let passcode = passcode
             .or_else(|| std::env::var("APW_ESCROW_PASSCODE").ok())
-            .or(passphrase);
+            .or(escrow_passphrase);
         Some(crate::commands::join::perform(paths, config, passcode)?)
     } else {
         None

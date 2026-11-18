@@ -101,9 +101,14 @@ pub async fn join(
         &bottle.label
     };
 
-    // GETRECORDS spends no attempt. Use it to report the budget before the
-    // irreversible RECOVER.
-    if let Ok(records) = escrow.list_records().await {
+    // GETRECORDS spends no attempt. Refuse to RECOVER without a budget: the
+    // recovery record is destroyed after ten failures.
+    let records = escrow.list_records().await.map_err(|error| {
+        Error::Message(format!(
+            "cannot read the escrow attempt budget ({error}); refusing to recover"
+        ))
+    })?;
+    {
         for (record_label, metadata) in &records {
             if record_label != label {
                 continue;
@@ -134,6 +139,7 @@ pub async fn join(
         }
     }
 
+    eprintln!("joining the trust spends one escrow attempt");
     let entropy = escrow.entropy(label, passcode, adsid).await?;
     let sponsor = escrow::recover_identity(&bottle, &entropy, adsid)?;
 

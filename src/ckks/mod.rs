@@ -57,7 +57,6 @@ pub fn unwrap_tlkshares(
             Ok(fields) => fields,
             Err(error) => {
                 if std::env::var_os("APW_DEBUG").is_some() && archive_fail == 0 {
-                    let _ = std::fs::write("/tmp/opencode/wrappedkey.bin", &wrapped);
                     eprintln!("ckks: archive error: {error}");
                 }
                 archive_fail += 1;

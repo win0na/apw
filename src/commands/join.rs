@@ -68,10 +68,7 @@ pub fn perform(paths: &Paths, config: &mut Config, passcode: Option<String>) -> 
         .clone()
         .ok_or_else(|| Error::Message("the session has no escrow URL".into()))?;
 
-    let passcode = match passcode
-        .or_else(|| std::env::var("APW_ESCROW_PASSCODE").ok())
-        .or_else(|| std::env::var("APW_PASSPHRASE").ok())
-    {
+    let passcode = match passcode.or_else(|| std::env::var("APW_ESCROW_PASSCODE").ok()) {
         Some(passcode) => passcode,
         None => {
             if !std::io::stdin().is_terminal() {

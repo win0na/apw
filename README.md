@@ -8,7 +8,7 @@
 
 `apw` reads Apple Passwords on Linux. It is a single Rust binary that keeps an encrypted local snapshot and answers queries offline.
 
-Apple ships Passwords for macOS, Windows, and iOS, with no Linux client and no public API for iCloud Keychain. `apw` signs in with an Apple ID, joins the device trust circle, decrypts the keychain records through escrow, and stores them in a snapshot. It never writes to Apple.
+Apple ships Passwords for macOS, Windows, and iOS, with no Linux client and no public API for iCloud Keychain. `apw` signs in with an Apple ID, joins the device trust circle, decrypts the keychain records through escrow, and stores them in a snapshot. Keychain and CloudKit records are read-only. The one write is the new trust peer that `login` or `join` adds; it cannot be removed by `apw`.
 
 Sign in, join, and sync run against a live account.
 

@@ -10,7 +10,7 @@ This page records the decisions behind the Linux port and the protocols it depen
 
 apw 2.0 is one Rust binary that reads Apple Passwords data from iCloud:
 
-- Live iCloud Keychain access through Apple ID authentication and an Octagon trust join, read-only.
+- Live iCloud Keychain access through Apple ID authentication and an Octagon trust join. Keychain and CloudKit records are read-only; the join adds one trust peer.
 - No Chrome, no Apple extension, no native messaging host, no daemon.
 - A local encrypted snapshot serves every query; a systemd user timer refreshes it.
 - Logins, notes and titles, TOTP, passkey metadata, and shared groups, including shared-with-me.
@@ -119,15 +119,15 @@ apw otp [QUERY]
 apw install-units
 ```
 
-Every command accepts `--json`. Output keeps the apw contract: `{"results": [...], "status": 0}` on success and `{"error": "...", "status": N, "results": []}` on failure, with the same status numbers.
+`--json` is global; a pipe also selects JSON. Success is `{"status": 0, "data": ...}` with an array for lists and an object for single results. Failure is `{"status": N, "error": {"code": "...", "message": "..."}}` on stderr. Exit codes are 0 ok, 1 generic, 2 usage, 3 not found, 4 auth, 5 network, 6 locked.
 
-Read-only means `pw save` does not exist. The help text says so, and an unknown `pw save` names the read-only build.
+There is no write command: no `save`, `delete`, or `share`. `login` and `join` are the only commands that change remote state, by adding a trust peer.
 
 ## Sync and rate limits
 
-`apw sync` refreshes `cloudKitToken` from `mmeAuthToken`. On 401 it records the failure and stops; it never retries the password.
+`apw sync` refreshes `cloudKitToken` from `mmeAuthToken` when CloudKit answers 401, retries once, and stops. It never retries the password.
 
-Syncs are at least five minutes apart. Errors back off exponentially to six hours, and `Retry-After` wins over the local schedule. The systemd timer fires hourly and the binary enforces the floor, so a suspended laptop catches up on the next tick.
+Syncs are at least five minutes apart; the systemd timer fires hourly and the binary enforces the floor, so a suspended laptop catches up on the next tick. There is no exponential backoff yet.
 
 ## Validation
 
