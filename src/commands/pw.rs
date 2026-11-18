@@ -14,7 +14,7 @@ pub fn list(
     json: bool,
 ) -> Result<()> {
     let vault = vault::load(paths, config)?;
-    let entries: Vec<_> = vault
+    let mut entries: Vec<_> = vault
         .entries
         .iter()
         .filter(|entry| entry.kind == EntryKind::Login)
@@ -28,6 +28,7 @@ pub fn list(
             None => true,
         })
         .collect();
+    entries.sort_by_key(|entry| entry.name().to_lowercase());
 
     if output::use_json(json) {
         let results = entries
@@ -47,9 +48,9 @@ pub fn list(
         .iter()
         .map(|entry| {
             vec![
-                entry.domain(),
+                entry.name(),
                 entry.username.clone().unwrap_or_default(),
-                entry.title.clone().unwrap_or_default(),
+                entry.domain(),
                 entry
                     .group
                     .as_deref()
@@ -58,18 +59,19 @@ pub fn list(
             ]
         })
         .collect::<Vec<_>>();
-    output::print_table(&["DOMAIN", "USERNAME", "TITLE", "GROUP"], &rows);
+    output::print_table(&["NAME", "USERNAME", "DOMAIN", "GROUP"], &rows);
     Ok(())
 }
 
 pub fn wifi(paths: &Paths, config: &mut Config, query: Option<&str>, json: bool) -> Result<()> {
     let vault = vault::load(paths, config)?;
-    let entries: Vec<_> = vault
+    let mut entries: Vec<_> = vault
         .entries
         .iter()
         .filter(|entry| entry.kind == EntryKind::Wifi)
         .filter(|entry| query.is_none_or(|value| entry.matches(value)))
         .collect();
+    entries.sort_by_key(|entry| entry.name().to_lowercase());
 
     if output::use_json(json) {
         let results = entries
@@ -96,7 +98,7 @@ pub fn get(
     json: bool,
 ) -> Result<()> {
     let vault = vault::load(paths, config)?;
-    let entries: Vec<_> = vault
+    let mut entries: Vec<_> = vault
         .entries
         .iter()
         .filter(|entry| matches!(entry.kind, EntryKind::Login | EntryKind::Wifi))
@@ -109,6 +111,7 @@ pub fn get(
             None => true,
         })
         .collect();
+    entries.sort_by_key(|entry| !entry.name().eq_ignore_ascii_case(query));
 
     if entries.is_empty() {
         return Err(Error::NoResults(match username {
@@ -129,7 +132,7 @@ pub fn get(
     for entry in entries {
         println!(
             "{}\t{}\t{}",
-            entry.domain(),
+            entry.name(),
             entry.username.clone().unwrap_or_default(),
             entry.password.clone().unwrap_or_default()
         );

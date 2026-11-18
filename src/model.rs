@@ -161,11 +161,20 @@ impl Entry {
         rest.split('/').next().unwrap_or(rest).to_string()
     }
 
-    pub fn label(&self) -> String {
-        self.title
-            .clone()
-            .or_else(|| self.username.clone())
-            .unwrap_or_else(|| self.domain())
+    /// The display name: the stored title when it carries information, else
+    /// the domain. Titles the sync synthesizes as `domain (user)` add nothing
+    /// to the domain, so they fall back.
+    pub fn name(&self) -> String {
+        let domain = self.domain();
+        let title = self.title.as_deref().unwrap_or("").trim();
+        if title.is_empty() {
+            return domain;
+        }
+        let user = self.username.as_deref().unwrap_or("");
+        if title == format!("{domain} ({user})") || title == format!("{domain} ()") {
+            return domain;
+        }
+        title.to_string()
     }
 
     pub fn matches(&self, query: &str) -> bool {

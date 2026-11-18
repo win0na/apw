@@ -16,6 +16,7 @@ pub fn login_result(entry: &Entry, include_password: bool) -> Value {
         "id": entry.id,
         "username": entry.username.clone().unwrap_or_default(),
         "domain": entry.domain(),
+        "name": entry.name(),
         "sites": entry.sites,
     });
     let object = result.as_object_mut().expect("object");

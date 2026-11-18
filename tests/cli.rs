@@ -73,6 +73,7 @@ fn pw_get_returns_the_password() {
     assert_eq!(value["status"], 0);
     assert_eq!(value["results"][0]["username"], "alice");
     assert_eq!(value["results"][0]["password"], "hunter2");
+    assert_eq!(value["results"][0]["name"], "Example");
     assert_eq!(value["results"][0]["domain"], "example.com");
 }
 
