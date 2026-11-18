@@ -35,10 +35,12 @@ pub async fn read_all(gateway: &Gateway, service_keys: &[ServiceKey]) -> Result<
             continue;
         }
         match read_zone(gateway, &zone.name, &zone.owner, service_keys).await {
-            Ok(group) => out.groups.push(group),
+            Ok(Some(group)) => out.groups.push(group),
+            Ok(None) => {}
             Err(error) => out.warnings.push(format!(
-                "group zone {} could not be read: {error}",
-                zone.name
+                "group zone {} ({:?}) could not be read: {error}",
+                zone.name,
+                gateway.scope()
             )),
         }
     }
@@ -96,7 +98,7 @@ async fn read_zone(
     zone_name: &str,
     owner: &str,
     service_keys: &[ServiceKey],
-) -> Result<GroupData> {
+) -> Result<Option<GroupData>> {
     let zone = gateway.zone_retrieve(zone_name, owner).await?;
     let records = records(gateway, zone_name, owner).await?;
 
@@ -124,9 +126,22 @@ async fn read_zone(
             );
         }
     }
-    let share = share_record
-        .and_then(|record| record.share_info.as_ref())
-        .ok_or_else(|| Error::Message("group zone has no share record".into()))?;
+    let share = share_record.and_then(|record| record.share_info.as_ref());
+    let share = match share {
+        Some(share) => Some(share),
+        // A group the user owns but never shared has no zoneshare record; the
+        // zone protection opens with the service key alone.
+        None if gateway.scope() == Scope::Private => None,
+        None => {
+            return Err(Error::Message(format!(
+                "group zone has no share record ({} records)",
+                records.len()
+            )))
+        }
+    };
+    if share.is_none() && !records.iter().any(|record| record.record_type == "item") {
+        return Ok(None);
+    }
 
     let keys = open_zone(&zone, share, gateway, service_keys)?;
     let id = zone_name.trim_start_matches("group-").to_string();
@@ -199,14 +214,7 @@ async fn read_zone(
         })
         .and_then(|plain| String::from_utf8(plain).ok());
 
-    let participants = share
-        .participants
-        .iter()
-        .filter(|participant| participant.state == 3)
-        .count();
-
-    let _ = participants;
-    Ok(GroupData {
+    Ok(Some(GroupData {
         group: Group {
             id,
             name,
@@ -214,7 +222,7 @@ async fn read_zone(
         },
         entries,
         skipped,
-    })
+    }))
 }
 
 fn password_entry(record_name: &str, group: &str, password: kcsharing::SharedPassword) -> Entry {
@@ -254,7 +262,7 @@ fn password_entry(record_name: &str, group: &str, password: kcsharing::SharedPas
 /// directly.
 fn open_zone(
     zone: &Zone,
-    share: &ShareInfo,
+    share: Option<&ShareInfo>,
     gateway: &Gateway,
     service_keys: &[ServiceKey],
 ) -> Result<Vec<PcsKey>> {
@@ -266,6 +274,8 @@ fn open_zone(
     let zone_protection = Protection::parse(protection)?;
 
     let decoded = if gateway.scope() == Scope::Shared {
+        let share =
+            share.ok_or_else(|| Error::Message("shared zone has no share record".into()))?;
         let participant = find_participant(share, gateway.user_id(), service_keys)?;
         let protection = participant
             .protection_info
