@@ -1,8 +1,8 @@
 use crate::commands::login_result;
 use crate::config::{Config, Paths};
 use crate::error::{Error, Result};
-use crate::model::EntryKind;
-use crate::output;
+use crate::model::{Entry, EntryKind};
+use crate::output::{self, Style};
 use crate::vault;
 
 pub fn list(
@@ -11,7 +11,7 @@ pub fn list(
     query: Option<&str>,
     personal: bool,
     group: Option<&str>,
-    json: bool,
+    style: Style,
 ) -> Result<()> {
     let vault = vault::load(paths, config)?;
     let mut entries: Vec<_> = vault
@@ -19,23 +19,16 @@ pub fn list(
         .iter()
         .filter(|entry| entry.kind == EntryKind::Login)
         .filter(|entry| query.is_none_or(|value| entry.matches(value)))
-        .filter(|entry| !personal || entry.group.is_none())
-        .filter(|entry| match group {
-            Some(group) => entry
-                .group
-                .as_deref()
-                .is_some_and(|value| value == group || value.starts_with(group)),
-            None => true,
-        })
+        .filter(|entry| in_scope(entry, personal, group))
         .collect();
     entries.sort_by_key(|entry| entry.name().to_lowercase());
 
-    if output::use_json(json) {
-        let results = entries
+    if style.json {
+        let data = entries
             .iter()
             .map(|entry| login_result(entry, false))
             .collect::<Vec<_>>();
-        output::print_json(&output::success(results.into()));
+        output::print_json(&output::success(data.into()));
         return Ok(());
     }
 
@@ -59,11 +52,16 @@ pub fn list(
             ]
         })
         .collect::<Vec<_>>();
-    output::print_table(&["NAME", "USERNAME", "DOMAIN", "GROUP"], &rows);
+    output::print_table_opts(
+        &["NAME", "USERNAME", "DOMAIN", "GROUP"],
+        &rows,
+        style.no_header,
+        style.wide,
+    );
     Ok(())
 }
 
-pub fn wifi(paths: &Paths, config: &mut Config, query: Option<&str>, json: bool) -> Result<()> {
+pub fn wifi(paths: &Paths, config: &mut Config, query: Option<&str>, style: Style) -> Result<()> {
     let vault = vault::load(paths, config)?;
     let mut entries: Vec<_> = vault
         .entries
@@ -73,29 +71,33 @@ pub fn wifi(paths: &Paths, config: &mut Config, query: Option<&str>, json: bool)
         .collect();
     entries.sort_by_key(|entry| entry.name().to_lowercase());
 
-    if output::use_json(json) {
-        let results = entries
+    if style.json {
+        let data = entries
             .iter()
-            .map(|entry| login_result(entry, false))
+            .map(|entry| login_result(entry, true))
             .collect::<Vec<_>>();
-        output::print_json(&output::success(results.into()));
+        output::print_json(&output::success(data.into()));
         return Ok(());
     }
 
     let rows = entries
         .iter()
-        .map(|entry| vec![entry.domain()])
+        .map(|entry| vec![entry.name()])
         .collect::<Vec<_>>();
-    output::print_table(&["NETWORK"], &rows);
+    output::print_table_opts(&["NETWORK"], &rows, style.no_header, style.wide);
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn get(
     paths: &Paths,
     config: &mut Config,
     query: &str,
     username: Option<&str>,
-    json: bool,
+    group: Option<&str>,
+    personal: bool,
+    password_only: bool,
+    style: Style,
 ) -> Result<()> {
     let vault = vault::load(paths, config)?;
     let mut entries: Vec<_> = vault
@@ -103,6 +105,7 @@ pub fn get(
         .iter()
         .filter(|entry| matches!(entry.kind, EntryKind::Login | EntryKind::Wifi))
         .filter(|entry| entry.matches(query))
+        .filter(|entry| in_scope(entry, personal, group))
         .filter(|entry| match username {
             Some(name) => entry
                 .username
@@ -111,31 +114,82 @@ pub fn get(
             None => true,
         })
         .collect();
-    entries.sort_by_key(|entry| !entry.name().eq_ignore_ascii_case(query));
 
     if entries.is_empty() {
         return Err(Error::NoResults(match username {
-            Some(name) => format!("no login for {query} with username {name}"),
-            None => format!("no login matches {query}"),
+            Some(name) => format!("no entry for {query} with username {name}"),
+            None => format!("no entry matches {query}"),
         }));
     }
 
-    if output::use_json(json) {
-        let results = entries
+    entries.sort_by(|left, right| {
+        let left_exact = exact(left, query);
+        let right_exact = exact(right, query);
+        right_exact
+            .cmp(&left_exact)
+            .then_with(|| left.name().to_lowercase().cmp(&right.name().to_lowercase()))
+    });
+
+    if style.json {
+        let data = entries
             .iter()
             .map(|entry| login_result(entry, true))
             .collect::<Vec<_>>();
-        output::print_json(&output::success(results.into()));
+        output::print_json(&output::success(data.into()));
         return Ok(());
     }
 
-    for entry in entries {
-        println!(
-            "{}\t{}\t{}",
-            entry.name(),
-            entry.username.clone().unwrap_or_default(),
-            entry.password.clone().unwrap_or_default()
-        );
+    if password_only {
+        for entry in &entries {
+            println!("{}", entry.password.clone().unwrap_or_default());
+        }
+        return Ok(());
+    }
+
+    for (index, entry) in entries.iter().enumerate() {
+        if index > 0 {
+            println!();
+        }
+        let mut rows = vec![("Name", entry.name())];
+        if let Some(username) = entry.username.clone() {
+            rows.push(("Username", username));
+        }
+        if entry.kind == EntryKind::Wifi {
+            rows.push(("Network", entry.domain()));
+        } else {
+            rows.push(("Domain", entry.domain()));
+        }
+        rows.push((
+            "Password",
+            entry
+                .password
+                .clone()
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| "(none)".into()),
+        ));
+        output::print_block(&rows);
     }
     Ok(())
+}
+
+fn exact(entry: &Entry, query: &str) -> bool {
+    entry.name().eq_ignore_ascii_case(query)
+        || entry.domain().eq_ignore_ascii_case(query)
+        || entry
+            .username
+            .as_deref()
+            .is_some_and(|value| value.eq_ignore_ascii_case(query))
+}
+
+fn in_scope(entry: &Entry, personal: bool, group: Option<&str>) -> bool {
+    if personal && entry.group.is_some() {
+        return false;
+    }
+    match group {
+        Some(group) => entry
+            .group
+            .as_deref()
+            .is_some_and(|value| value == group || value.starts_with(group)),
+        None => true,
+    }
 }

@@ -23,11 +23,11 @@ pub fn run(paths: &Paths, _config: &Config, json: bool) -> Result<()> {
     let hint = "systemctl --user daemon-reload && systemctl --user enable --now apw-sync.timer";
 
     if output::use_json(json) {
-        output::print_json(&output::success(serde_json::json!([{
+        output::print_json(&output::success(serde_json::json!({
             "service": service_path,
             "timer": timer_path,
             "enable": hint,
-        }])));
+        })));
         return Ok(());
     }
 

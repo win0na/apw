@@ -30,7 +30,7 @@ pub fn run(paths: &Paths, config: &mut Config, passcode: Option<String>, json: b
         "account": joined.account,
     });
     if output::use_json(json) {
-        output::print_json(&output::success(serde_json::json!([result])));
+        output::print_json(&output::success(result));
     } else {
         println!("joined the trust as {}", joined.peer);
         println!("run `apw sync` to read the keychain");
@@ -48,13 +48,13 @@ pub struct Joined {
 
 pub fn perform(paths: &Paths, config: &mut Config, passcode: Option<String>) -> Result<Joined> {
     if !paths.snapshot_file.exists() {
-        return Err(Error::Invalid("run `apw login` first".into()));
+        return Err(Error::Auth("run `apw login` first".into()));
     }
     let mut snapshot = vault::load(paths, config)?;
     let session = snapshot
         .session
         .clone()
-        .ok_or_else(|| Error::Invalid("run `apw login` first".into()))?;
+        .ok_or_else(|| Error::Auth("run `apw login` first".into()))?;
     let account = snapshot
         .account
         .clone()

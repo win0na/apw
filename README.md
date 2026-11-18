@@ -45,10 +45,10 @@ Escrow allows about ten attempts before the record is destroyed, so read [Troubl
 
 ```sh
 apw sync
-apw pw list example.com
-apw pw get example.com
-apw pw wifi
-apw otp get example.com
+apw list example.com
+apw get example.com
+apw wifi
+apw otp example.com
 ```
 
 `apw sync` decrypts the iCloud records into the snapshot. `apw pw` and `apw otp` read the snapshot and never touch the network.

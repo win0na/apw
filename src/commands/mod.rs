@@ -49,6 +49,7 @@ pub fn otp_result(entry: &Entry, code: &str) -> Value {
         "id": entry.id,
         "username": entry.username.clone().unwrap_or_default(),
         "domain": entry.domain(),
+        "name": entry.name(),
         "source": source,
         "code": code,
     })

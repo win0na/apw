@@ -8,6 +8,12 @@ pub enum Error {
     Invalid(String),
     #[error("{0}")]
     NoResults(String),
+    #[error("{0}")]
+    Auth(String),
+    #[error("{0}")]
+    Network(String),
+    #[error("{0}")]
+    Locked(String),
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
@@ -32,7 +38,21 @@ impl Error {
             Error::Message(_) => Status::GenericError as i32,
             Error::Invalid(_) => Status::InvalidParam as i32,
             Error::NoResults(_) => Status::NoResults as i32,
+            Error::Auth(_) => Status::Auth as i32,
+            Error::Network(_) | Error::Http(_) => Status::Network as i32,
+            Error::Locked(_) | Error::Aead => Status::Locked as i32,
             _ => Status::GenericError as i32,
+        }
+    }
+
+    pub fn code(&self) -> &'static str {
+        match self {
+            Error::Invalid(_) => "usage",
+            Error::NoResults(_) => "not_found",
+            Error::Auth(_) => "auth",
+            Error::Network(_) | Error::Http(_) => "network",
+            Error::Locked(_) | Error::Aead => "locked",
+            _ => "error",
         }
     }
 

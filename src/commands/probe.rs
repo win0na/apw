@@ -12,7 +12,7 @@ pub fn escrow(paths: &Paths, config: &mut Config, json: bool) -> Result<()> {
     let session = snapshot
         .session
         .clone()
-        .ok_or_else(|| Error::Invalid("run `apw login` first".into()))?;
+        .ok_or_else(|| Error::Auth("run `apw login` first".into()))?;
     let account = snapshot
         .account
         .clone()
@@ -67,7 +67,7 @@ pub fn settings(paths: &Paths, config: &mut Config, json: bool) -> Result<()> {
     let session = snapshot
         .session
         .clone()
-        .ok_or_else(|| Error::Invalid("run `apw login` first".into()))?;
+        .ok_or_else(|| Error::Auth("run `apw login` first".into()))?;
     let url = config
         .anisette_url()
         .ok_or_else(|| Error::Invalid("set an anisette URL in the config".into()))?;
@@ -98,7 +98,7 @@ pub fn zone(paths: &Paths, config: &mut Config, zone: &str, json: bool) -> Resul
     let session = snapshot
         .session
         .clone()
-        .ok_or_else(|| Error::Invalid("run `apw login` first".into()))?;
+        .ok_or_else(|| Error::Auth("run `apw login` first".into()))?;
     let url = config
         .anisette_url()
         .ok_or_else(|| Error::Invalid("set an anisette URL in the config".into()))?;
@@ -162,11 +162,11 @@ pub fn tlks(paths: &Paths, config: &mut Config, json: bool) -> Result<()> {
     let session = snapshot
         .session
         .clone()
-        .ok_or_else(|| Error::Invalid("run `apw login` first".into()))?;
+        .ok_or_else(|| Error::Auth("run `apw login` first".into()))?;
     let peer = snapshot
         .peer
         .clone()
-        .ok_or_else(|| Error::Invalid("run `apw join` first".into()))?;
+        .ok_or_else(|| Error::Auth("run `apw join` first".into()))?;
     let url = config
         .anisette_url()
         .ok_or_else(|| Error::Invalid("set an anisette URL in the config".into()))?;
@@ -266,7 +266,7 @@ pub fn zones(paths: &Paths, config: &mut Config, json: bool) -> Result<()> {
     let session = snapshot
         .session
         .clone()
-        .ok_or_else(|| Error::Invalid("run `apw login` first".into()))?;
+        .ok_or_else(|| Error::Auth("run `apw login` first".into()))?;
     let url = config
         .anisette_url()
         .ok_or_else(|| Error::Invalid("set an anisette URL in the config".into()))?;
@@ -355,7 +355,7 @@ pub fn group(paths: &Paths, config: &mut Config, zone: &str, json: bool) -> Resu
     let session = snapshot
         .session
         .clone()
-        .ok_or_else(|| Error::Invalid("run `apw login` first".into()))?;
+        .ok_or_else(|| Error::Auth("run `apw login` first".into()))?;
     let url = config
         .anisette_url()
         .ok_or_else(|| Error::Invalid("set an anisette URL in the config".into()))?;
@@ -424,7 +424,7 @@ pub fn refresh(paths: &Paths, config: &mut Config, json: bool) -> Result<()> {
     let session = snapshot
         .session
         .clone()
-        .ok_or_else(|| Error::Invalid("run `apw login` first".into()))?;
+        .ok_or_else(|| Error::Auth("run `apw login` first".into()))?;
     let refreshed = crate::auth::refresh_services(config, &session)?;
     snapshot.session = Some(refreshed.clone());
     vault::save(paths, config, &snapshot)?;

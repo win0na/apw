@@ -62,7 +62,7 @@ fn pw_get_returns_the_password() {
     sync(&dir);
 
     let output = apw(&dir)
-        .args(["pw", "get", "example.com", "--json"])
+        .args(["get", "example.com", "--json"])
         .assert()
         .success()
         .get_output()
@@ -71,10 +71,10 @@ fn pw_get_returns_the_password() {
 
     let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
     assert_eq!(value["status"], 0);
-    assert_eq!(value["results"][0]["username"], "alice");
-    assert_eq!(value["results"][0]["password"], "hunter2");
-    assert_eq!(value["results"][0]["name"], "Example");
-    assert_eq!(value["results"][0]["domain"], "example.com");
+    assert_eq!(value["data"][0]["username"], "alice");
+    assert_eq!(value["data"][0]["password"], "hunter2");
+    assert_eq!(value["data"][0]["name"], "Example");
+    assert_eq!(value["data"][0]["domain"], "example.com");
 }
 
 #[test]
@@ -83,7 +83,7 @@ fn pw_get_filters_by_username() {
     sync(&dir);
 
     apw(&dir)
-        .args(["pw", "get", "example.com", "--username", "bob", "--json"])
+        .args(["get", "example.com", "--username", "bob", "--json"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("\"status\":3"));
@@ -95,7 +95,7 @@ fn pw_list_hides_notes_and_passwords() {
     sync(&dir);
 
     let output = apw(&dir)
-        .args(["pw", "list", "--json"])
+        .args(["list", "--json"])
         .assert()
         .success()
         .get_output()
@@ -103,7 +103,7 @@ fn pw_list_hides_notes_and_passwords() {
         .clone();
 
     let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
-    let results = value["results"].as_array().unwrap();
+    let results = value["data"].as_array().unwrap();
     assert_eq!(results.len(), 2);
     assert!(results.iter().all(|entry| entry["password"].is_null()));
     assert!(results.iter().all(|entry| entry["title"] != "Guest Wi-Fi"));
@@ -115,7 +115,7 @@ fn otp_get_returns_a_six_digit_code() {
     sync(&dir);
 
     let output = apw(&dir)
-        .args(["otp", "get", "example.com", "--json"])
+        .args(["otp", "example.com", "--json"])
         .assert()
         .success()
         .get_output()
@@ -123,10 +123,10 @@ fn otp_get_returns_a_six_digit_code() {
         .clone();
 
     let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
-    let code = value["results"][0]["code"].as_str().unwrap();
+    let code = value["data"][0]["code"].as_str().unwrap();
     assert_eq!(code.len(), 6);
     assert!(code.chars().all(|c| c.is_ascii_digit()));
-    assert_eq!(value["results"][0]["source"], "Example");
+    assert_eq!(value["data"][0]["source"], "Example");
 }
 
 #[test]
@@ -136,7 +136,7 @@ fn wrong_passphrase_fails_cleanly() {
 
     apw(&dir)
         .env("APW_PASSPHRASE", "wrong passphrase")
-        .args(["pw", "get", "example.com", "--json"])
+        .args(["get", "example.com", "--json"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("cannot decrypt the snapshot"));
@@ -146,7 +146,7 @@ fn wrong_passphrase_fails_cleanly() {
 fn missing_snapshot_points_at_sync() {
     let dir = TempDir::new().unwrap();
     apw(&dir)
-        .args(["pw", "list", "--json"])
+        .args(["list", "--json"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("run `apw sync` first"));
@@ -166,11 +166,11 @@ fn status_reports_the_snapshot() {
         .clone();
 
     let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
-    assert_eq!(value["results"][0]["entries"], 3);
-    assert_eq!(value["results"][0]["logins"], 2);
-    assert_eq!(value["results"][0]["wifi"], 1);
-    assert_eq!(value["results"][0]["groups"], 1);
-    assert_eq!(value["results"][0]["source"], "fixture");
+    assert_eq!(value["data"]["entries"], 3);
+    assert_eq!(value["data"]["logins"], 2);
+    assert_eq!(value["data"]["wifi"], 1);
+    assert_eq!(value["data"]["groups"], 1);
+    assert_eq!(value["data"]["source"], "fixture");
 }
 
 #[test]
@@ -178,19 +178,19 @@ fn pw_wifi_lists_networks_and_get_returns_the_password() {
     let dir = TempDir::new().unwrap();
     sync(&dir);
 
-    let output = apw(&dir).args(["pw", "wifi", "--json"]).output().unwrap();
+    let output = apw(&dir).args(["wifi", "--json"]).output().unwrap();
     assert!(output.status.success());
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(value["results"].as_array().unwrap().len(), 1);
-    assert_eq!(value["results"][0]["domain"], "HomeNet");
+    assert_eq!(value["data"].as_array().unwrap().len(), 1);
+    assert_eq!(value["data"][0]["domain"], "HomeNet");
 
     let output = apw(&dir)
-        .args(["pw", "get", "HomeNet", "--json"])
+        .args(["get", "HomeNet", "--json"])
         .output()
         .unwrap();
     assert!(output.status.success());
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(value["results"][0]["password"], "wifi-secret");
+    assert_eq!(value["data"][0]["password"], "wifi-secret");
 }
 
 #[test]
@@ -204,4 +204,45 @@ fn login_explains_how_to_start_anisette() {
         .failure()
         .stderr(predicate::str::contains("podman run"))
         .stderr(predicate::str::contains("anisette-server-rs"));
+}
+
+#[test]
+fn get_returns_every_match() {
+    let dir = TempDir::new().unwrap();
+    sync(&dir);
+
+    let output = apw(&dir)
+        .args(["get", "e", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(value["data"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn get_password_only_prints_one_password_per_line() {
+    let dir = TempDir::new().unwrap();
+    sync(&dir);
+
+    let output = apw(&dir)
+        .args(["get", "e", "--password-only"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8(output).unwrap();
+    assert_eq!(text, "hunter2\nwifi-secret\n");
+}
+
+#[test]
+fn missing_session_uses_the_auth_exit_code() {
+    let dir = TempDir::new().unwrap();
+    apw(&dir)
+        .args(["join", "--passcode", "1234"])
+        .assert()
+        .code(4);
 }

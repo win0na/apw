@@ -47,7 +47,7 @@ Shared groups live in the `com.apple.security.shared.keychain` container, one zo
 
 A group whose key or payload cannot be decoded is reported as locked, and the rest of the sync continues.
 
-`apw pw list` shows a GROUP column and includes shared items by default. `--personal` restricts the list to personal items; `--group <uuid>` restricts it to one group.
+`apw list` shows a GROUP column and includes shared items by default. `--personal` restricts the list to personal items; `--group <uuid>` restricts it to one group.
 
 ## Inspect the timer
 
@@ -70,7 +70,7 @@ The fixture path exercises the storage layer without Apple credentials:
 
 ```sh
 apw sync --fixture tests/fixtures/vault.json
-apw pw list
+apw list
 ```
 
 `APW_FIXTURE` does the same when `--fixture` is absent. Fixtures use the same JSON model as the snapshot.

@@ -131,7 +131,7 @@ pub fn run(
     });
 
     if output::use_json(json) {
-        output::print_json(&output::success(serde_json::json!([result])));
+        output::print_json(&output::success(result));
     } else {
         println!("signed in as {account}");
         if let Some(joined) = &joined {
@@ -155,7 +155,7 @@ fn refresh_services(paths: &Paths, config: &mut Config, account: &str, json: boo
     let mut session = snapshot
         .session
         .clone()
-        .ok_or_else(|| Error::Invalid("run `apw login` first".into()))?;
+        .ok_or_else(|| Error::Auth("run `apw login` first".into()))?;
     let url = config
         .anisette_url()
         .ok_or_else(|| Error::Invalid("set an anisette URL in the config".into()))?;
@@ -182,7 +182,7 @@ fn refresh_services(paths: &Paths, config: &mut Config, account: &str, json: boo
         "services": services.names,
     });
     if output::use_json(json) {
-        output::print_json(&output::success(serde_json::json!([result])));
+        output::print_json(&output::success(result));
     } else {
         println!("cloudkit {}", session.ckdatabasews_url.unwrap_or_default());
         println!("escrow {}", session.escrow_proxy_url.unwrap_or_default());

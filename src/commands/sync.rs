@@ -68,17 +68,17 @@ pub fn run_silent(paths: &Paths, config: &mut Config) -> Result<()> {
 
 fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Result<()> {
     if !paths.snapshot_file.exists() {
-        return Err(Error::Invalid("run `apw login` first".into()));
+        return Err(Error::Auth("run `apw login` first".into()));
     }
     let mut snapshot = vault::load(paths, config)?;
     let session = snapshot
         .session
         .clone()
-        .ok_or_else(|| Error::Invalid("run `apw login` first".into()))?;
+        .ok_or_else(|| Error::Auth("run `apw login` first".into()))?;
     let peer_state = snapshot
         .peer
         .clone()
-        .ok_or_else(|| Error::Invalid("run `apw join` first".into()))?;
+        .ok_or_else(|| Error::Auth("run `apw join` first".into()))?;
     let anisette_url = config
         .anisette_url()
         .ok_or_else(|| Error::Invalid("set an anisette URL in the config".into()))?;
@@ -512,7 +512,7 @@ fn finish(
 
     if emit {
         if output::use_json(json) {
-            output::print_json(&output::success(serde_json::json!([result])));
+            output::print_json(&output::success(result));
         } else {
             println!("synced {} logins from {note}", snapshot.login_count());
         }

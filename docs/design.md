@@ -112,10 +112,10 @@ Writes go to a temporary file, fsync, then rename, with mode `0600`. Tokens, pee
 apw login [--anisette-url URL] [--account EMAIL]
 apw sync [--force] [--fixture PATH]
 apw status
-apw pw list [QUERY]
-apw pw get QUERY [--username NAME]
-apw otp list [QUERY]
-apw otp get QUERY
+apw list [QUERY]
+apw get QUERY [--username NAME] [--password-only]
+apw wifi [QUERY]
+apw otp [QUERY]
 apw install-units
 ```
 
@@ -135,7 +135,7 @@ There are no live Apple credentials in the development environment, and escrow a
 
 - Unit vectors: RFC 5297 (AES-SIV), RFC 6238 (TOTP), RFC 5054 (SRP), HKDF-SHA384, and vectors from the prior-art projects below.
 - Integration: recorded, sanitized CloudKit and anisette fixtures behind a mock gateway.
-- Live gate: one `apw login`, then `apw sync`, `apw pw list`, and `apw otp get` on the user's own account.
+- Live gate: one `apw login`, then `apw sync`, `apw list`, and `apw otp` on the user's own account.
 
 The escrow SRP padding rule is the one unresolved vector: implementations disagree on whether `u` hashes padded or trimmed public values. The padded form follows RFC 5054 and is the default; a live attempt should not run until the vectors agree.
 

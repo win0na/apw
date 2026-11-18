@@ -7,6 +7,9 @@ pub enum Status {
     GenericError = 1,
     InvalidParam = 2,
     NoResults = 3,
+    Auth = 4,
+    Network = 5,
+    Locked = 6,
     ServerError = 100,
 }
 

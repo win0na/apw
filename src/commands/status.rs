@@ -1,8 +1,8 @@
 use crate::config::{self, Config, Paths};
 use crate::error::Result;
-use crate::output;
+use crate::output::{self, Style};
 
-pub fn run(paths: &Paths, config: &Config, json: bool) -> Result<()> {
+pub fn run(paths: &Paths, config: &Config, style: Style) -> Result<()> {
     let state = config::load_state(paths)?;
     let snapshot = std::fs::metadata(&paths.snapshot_file).ok();
     let interval = config.sync.min_interval_seconds;
@@ -31,40 +31,39 @@ pub fn run(paths: &Paths, config: &Config, json: bool) -> Result<()> {
         "config": paths.config_file,
     });
 
-    if output::use_json(json) {
-        output::print_json(&output::success(serde_json::json!([result])));
+    if style.json {
+        output::print_json(&output::success(result));
         return Ok(());
     }
 
-    for (label, value) in [
+    let rows = [
         (
-            "account",
+            "Account",
             result["account"].as_str().unwrap_or("-").to_string(),
         ),
         (
-            "source",
+            "Source",
             result["source"].as_str().unwrap_or("-").to_string(),
         ),
-        ("entries", result["entries"].to_string()),
-        ("logins", result["logins"].to_string()),
-        ("passkeys", result["passkeys"].to_string()),
-        ("wifi", result["wifi"].to_string()),
-        ("groups", result["groups"].to_string()),
-        ("shared", result["shared_entries"].to_string()),
+        ("Entries", result["entries"].to_string()),
+        ("Logins", result["logins"].to_string()),
+        ("Passkeys", result["passkeys"].to_string()),
+        ("Wi-Fi", result["wifi"].to_string()),
+        ("Groups", result["groups"].to_string()),
+        ("Shared", result["shared_entries"].to_string()),
         (
-            "last sync",
+            "Last sync",
             result["last_sync"].as_str().unwrap_or("never").to_string(),
         ),
         (
-            "snapshot",
+            "Snapshot",
             format!(
                 "{} ({} bytes)",
                 paths.snapshot_file.display(),
                 result["snapshot_bytes"]
             ),
         ),
-    ] {
-        println!("{label:<10} {value}");
-    }
+    ];
+    output::print_kv(&rows);
     Ok(())
 }

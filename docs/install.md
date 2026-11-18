@@ -97,8 +97,8 @@ loginctl enable-linger "$USER"
 
 ```sh
 apw status
-apw pw list
-apw otp get example.com
+apw list
+apw otp example.com
 ```
 
 `apw status` prints the account, source, entry count, and snapshot path.

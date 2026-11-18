@@ -12,16 +12,15 @@ This build signs in, joins the trust, and syncs against a live account. See [Pro
 | `apw join [--passcode CODE]` | Join the trust again with a new peer. Spends one escrow attempt. |
 | `apw sync [--force] [--fixture PATH]` | Refresh the snapshot. |
 | `apw status` | Print account, counts, last sync, and snapshot path. |
-| `apw pw list [QUERY] [--personal] [--group UUID]` | List logins by name, filtered by name, domain, or username. |
-| `apw pw get QUERY [--username NAME]` | Print the password for the matches, including a Wi-Fi network. |
-| `apw pw wifi [QUERY]` | List saved Wi-Fi networks. |
-| `apw otp list [QUERY]` | List current one-time codes. |
-| `apw otp get QUERY` | Print the current one-time code. |
+| `apw list [QUERY] [--personal] [--group UUID]` | List logins by name. |
+| `apw get QUERY [--username NAME] [--group UUID] [--personal] [--password-only]` | Print every match, including Wi-Fi networks. |
+| `apw wifi [QUERY]` | List saved Wi-Fi networks. |
+| `apw otp [QUERY]` | List current codes, or print the code for a query. |
 | `apw install-units` | Write the systemd user service and timer. |
 
-`--json` is global and works on every command. Tables are the default on a terminal; a pipe or a redirect gets JSON.
+`--json`, `--wide`, and `--no-header` are global. Tables are the default on a terminal; a pipe or a redirect gets JSON. `--wide` and `--no-header` keep the text form through a pipe.
 
-`QUERY` matches a substring of the domain, URL, title, or username, case-insensitive.
+`QUERY` matches a substring of the name, domain, URL, or username, case-insensitive. `get` prints all matches as labeled blocks, best match first; `--password-only` prints one password per line and always stays text. `otp` with a query prints just the code, so `$(apw otp github.com)` works.
 
 ## Files
 
@@ -63,16 +62,16 @@ The three directory variables exist for tests and for running from a removable v
 
 ## JSON output
 
-Every command prints one object. Success:
+Every command prints one object. Lists put an array in `data`; single results put an object:
 
 ```json
-{"results":[{"id":"login-example","username":"alice","domain":"example.com","sites":["example.com"],"title":"Example","password":"hunter2"}],"status":0}
+{"status":0,"data":[{"id":"login-example","name":"Example","username":"alice","domain":"example.com","sites":["example.com"]}]}
 ```
 
-Failure goes to stderr, and the process exits with the status code:
+Failure goes to stderr, and the process exits with the same status:
 
 ```json
-{"error":"no login matches example.org","status":3,"results":[]}
+{"status":3,"error":{"code":"not_found","message":"no entry matches example.org"}}
 ```
 
 | Status | Meaning |
@@ -81,11 +80,13 @@ Failure goes to stderr, and the process exits with the status code:
 | 1 | Generic error |
 | 2 | Invalid parameter |
 | 3 | No results |
-| 100 | Server error, reserved |
+| 4 | Not signed in, or the session expired |
+| 5 | Network or Apple service failure |
+| 6 | Locked: wrong snapshot passcode, or an undecryptable item |
 
-The codes match the macOS apw build, so scripts that check `status` keep working.
+`error.code` is one of `usage`, `not_found`, `auth`, `network`, `locked`, or `error`.
 
-`pw wifi` results use the same shape as `pw list`, with the network name in `domain`. `pw list` results carry `id`, `name`, `username`, `domain`, `sites`, `title`, `notes`, and `group` when present. `name` is the stored title, or the domain when the title only repeats it. `pw get` adds `password`. `otp` results carry `id`, `username`, `domain`, `source`, and `code`.
+`list` and `wifi` results carry `id`, `name`, `username`, `domain`, `sites`, `title`, `notes`, and `group` when present. `name` is the stored title, or the domain when the title only repeats it. `get` adds `password`. `otp` results carry `id`, `name`, `username`, `domain`, `source`, and `code`.
 
 ## Snapshot format
 

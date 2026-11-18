@@ -5,26 +5,33 @@ use clap::{Parser, Subcommand};
 use crate::commands;
 use crate::config::{Config, Paths};
 use crate::error::Result;
+use crate::output::Style;
 
 #[derive(Debug, Parser)]
 #[command(
     name = "apw",
     version,
     about = "Read Apple Passwords on Linux",
-    long_about = "Read logins and one-time codes from Apple Passwords. The vault is a local \
-                  encrypted snapshot; query commands never touch the network."
+    long_about = "Read logins, one-time codes, and Wi-Fi networks from Apple Passwords. \
+                  The vault is a local encrypted snapshot; query commands never touch the network."
 )]
 pub struct Cli {
-    /// Print the JSON envelope instead of a table.
+    /// Print JSON instead of a table. JSON is also used when stdout is a pipe.
     #[arg(long, global = true)]
     pub json: bool,
+    /// Do not truncate tables to the terminal width.
+    #[arg(long, global = true)]
+    pub wide: bool,
+    /// Omit table headers.
+    #[arg(long, global = true)]
+    pub no_header: bool,
     #[command(subcommand)]
     pub command: Command,
 }
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Sign in to iCloud and write the first snapshot.
+    /// Sign in to iCloud, join the trust, and write the first snapshot.
     Login {
         /// Anisette server base URL.
         #[arg(long)]
@@ -65,6 +72,46 @@ pub enum Command {
     },
     /// Show the account, snapshot age, and entry counts.
     Status,
+    /// List logins.
+    List {
+        /// Filter by name, domain, or username.
+        query: Option<String>,
+        /// Only entries that are not in a shared group.
+        #[arg(long)]
+        personal: bool,
+        /// Only entries from one group.
+        #[arg(long)]
+        group: Option<String>,
+    },
+    /// Print a login or Wi-Fi network.
+    Get {
+        /// Name, domain, or username.
+        query: String,
+        /// Only entries with this username.
+        #[arg(long)]
+        username: Option<String>,
+        /// Only entries from one group.
+        #[arg(long)]
+        group: Option<String>,
+        /// Only entries that are not in a shared group.
+        #[arg(long)]
+        personal: bool,
+        /// Print only the password, one per match.
+        #[arg(long)]
+        password_only: bool,
+    },
+    /// List Wi-Fi networks.
+    Wifi {
+        /// Filter by network name.
+        query: Option<String>,
+    },
+    /// List one-time codes, or print the code for a query.
+    Otp {
+        /// Name, domain, or username. When given, prints just the code.
+        query: Option<String>,
+    },
+    /// Install the systemd user service and timer.
+    InstallUnits,
     /// Probe escrow authentication without spending an attempt.
     #[command(hide = true)]
     ProbeEscrow,
@@ -89,48 +136,6 @@ pub enum Command {
     /// Count snapshot records by kind.
     #[command(hide = true)]
     ProbeStats,
-    /// Read logins.
-    Pw {
-        #[command(subcommand)]
-        command: PwCommand,
-    },
-    /// Read one-time codes.
-    Otp {
-        #[command(subcommand)]
-        command: OtpCommand,
-    },
-    /// Install the systemd user service and timer.
-    InstallUnits,
-}
-
-#[derive(Debug, Subcommand)]
-pub enum PwCommand {
-    /// List logins, optionally filtered by a domain, title, or username.
-    List {
-        query: Option<String>,
-        /// Only entries that are not in a shared group.
-        #[arg(long)]
-        personal: bool,
-        /// Only entries from one group.
-        #[arg(long)]
-        group: Option<String>,
-    },
-    /// Print the password for a domain, title, username, or network.
-    Get {
-        query: String,
-        #[arg(long)]
-        username: Option<String>,
-    },
-    /// List saved Wi-Fi networks.
-    Wifi { query: Option<String> },
-}
-
-#[derive(Debug, Subcommand)]
-pub enum OtpCommand {
-    /// List one-time codes, optionally filtered.
-    List { query: Option<String> },
-    /// Print the current one-time code.
-    Get { query: String },
 }
 
 pub fn run() -> i32 {
@@ -147,6 +152,7 @@ pub fn run() -> i32 {
 fn execute(cli: Cli) -> Result<()> {
     let paths = Paths::resolve()?;
     let mut config = Config::load(&paths)?;
+    let style = Style::new(cli.json, cli.wide, cli.no_header);
 
     match cli.command {
         Command::Login {
@@ -167,49 +173,64 @@ fn execute(cli: Cli) -> Result<()> {
             no_join,
             passcode,
             code,
-            cli.json,
+            style.json,
         ),
-        Command::Join { passcode } => commands::join::run(&paths, &mut config, passcode, cli.json),
+        Command::Join { passcode } => {
+            commands::join::run(&paths, &mut config, passcode, style.json)
+        }
         Command::Sync { force, fixture } => {
-            commands::sync::run(&paths, &mut config, force, fixture, cli.json)
+            commands::sync::run(&paths, &mut config, force, fixture, style.json)
         }
-        Command::Status => commands::status::run(&paths, &config, cli.json),
-        Command::ProbeEscrow => commands::probe::escrow(&paths, &mut config, cli.json),
-        Command::ProbeSettings => commands::probe::settings(&paths, &mut config, cli.json),
-        Command::ProbeZone { zone } => commands::probe::zone(&paths, &mut config, &zone, cli.json),
-        Command::ProbeTlks => commands::probe::tlks(&paths, &mut config, cli.json),
-        Command::ProbeRefresh => commands::probe::refresh(&paths, &mut config, cli.json),
-        Command::ProbeZones => commands::probe::zones(&paths, &mut config, cli.json),
-        Command::ProbeGroup { zone } => {
-            commands::probe::group(&paths, &mut config, &zone, cli.json)
-        }
-        Command::ProbeStats => commands::probe::stats(&paths, &mut config, cli.json),
-        Command::Pw { command } => match command {
-            PwCommand::List {
-                query,
-                personal,
-                group,
-            } => commands::pw::list(
+        Command::Status => commands::status::run(&paths, &config, style),
+        Command::List {
+            query,
+            personal,
+            group,
+        } => commands::pw::list(
+            &paths,
+            &mut config,
+            query.as_deref(),
+            personal,
+            group.as_deref(),
+            style,
+        ),
+        Command::Get {
+            query,
+            username,
+            group,
+            personal,
+            password_only,
+        } => {
+            let mut style = style;
+            // `--password-only` is for scripts: keep it text even through a pipe.
+            if password_only && !style.explicit_json {
+                style.json = false;
+            }
+            commands::pw::get(
                 &paths,
                 &mut config,
-                query.as_deref(),
-                personal,
+                &query,
+                username.as_deref(),
                 group.as_deref(),
-                cli.json,
-            ),
-            PwCommand::Get { query, username } => {
-                commands::pw::get(&paths, &mut config, &query, username.as_deref(), cli.json)
-            }
-            PwCommand::Wifi { query } => {
-                commands::pw::wifi(&paths, &mut config, query.as_deref(), cli.json)
-            }
-        },
-        Command::Otp { command } => match command {
-            OtpCommand::List { query } => {
-                commands::otp::list(&paths, &mut config, query.as_deref(), cli.json)
-            }
-            OtpCommand::Get { query } => commands::otp::get(&paths, &mut config, &query, cli.json),
-        },
-        Command::InstallUnits => commands::units::run(&paths, &config, cli.json),
+                personal,
+                password_only,
+                style,
+            )
+        }
+        Command::Wifi { query } => commands::pw::wifi(&paths, &mut config, query.as_deref(), style),
+        Command::Otp { query } => commands::otp::run(&paths, &mut config, query.as_deref(), style),
+        Command::InstallUnits => commands::units::run(&paths, &config, style.json),
+        Command::ProbeEscrow => commands::probe::escrow(&paths, &mut config, style.json),
+        Command::ProbeSettings => commands::probe::settings(&paths, &mut config, style.json),
+        Command::ProbeZone { zone } => {
+            commands::probe::zone(&paths, &mut config, &zone, style.json)
+        }
+        Command::ProbeTlks => commands::probe::tlks(&paths, &mut config, style.json),
+        Command::ProbeRefresh => commands::probe::refresh(&paths, &mut config, style.json),
+        Command::ProbeZones => commands::probe::zones(&paths, &mut config, style.json),
+        Command::ProbeGroup { zone } => {
+            commands::probe::group(&paths, &mut config, &zone, style.json)
+        }
+        Command::ProbeStats => commands::probe::stats(&paths, &mut config, style.json),
     }
 }
