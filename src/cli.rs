@@ -48,19 +48,9 @@ pub enum Command {
         /// Do not join the trust after signing in.
         #[arg(long)]
         no_join: bool,
-        /// Escrow passcode for the automatic join.
-        #[arg(long)]
-        passcode: Option<String>,
-        /// Two-factor code, for a non-interactive run.
-        #[arg(long)]
-        code: Option<String>,
     },
     /// Join the Octagon trust with the escrow passcode.
-    Join {
-        /// Escrow passcode. Prompted when omitted.
-        #[arg(long)]
-        passcode: Option<String>,
-    },
+    Join,
     /// Refresh the snapshot.
     Sync {
         /// Ignore the sync interval.
@@ -189,8 +179,6 @@ fn execute(cli: Cli) -> Result<()> {
             refresh,
             join,
             no_join,
-            passcode,
-            code,
         } => commands::login::run(
             &paths,
             &mut config,
@@ -199,13 +187,9 @@ fn execute(cli: Cli) -> Result<()> {
             refresh,
             join,
             no_join,
-            passcode,
-            code,
             style.json,
         ),
-        Command::Join { passcode } => {
-            commands::join::run(&paths, &mut config, passcode, style.json)
-        }
+        Command::Join => commands::join::run(&paths, &mut config, style.json),
         Command::Sync { force, fixture } => {
             commands::sync::run(&paths, &mut config, force, fixture, style.json)
         }

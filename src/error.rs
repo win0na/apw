@@ -28,6 +28,7 @@ pub enum Error {
     Http(#[from] reqwest::Error),
     #[error(transparent)]
     Plist(#[from] plist::Error),
+    #[cfg(feature = "keyring")]
     #[error(transparent)]
     Keyring(#[from] keyring::Error),
 }

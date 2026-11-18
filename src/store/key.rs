@@ -4,7 +4,9 @@ use rand::RngCore;
 use crate::config::{Config, Paths};
 use crate::error::{Error, Result};
 
+#[cfg(feature = "keyring")]
 const SERVICE: &str = "apw";
+#[cfg(feature = "keyring")]
 const ACCOUNT: &str = "snapshot-key";
 const KEY_LEN: usize = 32;
 
@@ -28,16 +30,16 @@ pub struct SnapshotKey {
     pub source: KeySource,
 }
 
-pub fn load_or_create(config: &mut Config, paths: &Paths) -> Result<SnapshotKey> {
-    if let Some(passphrase) = std::env::var("APW_PASSPHRASE")
-        .ok()
-        .filter(|v| !v.is_empty())
-    {
+/// Resolve the key of an existing snapshot. This never creates a key: a
+/// missing Secret Service entry must not mint a new key behind an old
+/// snapshot.
+pub fn load(config: &mut Config, paths: &Paths) -> Result<SnapshotKey> {
+    if let Some(passphrase) = env_passphrase() {
         return derive_from_passphrase(config, paths, &passphrase);
     }
 
     #[cfg(feature = "keyring")]
-    if let Some(key) = secret_service_key()? {
+    if let Some(key) = existing_secret_service_key() {
         return Ok(SnapshotKey {
             key,
             source: KeySource::SecretService,
@@ -48,44 +50,74 @@ pub fn load_or_create(config: &mut Config, paths: &Paths) -> Result<SnapshotKey>
     derive_from_passphrase(config, paths, &passphrase)
 }
 
-/// True when a Secret Service key already exists. Used to skip a passphrase
-/// prompt that `load_or_create` would not need.
-#[cfg(feature = "keyring")]
-pub fn has_secret_service_key() -> Result<bool> {
-    match keyring::Entry::new(SERVICE, ACCOUNT) {
-        Ok(entry) => Ok(entry.get_password().is_ok()),
-        Err(_) => Ok(false),
+/// Create the key for a first write. Only this path may store a new Secret
+/// Service entry or prompt for a new passphrase.
+pub fn create(config: &mut Config, paths: &Paths) -> Result<SnapshotKey> {
+    if let Some(passphrase) = env_passphrase() {
+        return derive_from_passphrase(config, paths, &passphrase);
     }
+
+    #[cfg(feature = "keyring")]
+    if let Some(key) = create_secret_service_key() {
+        return Ok(SnapshotKey {
+            key,
+            source: KeySource::SecretService,
+        });
+    }
+
+    use std::io::IsTerminal;
+    if !std::io::stdin().is_terminal() {
+        return Err(Error::Message(
+            "Secret Service is unavailable and stdin is not a terminal; set APW_PASSPHRASE".into(),
+        ));
+    }
+
+    let passphrase = rpassword::prompt_password("New apw passphrase: ")
+        .map_err(|error| Error::Message(format!("cannot read passphrase: {error}")))?;
+    let confirm = rpassword::prompt_password("Confirm the apw passphrase: ")
+        .map_err(|error| Error::Message(format!("cannot read passphrase: {error}")))?;
+    if passphrase.is_empty() {
+        return Err(Error::Invalid("the passphrase is empty".into()));
+    }
+    if passphrase != confirm {
+        return Err(Error::Invalid("the passphrases do not match".into()));
+    }
+    std::env::set_var("APW_PASSPHRASE", &passphrase);
+    derive_from_passphrase(config, paths, &passphrase)
 }
 
-#[cfg(feature = "keyring")]
-fn secret_service_key() -> Result<Option<[u8; KEY_LEN]>> {
-    let entry = match keyring::Entry::new(SERVICE, ACCOUNT) {
-        Ok(entry) => entry,
-        Err(_) => return Ok(None),
-    };
+fn env_passphrase() -> Option<String> {
+    std::env::var("APW_PASSPHRASE")
+        .ok()
+        .filter(|value| !value.is_empty())
+}
 
-    match entry.get_password() {
-        Ok(encoded) => {
-            let key = decode_key(&encoded)?;
-            Ok(Some(key))
-        }
-        Err(keyring::Error::NoEntry) => {
-            let key = random_key();
-            entry
-                .set_password(&base64::engine::general_purpose::STANDARD.encode(key))
-                .map_err(Error::from)?;
-            Ok(Some(key))
-        }
-        Err(_) => Ok(None),
-    }
+/// Read the existing Secret Service key. A missing entry or an unavailable
+/// backend both fall through to the passphrase.
+#[cfg(feature = "keyring")]
+fn existing_secret_service_key() -> Option<[u8; KEY_LEN]> {
+    let entry = keyring::Entry::new(SERVICE, ACCOUNT).ok()?;
+    let encoded = entry.get_password().ok()?;
+    decode_key(&encoded).ok()
+}
+
+/// Store a fresh Secret Service key. Returns `None` when the backend is
+/// unavailable so the caller can fall back to a passphrase.
+#[cfg(feature = "keyring")]
+fn create_secret_service_key() -> Option<[u8; KEY_LEN]> {
+    let entry = keyring::Entry::new(SERVICE, ACCOUNT).ok()?;
+    let key = random_key();
+    entry
+        .set_password(&base64::engine::general_purpose::STANDARD.encode(key))
+        .ok()?;
+    Some(key)
 }
 
 fn read_passphrase() -> Result<String> {
     use std::io::IsTerminal;
     if !std::io::stdin().is_terminal() {
         return Err(Error::Message(
-            "no Secret Service key and no terminal for a passphrase; set APW_PASSPHRASE".into(),
+            "no snapshot key; set APW_PASSPHRASE or unlock Secret Service".into(),
         ));
     }
     rpassword::prompt_password("apw passphrase: ")
@@ -123,12 +155,14 @@ fn derive_from_passphrase(
     })
 }
 
+#[cfg(feature = "keyring")]
 fn random_key() -> [u8; KEY_LEN] {
     let mut key = [0u8; KEY_LEN];
     rand::rngs::OsRng.fill_bytes(&mut key);
     key
 }
 
+#[cfg(feature = "keyring")]
 fn decode_key(encoded: &str) -> Result<[u8; KEY_LEN]> {
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(encoded.trim())

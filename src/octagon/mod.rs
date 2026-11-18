@@ -139,11 +139,14 @@ pub async fn join(
         }
     }
 
+    // Read the trust before spending the attempt: a failure here costs nothing,
+    // a failure after RECOVER costs one of ten.
+    let mut trust = fetch_changes(gateway).await?;
+
     eprintln!("joining the trust spends one escrow attempt");
     let entropy = escrow.entropy(label, passcode, adsid).await?;
     let sponsor = escrow::recover_identity(&bottle, &entropy, adsid)?;
 
-    let mut trust = fetch_changes(gateway).await?;
     let sponsor_info = trust
         .peers
         .iter()
@@ -189,11 +192,14 @@ pub async fn join(
         .invoke("joinWithVoucher", request.as_slice())
         .await?;
 
-    if let Ok(updated) = parse_changes(&response) {
-        if !updated.restore_point.is_empty() {
-            trust = updated;
-        }
+    let updated = parse_changes(&response)
+        .map_err(|error| Error::Message(format!("cannot read the trust join response: {error}")))?;
+    if updated.restore_point.is_empty() || !updated.peers.iter().any(|info| info.id == peer.id) {
+        return Err(Error::Message(
+            "Apple did not accept the trust join; the peer was not added".into(),
+        ));
     }
+    trust = updated;
     Ok((trust, bottle, sponsor))
 }
 

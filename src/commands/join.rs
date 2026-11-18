@@ -15,9 +15,8 @@ use crate::vault;
 /// Join the Octagon trust with the escrow passcode.
 ///
 /// This spends one of the ten escrow attempts.
-pub fn run(paths: &Paths, config: &mut Config, passcode: Option<String>, json: bool) -> Result<()> {
-    vault::ensure_passphrase(paths)?;
-    let joined = perform(paths, config, passcode)?;
+pub fn run(paths: &Paths, config: &mut Config, json: bool) -> Result<()> {
+    let joined = perform(paths, config)?;
 
     let mut state = config::load_state(paths)?;
     state.last_status = Some("joined".into());
@@ -46,7 +45,7 @@ pub struct Joined {
     pub restore_point: usize,
 }
 
-pub fn perform(paths: &Paths, config: &mut Config, passcode: Option<String>) -> Result<Joined> {
+pub fn perform(paths: &Paths, config: &mut Config) -> Result<Joined> {
     if !paths.snapshot_file.exists() {
         return Err(Error::Auth("run `apw login` first".into()));
     }
@@ -68,12 +67,15 @@ pub fn perform(paths: &Paths, config: &mut Config, passcode: Option<String>) -> 
         .clone()
         .ok_or_else(|| Error::Message("the session has no escrow URL".into()))?;
 
-    let passcode = match passcode.or_else(|| std::env::var("APW_ESCROW_PASSCODE").ok()) {
+    let passcode = match std::env::var("APW_ESCROW_PASSCODE")
+        .ok()
+        .filter(|value| !value.is_empty())
+    {
         Some(passcode) => passcode,
         None => {
             if !std::io::stdin().is_terminal() {
                 return Err(Error::Invalid(
-                    "pass --passcode or run this command in a terminal".into(),
+                    "set APW_ESCROW_PASSCODE or run this command in a terminal".into(),
                 ));
             }
             rpassword::prompt_password("Escrow passcode: ")?

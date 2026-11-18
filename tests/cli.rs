@@ -40,7 +40,8 @@ fn sync_writes_an_encrypted_snapshot() {
 fn join_requires_a_session() {
     let dir = TempDir::new().unwrap();
     apw(&dir)
-        .args(["join", "--passcode", "1234"])
+        .args(["join"])
+        .env("APW_ESCROW_PASSCODE", "1234")
         .assert()
         .failure()
         .stderr(predicate::str::contains("login"));
@@ -243,7 +244,8 @@ fn get_password_only_prints_one_password_per_line() {
 fn missing_session_uses_the_auth_exit_code() {
     let dir = TempDir::new().unwrap();
     apw(&dir)
-        .args(["join", "--passcode", "1234"])
+        .args(["join"])
+        .env("APW_ESCROW_PASSCODE", "1234")
         .assert()
         .code(4);
 }

@@ -15,8 +15,6 @@ pub fn run(
     refresh: bool,
     join: bool,
     no_join: bool,
-    passcode: Option<String>,
-    code: Option<String>,
     json: bool,
 ) -> Result<()> {
     if let Some(url) = anisette_url {
@@ -53,18 +51,9 @@ pub fn run(
     };
     config.account = Some(account.clone());
 
-    // One prompt for the whole run: the snapshot key, then escrow reuse it.
-    // A passphrase from the environment is not reused for escrow: a timer or
-    // wrapper may set one that is not the device passcode.
-    let env_passphrase = std::env::var("APW_PASSPHRASE")
-        .ok()
-        .filter(|value| !value.is_empty());
-    let passphrase = vault::ensure_passphrase(paths)?;
-    let escrow_passphrase = if env_passphrase.is_some() {
-        None
-    } else {
-        passphrase
-    };
+    // Resolve the snapshot key before any network work so a missing key fails
+    // early. The escrow passcode is independent of it.
+    vault::prepare(paths, config)?;
 
     config.save(paths)?;
 
@@ -79,6 +68,9 @@ pub fn run(
     };
     let previous = snapshot.session.clone();
 
+    let code = std::env::var("APW_2FA_CODE")
+        .ok()
+        .filter(|value| !value.is_empty());
     let mut session = crate::auth::login(config, &account, code)?;
     // A profile can return a reduced service map. Keep the URLs we already
     // discovered rather than dropping a working escrow or CloudKit endpoint.
@@ -108,10 +100,7 @@ pub fn run(
     let should_join = join_plan(join, no_join, had_peer);
 
     let joined = if should_join {
-        let passcode = passcode
-            .or_else(|| std::env::var("APW_ESCROW_PASSCODE").ok())
-            .or(escrow_passphrase);
-        Some(crate::commands::join::perform(paths, config, passcode)?)
+        Some(crate::commands::join::perform(paths, config)?)
     } else {
         None
     };

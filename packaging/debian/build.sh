@@ -36,7 +36,7 @@ Maintainer: win0na <winona@winneon.moe>
 Section: utils
 Priority: optional
 Homepage: https://github.com/win0na/apw
-Depends: libc6, libgcc-s1
+Depends: libc6, libgcc-s1, libdbus-1-3
 Description: read Apple Passwords on Linux
   apw keeps an encrypted local snapshot of Apple Passwords and answers
   queries offline from a single Rust binary, so the keychain is readable

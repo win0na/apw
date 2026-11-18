@@ -12,22 +12,34 @@ use crate::pcs::{Decoded, PcsKey, Protection, ServiceKey};
 pub struct GroupData {
     pub group: Group,
     pub entries: Vec<Entry>,
+    /// Items in this group that could not be decrypted.
+    pub skipped: usize,
+}
+
+/// Every group zone that could be read, plus one warning per zone that could
+/// not. A caller that must not drop shared entries checks `warnings` and
+/// `GroupData::skipped` before replacing its snapshot.
+pub struct GroupRead {
+    pub groups: Vec<GroupData>,
+    pub warnings: Vec<String>,
 }
 
 /// Read every group zone visible to this gateway.
-pub async fn read_all(gateway: &Gateway, service_keys: &[ServiceKey]) -> Result<Vec<GroupData>> {
-    let mut out = Vec::new();
+pub async fn read_all(gateway: &Gateway, service_keys: &[ServiceKey]) -> Result<GroupRead> {
+    let mut out = GroupRead {
+        groups: Vec::new(),
+        warnings: Vec::new(),
+    };
     for zone in zones(gateway).await? {
         if !zone.name.starts_with("group-") || zone.change_type == 2 {
             continue;
         }
         match read_zone(gateway, &zone.name, &zone.owner, service_keys).await {
-            Ok(group) => out.push(group),
-            Err(error) => {
-                if std::env::var_os("APW_DEBUG").is_some() {
-                    eprintln!("groups: {} skipped: {error}", zone.name);
-                }
-            }
+            Ok(group) => out.groups.push(group),
+            Err(error) => out.warnings.push(format!(
+                "group zone {} could not be read: {error}",
+                zone.name
+            )),
         }
     }
     Ok(out)
@@ -115,6 +127,7 @@ async fn read_zone(
 
     let mut entries = Vec::new();
     let mut sidecars = Vec::new();
+    let mut skipped = 0usize;
     for record in &records {
         if record.record_type != "item" {
             continue;
@@ -126,6 +139,7 @@ async fn read_zone(
         let plain = match decrypt_any(&keys, payload, &aad) {
             Ok(plain) => plain,
             Err(error) => {
+                skipped += 1;
                 if std::env::var_os("APW_DEBUG").is_some() {
                     eprintln!("groups: {} payload failed: {error}", record.name);
                 }
@@ -135,6 +149,7 @@ async fn read_zone(
         let item = match kcsharing::decode_item(&plain) {
             Ok(item) => item,
             Err(error) => {
+                skipped += 1;
                 if std::env::var_os("APW_DEBUG").is_some() {
                     eprintln!("groups: {} decode failed: {error}", record.name);
                 }
@@ -192,6 +207,7 @@ async fn read_zone(
             shared: gateway.scope() == Scope::Shared,
         },
         entries,
+        skipped,
     })
 }
 

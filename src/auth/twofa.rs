@@ -4,6 +4,8 @@
 //! `security-code` header. Verification is implicit: the caller repeats the
 //! SRP legs and looks for `Status.au` to be gone.
 
+use std::time::Duration;
+
 use base64::Engine;
 use plist::Value;
 
@@ -120,6 +122,8 @@ fn client() -> reqwest::Client {
     reqwest::Client::builder()
         .http1_only()
         .pool_max_idle_per_host(0)
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30))
         .build()
         .unwrap_or_else(|_| reqwest::Client::new())
 }

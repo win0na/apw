@@ -6,6 +6,7 @@
 //! `x-cloudkit-authtoken` header.
 
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 use base64::Engine;
 use rand::RngCore;
@@ -204,7 +205,11 @@ impl Gateway {
         container: &str,
         scope: Scope,
     ) -> Result<Self> {
-        let http = reqwest::Client::new();
+        let http = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(15))
+            .timeout(Duration::from_secs(120))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
         let url = format!("{GATEWAY}{CK_APP_INIT}?container={container}");
         let authorization = format!(
             "Basic {}",

@@ -4,6 +4,8 @@
 //! `get_account_settings` returns the per-service URLs, including the
 //! CloudKit database and the escrow proxy.
 
+use std::time::Duration;
+
 use base64::Engine;
 use plist::{Dictionary, Value};
 use rand::RngCore;
@@ -306,7 +308,11 @@ fn setup_base() -> String {
 }
 
 fn client() -> reqwest::Client {
-    reqwest::Client::new()
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
 }
 
 fn uuid_v4() -> String {

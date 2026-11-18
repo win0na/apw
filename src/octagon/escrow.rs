@@ -4,6 +4,8 @@
 //! DSID username, and the device passcode as the password. The recovered
 //! bottle decrypts with HKDF-SHA384 under the account's `adsid`.
 
+use std::time::Duration;
+
 use aes::Aes128;
 use aes_gcm::aead::{Aead, Payload};
 use aes_gcm::{Aes256Gcm, KeyInit};
@@ -86,6 +88,8 @@ impl Escrow {
             http: reqwest::Client::builder()
                 .http1_only()
                 .pool_max_idle_per_host(0)
+                .connect_timeout(Duration::from_secs(10))
+                .timeout(Duration::from_secs(60))
                 .build()
                 .unwrap_or_else(|_| reqwest::Client::new()),
             base: base.trim_end_matches('/').to_string(),
@@ -257,8 +261,11 @@ impl Escrow {
         let (inner_header, inner) = unpack(&plaintext, 16, 6)?;
         let rounds = be32(&inner_header, 8)?;
         let salt = inner[1].clone();
+        let iv = salt
+            .get(..16)
+            .ok_or_else(|| Error::Message("escrow salt is shorter than 16 bytes".into()))?;
         let derived = pbkdf2_sha256(passcode, &salt, rounds, 16)?;
-        let bottle = aes_cbc_decrypt(&derived, &salt[..16], &inner[3])?;
+        let bottle = aes_cbc_decrypt(&derived, iv, &inner[3])?;
         let value: Value = plist::from_bytes(&bottle)?;
         let entropy = value
             .as_dictionary()

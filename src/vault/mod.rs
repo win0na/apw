@@ -5,65 +5,36 @@ use crate::store;
 
 pub mod fixture;
 
-/// Read the snapshot passphrase once per process and export it, so later
-/// `load` and `save` calls do not prompt again. Returns the passphrase when one
-/// is in use; Secret Service keys need no passphrase and return `None`.
-pub fn ensure_passphrase(paths: &Paths) -> Result<Option<String>> {
-    use std::io::IsTerminal;
-
-    if let Some(value) = std::env::var("APW_PASSPHRASE")
-        .ok()
-        .filter(|value| !value.is_empty())
-    {
-        return Ok(Some(value));
-    }
-
-    #[cfg(feature = "keyring")]
-    if crate::store::key::has_secret_service_key()? {
-        return Ok(None);
-    }
-
-    if !std::io::stdin().is_terminal() {
-        return Ok(None);
-    }
-
-    let passphrase = if paths.snapshot_file.exists() {
-        rpassword::prompt_password("apw passcode: ")?
+/// Resolve the snapshot key before any network work, so a missing key fails
+/// early. On a first write this creates the key.
+pub fn prepare(paths: &Paths, config: &mut Config) -> Result<()> {
+    if paths.snapshot_file.exists() {
+        store::key::load(config, paths)?;
     } else {
-        eprintln!("The apw passcode encrypts the local snapshot.");
-        eprintln!("Use your device passcode so the escrow step can reuse it.");
-        let first = rpassword::prompt_password("Enter a new apw passcode: ")?;
-        let second = rpassword::prompt_password("Confirm the apw passcode: ")?;
-        if first != second {
-            return Err(Error::Invalid("the passcodes do not match".into()));
-        }
-        first
-    };
-    if passphrase.is_empty() {
-        return Err(Error::Invalid("the passcode is empty".into()));
+        let _ = store::key::create(config, paths)?;
     }
-    std::env::set_var("APW_PASSPHRASE", &passphrase);
-    Ok(Some(passphrase))
+    Ok(())
 }
 
 pub fn load(paths: &Paths, config: &mut Config) -> Result<Vault> {
-    let key = store::key::load_or_create(config, paths)?;
-    let bytes = match std::fs::read(&paths.snapshot_file) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Err(Error::Message(format!(
-                "no snapshot at {}; run `apw login` first",
-                paths.snapshot_file.display()
-            )));
-        }
-        Err(error) => return Err(error.into()),
-    };
+    if !paths.snapshot_file.exists() {
+        return Err(Error::Auth(format!(
+            "no snapshot at {}; run `apw login` first",
+            paths.snapshot_file.display()
+        )));
+    }
+    let key = store::key::load(config, paths)?;
+    let bytes = std::fs::read(&paths.snapshot_file)?;
     store::open(&bytes, &key.key)
 }
 
 pub fn save(paths: &Paths, config: &mut Config, vault: &Vault) -> Result<()> {
     paths.ensure()?;
-    let key = store::key::load_or_create(config, paths)?;
+    let key = if paths.snapshot_file.exists() {
+        store::key::load(config, paths)?
+    } else {
+        store::key::create(config, paths)?
+    };
     let bytes = store::seal(vault, &key.key)?;
     write_private(&paths.snapshot_file, &bytes)
 }

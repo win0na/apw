@@ -164,19 +164,62 @@ pub fn write_private(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
     use std::io::Write;
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
-    let tmp = path.with_extension("tmp");
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&tmp)?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    drop(file);
-    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
-    std::fs::rename(&tmp, path)?;
-    Ok(())
+    let parent = path
+        .parent()
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "apw".to_string());
+
+    // A fixed `<name>.tmp` lets two concurrent writers truncate each other's
+    // scratch file and publish a partial document. Each writer gets its own
+    // temp name instead; `create_new` keeps a collision from reusing a file.
+    let mut created = None;
+    for _ in 0..4 {
+        let candidate = parent.join(format!(
+            ".{name}.{}.{:016x}.tmp",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&candidate)
+        {
+            Ok(file) => {
+                created = Some((candidate, file));
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    let (tmp, mut file) = created.ok_or_else(|| {
+        Error::Message(format!(
+            "cannot create a temporary file next to {}",
+            path.display()
+        ))
+    })?;
+
+    let write = || -> Result<()> {
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+        std::fs::rename(&tmp, path)?;
+        // Persist the directory entry so the rename survives a crash.
+        std::fs::File::open(parent)?.sync_all()?;
+        Ok(())
+    };
+
+    let result = write();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
 }
 
 #[cfg(test)]
@@ -189,5 +232,26 @@ mod tests {
             let config = Config::default();
             assert_eq!(config.anisette_url().as_deref(), Some(DEFAULT_ANISETTE_URL));
         }
+    }
+
+    #[test]
+    fn concurrent_writes_publish_one_complete_payload() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let payloads = [vec![b'a'; 256 * 1024], vec![b'b'; 256 * 1024]];
+
+        std::thread::scope(|scope| {
+            for payload in &payloads {
+                let path = path.clone();
+                scope.spawn(move || super::write_private(&path, payload).unwrap());
+            }
+        });
+
+        let written = std::fs::read(&path).unwrap();
+        assert!(
+            payloads.contains(&written),
+            "the published file is not one of the payloads: {} bytes",
+            written.len()
+        );
     }
 }

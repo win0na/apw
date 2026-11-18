@@ -1,5 +1,7 @@
 //! GSA SRP login over the `GsService2` plist endpoint.
 
+use std::time::Duration;
+
 use aes::cipher::{block_padding::Pkcs7, BlockDecryptMut, KeyIvInit};
 use base64::Engine;
 use hmac::{Hmac, Mac};
@@ -75,6 +77,8 @@ impl Gsa {
             client: reqwest::Client::builder()
                 .http1_only()
                 .pool_max_idle_per_host(0)
+                .connect_timeout(Duration::from_secs(10))
+                .timeout(Duration::from_secs(30))
                 .build()
                 .unwrap_or_else(|_| reqwest::Client::new()),
             endpoint,

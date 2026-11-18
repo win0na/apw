@@ -256,9 +256,33 @@ pub struct Passkey {
     pub created_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
+/// Whether a sidecar's username can be attributed to a login's username. Two
+/// known usernames must agree; a missing username on either side says nothing,
+/// so the pairing is still possible.
+fn usernames_compatible(login: Option<&str>, sidecar: Option<&str>) -> bool {
+    match (login, sidecar) {
+        (Some(left), Some(right)) => left.eq_ignore_ascii_case(right),
+        _ => true,
+    }
+}
+
+/// The single login a sidecar's domain and username identify, if the match is
+/// unambiguous.
+fn unique_domain_match(logins: &[Entry], sidecar: &Entry) -> Option<usize> {
+    let domain = sidecar.domain();
+    let mut candidates = logins.iter().enumerate().filter(|(_, login)| {
+        login.domain().eq_ignore_ascii_case(&domain)
+            && usernames_compatible(login.username.as_deref(), sidecar.username.as_deref())
+    });
+    let (index, _) = candidates.next()?;
+    candidates.next().is_none().then_some(index)
+}
+
 /// Fold `com.apple.password-manager` metadata records into the login they
 /// describe. The sidecar points at its login by record id, or by domain and
-/// username when it was written without a parent reference.
+/// username when it was written without a parent reference. A domain-only
+/// match is used only when exactly one login can be meant; otherwise the
+/// sidecar is left unmatched rather than guessed onto an account.
 pub fn merge_sidecars(logins: &mut [Entry], sidecars: Vec<Entry>) -> Vec<Entry> {
     let mut unmatched = Vec::new();
     for sidecar in sidecars {
@@ -266,15 +290,7 @@ pub fn merge_sidecars(logins: &mut [Entry], sidecars: Vec<Entry>) -> Vec<Entry> 
         let index = logins
             .iter()
             .position(|login| login.id == domain)
-            .or_else(|| {
-                logins.iter().position(|login| {
-                    login.domain().eq_ignore_ascii_case(&domain)
-                        && match (&login.username, &sidecar.username) {
-                            (Some(left), Some(right)) => left.eq_ignore_ascii_case(right),
-                            _ => true,
-                        }
-                })
-            });
+            .or_else(|| unique_domain_match(logins, &sidecar));
         let Some(index) = index else {
             unmatched.push(sidecar);
             continue;
@@ -323,4 +339,109 @@ pub struct Session {
     #[serde(default)]
     pub escrow_proxy_url: Option<String>,
     pub logged_in_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn login(id: &str, domain: &str, username: &str) -> Entry {
+        Entry {
+            id: id.to_string(),
+            title: Some(domain.to_string()),
+            sites: vec![domain.to_string()],
+            username: Some(username.to_string()),
+            ..Entry::default()
+        }
+    }
+
+    fn sidecar(id: &str, domain: &str, username: Option<&str>) -> Entry {
+        Entry {
+            id: id.to_string(),
+            title: Some(format!("{domain} metadata")),
+            notes: Some("from sidecar".to_string()),
+            totp: Some(Totp {
+                secret: "JBSWY3DPEHPK3PXP".to_string(),
+                algorithm: Algorithm::Sha1,
+                digits: 6,
+                period: 30,
+                issuer: None,
+                account_name: None,
+            }),
+            sites: vec![domain.to_string()],
+            username: username.map(str::to_string),
+            ..Entry::default()
+        }
+    }
+
+    fn two_logins() -> Vec<Entry> {
+        vec![
+            login("id-alice", "example.com", "alice@example.com"),
+            login("id-bob", "example.com", "bob@example.com"),
+        ]
+    }
+
+    fn assert_untouched(entry: &Entry, domain: &str) {
+        assert_eq!(entry.title.as_deref(), Some(domain));
+        assert!(entry.notes.is_none());
+        assert!(entry.totp.is_none());
+    }
+
+    #[test]
+    fn ambiguous_domain_without_username_leaves_logins_untouched() {
+        let mut logins = two_logins();
+        let unmatched = merge_sidecars(&mut logins, vec![sidecar("sidecar", "example.com", None)]);
+
+        for entry in &logins {
+            assert_untouched(entry, "example.com");
+        }
+        assert_eq!(unmatched.len(), 1);
+        assert_eq!(unmatched[0].id, "sidecar");
+    }
+
+    #[test]
+    fn ambiguous_domain_with_username_merges_only_the_named_login() {
+        let mut logins = two_logins();
+        let unmatched = merge_sidecars(
+            &mut logins,
+            vec![sidecar("sidecar", "example.com", Some("bob@example.com"))],
+        );
+
+        assert!(unmatched.is_empty());
+        assert_untouched(&logins[0], "example.com");
+        assert_eq!(logins[0].username.as_deref(), Some("alice@example.com"));
+        let bob = &logins[1];
+        assert_eq!(bob.title.as_deref(), Some("example.com metadata"));
+        assert_eq!(bob.notes.as_deref(), Some("from sidecar"));
+        assert!(bob.totp.is_some());
+    }
+
+    #[test]
+    fn unique_login_on_domain_merges_without_username() {
+        let mut logins = vec![login("id-solo", "example.com", "solo@example.com")];
+        let unmatched = merge_sidecars(&mut logins, vec![sidecar("sidecar", "example.com", None)]);
+
+        assert!(unmatched.is_empty());
+        let solo = &logins[0];
+        assert_eq!(solo.title.as_deref(), Some("example.com metadata"));
+        assert_eq!(solo.notes.as_deref(), Some("from sidecar"));
+        assert!(solo.totp.is_some());
+    }
+
+    #[test]
+    fn parent_record_id_merges_despite_ambiguous_domain() {
+        let mut logins = two_logins();
+        // A sidecar addressed by its parent's record id: `domain()` yields the
+        // login id, which the record-id branch matches first.
+        let metadata = sidecar("sidecar", "id-bob", None);
+
+        let unmatched = merge_sidecars(&mut logins, vec![metadata]);
+
+        assert!(unmatched.is_empty());
+        assert_untouched(&logins[0], "example.com");
+        let bob = &logins[1];
+        assert_eq!(bob.title.as_deref(), Some("id-bob metadata"));
+        assert_eq!(bob.notes.as_deref(), Some("from sidecar"));
+        assert!(bob.totp.is_some());
+    }
 }

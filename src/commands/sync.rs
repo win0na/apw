@@ -51,13 +51,12 @@ fn sync_fixture(paths: &Paths, config: &mut Config, fixture: &Path, json: bool) 
     // A fixture has no session or peer. Keep the ones a live snapshot already
     // holds so testing does not orphan the trust peer.
     if paths.snapshot_file.exists() {
-        if let Ok(existing) = vault::load(paths, config) {
-            if snapshot.session.is_none() {
-                snapshot.session = existing.session;
-            }
-            if snapshot.peer.is_none() {
-                snapshot.peer = existing.peer;
-            }
+        let existing = vault::load(paths, config)?;
+        if snapshot.session.is_none() {
+            snapshot.session = existing.session;
+        }
+        if snapshot.peer.is_none() {
+            snapshot.peer = existing.peer;
         }
     }
     snapshot.account = config.account.clone().or(snapshot.account);
@@ -259,6 +258,18 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Resu
     let class_keys = ckks::unwrap_class_keys(&synckeys, &tlks);
     let decrypted = ckks::decrypt_items(&items, &class_keys);
     let wifi_decrypted = ckks::decrypt_items(&wifi_records, &class_keys);
+    // A partial decrypt must not silently shrink the snapshot.
+    let lost = items.len().saturating_sub(decrypted.len())
+        + wifi_records.len().saturating_sub(wifi_decrypted.len());
+    if lost > 0 && !snapshot.entries.is_empty() {
+        if std::env::var("APW_ALLOW_PARTIAL").ok().as_deref() == Some("1") {
+            eprintln!("sync: accepted a partial sync; {lost} item(s) could not be decrypted");
+        } else {
+            return Err(Error::Message(format!(
+                "sync could not decrypt {lost} item(s); keeping the previous snapshot (set APW_ALLOW_PARTIAL=1 to accept a partial sync)"
+            )));
+        }
+    }
     if std::env::var_os("APW_DEBUG").is_some() {
         eprintln!(
             "sync: {} tlk shares, {} synckeys, {} items, {} tlks, {} class keys, {} decrypted",
@@ -299,12 +310,14 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Resu
 
     let service_keys = service_keys(&decrypted);
     let mut group_data = Vec::new();
+    let mut group_warnings: Vec<String> = Vec::new();
     if !service_keys.is_empty() {
         let read = block_on(async {
             let mac = Anisette::new(&anisette_url)
                 .identity_for(Some("macos"))
                 .await?;
-            let mut out = Vec::new();
+            let mut groups = Vec::new();
+            let mut warnings = Vec::new();
             for scope in [
                 crate::cloudkit::Scope::Private,
                 crate::cloudkit::Scope::Shared,
@@ -319,25 +332,29 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Resu
                 {
                     Ok(gateway) => gateway,
                     Err(error) => {
-                        if std::env::var_os("APW_DEBUG").is_some() {
-                            eprintln!("sync: group container {scope:?} failed: {error}");
-                        }
+                        warnings.push(format!("group container {scope:?} unavailable: {error}"));
                         continue;
                     }
                 };
                 match crate::groups::read_all(&gateway, &service_keys).await {
-                    Ok(mut groups) => out.append(&mut groups),
+                    Ok(mut read) => {
+                        groups.append(&mut read.groups);
+                        warnings.append(&mut read.warnings);
+                    }
                     Err(error) => {
-                        if std::env::var_os("APW_DEBUG").is_some() {
-                            eprintln!("sync: group read {scope:?} failed: {error}");
-                        }
+                        warnings.push(format!("group read {scope:?} failed: {error}"));
                     }
                 }
             }
-            Ok::<_, Error>(out)
+            Ok::<_, Error>((groups, warnings))
         })?;
-        group_data = read;
+        group_data = read.0;
+        group_warnings = read.1;
     }
+    // A zone that failed to bootstrap, a zone that failed to read, or an item
+    // that failed to decrypt all mean the shared view is incomplete. Keep the
+    // previous shared entries rather than deleting them.
+    let incomplete = !group_warnings.is_empty() || group_data.iter().any(|data| data.skipped > 0);
 
     let mut logins: Vec<Entry> = Vec::new();
     let mut sidecars: Vec<Entry> = Vec::new();
@@ -432,15 +449,40 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Resu
         logins.push(entry);
     }
 
-    for data in &group_data {
-        for entry in &data.entries {
-            let duplicate = logins.iter().any(|personal| {
-                personal.domain().eq_ignore_ascii_case(&entry.domain())
-                    && personal.username == entry.username
-                    && personal.password == entry.password
+    if incomplete {
+        for warning in &group_warnings {
+            eprintln!("sync: {warning}");
+        }
+        // Keep the shared entries the previous snapshot already had instead of
+        // dropping the ones this run could not read.
+        let previous: Vec<Entry> = snapshot
+            .entries
+            .iter()
+            .filter(|entry| entry.group.is_some())
+            .cloned()
+            .collect();
+        for entry in previous {
+            let duplicate = logins.iter().any(|found| {
+                found.group == entry.group
+                    && found.domain().eq_ignore_ascii_case(&entry.domain())
+                    && found.username == entry.username
+                    && found.password == entry.password
             });
             if !duplicate {
-                logins.push(entry.clone());
+                logins.push(entry);
+            }
+        }
+    } else {
+        for data in &group_data {
+            for entry in &data.entries {
+                let duplicate = logins.iter().any(|personal| {
+                    personal.domain().eq_ignore_ascii_case(&entry.domain())
+                        && personal.username == entry.username
+                        && personal.password == entry.password
+                });
+                if !duplicate {
+                    logins.push(entry.clone());
+                }
             }
         }
     }
@@ -485,7 +527,9 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Resu
     }
 
     snapshot.entries = logins;
-    snapshot.groups = group_data.into_iter().map(|data| data.group).collect();
+    if !incomplete {
+        snapshot.groups = group_data.into_iter().map(|data| data.group).collect();
+    }
     snapshot.source = Source::Icloud;
     snapshot.generated_at = Some(chrono::Utc::now());
     vault::save(paths, config, &snapshot)?;

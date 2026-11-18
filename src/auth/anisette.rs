@@ -6,6 +6,7 @@
 //! machine identity after GSA answers `hsc: 434`.
 
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 use base64::Engine;
 use serde::Deserialize;
@@ -79,9 +80,13 @@ struct ClientInfo {
 impl Anisette {
     pub fn new(base: &str) -> Self {
         let base = base.trim_end_matches('/').to_string();
-        let client = reqwest::Client::builder().build().map_err(|error| {
-            format!("cannot create the HTTP client for the anisette server at {base}: {error}")
-        });
+        let client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(30))
+            .build()
+            .map_err(|error| {
+                format!("cannot create the HTTP client for the anisette server at {base}: {error}")
+            });
         Self { base, client }
     }
 
