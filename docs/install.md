@@ -44,14 +44,14 @@ cargo build --release
 install -m755 target/release/apw ~/.local/bin/apw
 ```
 
-`apw --version` prints `0.2.0`.
+`apw --version` prints `0.2.1`.
 
 Prebuilt formats live in `packaging/`:
 
 | Format | Command | Output |
 | --- | --- | --- |
-| Tarball | `packaging/tarball.sh` | `dist/apw-0.2.0-<target>.tar.gz` |
-| Debian | `packaging/debian/build.sh` | `dist/apw_0.2.0_<arch>.deb` |
+| Tarball | `packaging/tarball.sh` | `dist/apw-0.2.1-<target>.tar.gz` |
+| Debian | `packaging/debian/build.sh` | `dist/apw_0.2.1_<arch>.deb` |
 | AUR | `yay -S apw-cli` | installed package |
 | Nix | `nix build` | `result/bin/apw` |
 

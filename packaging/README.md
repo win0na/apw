@@ -4,8 +4,8 @@ Four artifacts, all built from a release binary.
 
 | Artifact | Source | Output |
 | --- | --- | --- |
-| Tarball | `packaging/tarball.sh` | `dist/apw-0.2.0-<host-target>.tar.gz` |
-| Debian package | `packaging/debian/build.sh` | `dist/apw_0.2.0_<arch>.deb` |
+| Tarball | `packaging/tarball.sh` | `dist/apw-0.2.1-<host-target>.tar.gz` |
+| Debian package | `packaging/debian/build.sh` | `dist/apw_0.2.1_<arch>.deb` |
 | AUR | `packaging/aur/PKGBUILD` | `makepkg -si` output |
 | Nix flake | `flake.nix` | `nix build` output |
 
