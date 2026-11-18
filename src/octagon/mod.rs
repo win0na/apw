@@ -103,11 +103,20 @@ pub async fn join(
 
     // GETRECORDS spends no attempt. Refuse to RECOVER without a budget: the
     // recovery record is destroyed after ten failures.
-    let records = escrow.list_records().await.map_err(|error| {
-        Error::Message(format!(
-            "cannot read the escrow attempt budget ({error}); refusing to recover"
-        ))
-    })?;
+    let records = match escrow.list_records().await {
+        Ok(records) => records,
+        Err(error) if skip_escrow_budget() => {
+            eprintln!(
+                "escrow budget unavailable ({error}); continuing because APW_SKIP_ESCROW_BUDGET=1"
+            );
+            Vec::new()
+        }
+        Err(error) => {
+            return Err(Error::Message(format!(
+                "cannot read the escrow attempt budget ({error}); refusing to recover (set APW_SKIP_ESCROW_BUDGET=1 to join anyway)"
+            )))
+        }
+    };
     {
         let mut budget: Option<i64> = None;
         for (record_label, metadata) in &records {
@@ -149,7 +158,7 @@ pub async fn join(
                     );
                 } else {
                     return Err(Error::Message(
-                        "cannot read the escrow attempt budget; refusing to recover".into(),
+                        "cannot read the escrow attempt budget; refusing to recover (set APW_SKIP_ESCROW_BUDGET=1 to join anyway)".into(),
                     ));
                 }
             }

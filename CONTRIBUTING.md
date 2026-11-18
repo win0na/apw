@@ -4,9 +4,11 @@
 
 ## Build
 
-Rust 1.85 or later.
+Rust 1.88 or later. The Secret Service backend links `libdbus-1`; the build also needs `cmake` and `perl` for `aws-lc`.
 
 ```sh
+sudo apt-get install -y libdbus-1-dev pkg-config cmake perl   # Debian, Ubuntu
+sudo pacman -S --needed dbus cmake perl pkgconf               # Arch
 cargo build
 cargo run -- --help
 ```
@@ -19,38 +21,25 @@ cargo test
 
 The suite has two parts:
 
-- Unit tests in `src/`: TOTP vectors from RFC 6238, snapshot seal and open, SRP round trips, and the GSA `spd` decrypt.
-- Integration tests in `tests/cli.rs`: a fixture sync, `pw`, `otp`, `status`, wrong passphrase, missing snapshot, and the anisette check.
+- Unit tests in `src/`: TOTP vectors from RFC 6238, AES key wrap, snapshot seal and open, SRP round trips, sidecar matching, and the GSA `spd` decrypt.
+- Integration tests in `tests/cli.rs`: a fixture sync, `list`, `get`, `wifi`, `otp`, `status`, wrong passphrase, missing snapshot, and the anisette check.
 
 Tests isolate the XDG directories with `APW_CONFIG_DIR`, `APW_DATA_DIR`, and `APW_STATE_DIR`, and set `APW_PASSPHRASE` so no keyring is needed. They never touch the network.
 
 ## Checks
 
 ```sh
-cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test
+cargo fmt --all --check
+cargo clippy --all-targets --locked -- -D warnings
+cargo test --locked
+cargo build --no-default-features
 ```
 
-All three must pass before a pull request.
-
-## Icon
-
-The icon is one Liquid Glass key on a white plate, built from four Liquid Composer recipes. The PNGs and the `.icon` package are generated files, so edit a recipe or the SVGs in `assets/icon/src/` and render again:
-
-```sh
-cd assets/icon
-for r in icon.json icon-dark.json icon-clear.json; do
-  npx -y liquid-composer apply "$r" --out renders
-done
-npx -y liquid-composer apply icon-bundle.json --out .
-```
-
-Rendering needs Node 22.12 or later and Google Chrome. The binary needs neither. [Icon](docs/icon.md) covers the mark, the appearances, the Icon Composer package, and what the engine cannot match; `assets/icon/NOTES.md` has the measured geometry and the registration checks.
+All four must pass before a pull request. The last one keeps the crate building without the Secret Service backend.
 
 ## Fixtures
 
-A fixture is the same JSON model as the vault:
+A fixture uses the same JSON model as the vault:
 
 ```json
 {
@@ -76,7 +65,7 @@ Fixtures are test data. Never put a real password, token, or account in one.
 
 ## Live gate
 
-The auth, Octagon, and CKKS passes cannot be tested in CI: they need a real Apple ID, and escrow attempts are destructive. Run this once on your own account and report the result in the pull request:
+The auth, Octagon, and CKKS passes cannot run in CI: they need a real Apple ID, and escrow attempts are destructive. Run this once on your own account and report the result in the pull request:
 
 ```sh
 apw login --account you@example.com
@@ -94,13 +83,13 @@ apw otp example.com
 | Path | Contents |
 | --- | --- |
 | `src/cli.rs` | clap definitions and dispatch |
-| `src/commands/` | `login`, `sync`, `status`, `pw`, `otp`, `units` |
+| `src/commands/` | `login`, `join`, `sync`, `status`, `pw`, `otp`, `units`, `probe` |
 | `src/auth/` | SRP, anisette, GSA, two-factor, token exchange |
-| `src/wire/` | Protobuf framing and the CloudKit gateway client (pass 3) |
-| `src/octagon/` | Peer keys, escrow, trust join, TLK shares (pass 3) |
-| `src/ckks/` | Zones, records, AES-SIV, item plists (pass 3) |
-| `src/config.rs` | XDG paths, `config.toml`, `state.json` |
-| `src/model.rs` | Vault, entry, TOTP, group |
+| `src/wire.rs` | Protobuf framing and the CloudKit gateway client |
+| `src/octagon/` | Peer keys, escrow, trust join, TLK shares |
+| `src/ckks/` | Zones, records, AES-SIV, item plists |
+| `src/config.rs` | XDG paths, `config.toml`, `state.json`, snapshot lock |
+| `src/model.rs` | Vault, entry, TOTP, group, sidecar merge |
 | `src/store/` | Snapshot encryption and key sources |
 | `src/vault/` | Snapshot load and save, fixture reader |
 | `src/totp.rs` | RFC 6238 |
@@ -112,11 +101,18 @@ apw otp example.com
 
 ## Standards
 
-- Read-only stays read-only in v1. Do not add `pw save` or item edits.
+- Read-only stays read-only. Do not add `save` or item edits.
 - A new dependency needs a reason in the pull request.
 - Every protocol constant gets a test vector.
 - Never log a password, token, passcode, or key.
 - Docs change in the same pull request as the code.
+
+## Release
+
+1. Bump `version` in `Cargo.toml`, run `cargo check` to refresh `Cargo.lock`, and update the version in `docs/install.md` and `packaging/README.md`.
+2. Commit, tag `vX.Y.Z`, and push the branch and the tag. CI runs on the tag and checks that the tag matches `Cargo.toml`.
+3. Run `packaging/tarball.sh` and `packaging/debian/build.sh`, then attach the artifacts to the GitHub release.
+4. In `packaging/aur`, run `updpkgsums`, then `makepkg --printsrcinfo > .SRCINFO`, and push both to `ssh://aur@aur.archlinux.org/apw-cli.git`.
 
 ## License
 

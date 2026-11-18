@@ -271,20 +271,26 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Resu
     let got = decrypted.values.len() + wifi_decrypted.values.len();
     let lost = decrypted.lost + wifi_decrypted.lost;
     let allow = std::env::var("APW_ALLOW_PARTIAL").ok().as_deref() == Some("1");
-    if !allow && (lost > 0 || (total > 0 && got == 0)) {
-        if lost > 0 {
+    if !allow {
+        if total > 0 && got == 0 {
+            return Err(Error::Message(
+                "sync decrypted no items; refusing to write an empty snapshot (set APW_ALLOW_PARTIAL=1 to accept a partial sync)".into(),
+            ));
+        }
+        // A first sync has no snapshot to protect; write what decrypted and
+        // mark the run partial. Once entries exist, keep the previous vault.
+        if lost > 0 && !snapshot.entries.is_empty() {
             return Err(Error::Message(format!(
                 "sync could not decrypt {lost} item(s); keeping the previous snapshot (set APW_ALLOW_PARTIAL=1 to accept a partial sync)"
             )));
         }
-        return Err(Error::Message(
-            "sync decrypted no items; refusing to write an empty snapshot (set APW_ALLOW_PARTIAL=1 to accept a partial sync)".into(),
-        ));
     }
-    if allow && (lost > 0 || (total > 0 && got == 0)) {
+    if lost > 0 {
         eprintln!(
             "sync: accepted a partial sync; {lost} of {total} item(s) could not be decrypted"
         );
+    } else if allow && total > 0 && got == 0 {
+        eprintln!("sync: accepted an empty partial sync");
     }
     if std::env::var_os("APW_DEBUG").is_some() {
         eprintln!(

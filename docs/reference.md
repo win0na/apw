@@ -2,16 +2,14 @@
 
 Commands, files, configuration, output, and limits.
 
-This build signs in, joins the trust, and syncs against a live account. See [Project status](../README.md#project-status).
-
 ## Commands
 
 | Command | Does |
 | --- | --- |
-| `apw login [--anisette-url URL] [--account EMAIL] [--passcode CODE] [--join] [--no-join] [--refresh]` | Sign in. On the first run it joins the trust and syncs; the apw passcode is reused for escrow unless `--passcode` is given. |
-| `apw join [--passcode CODE]` | Join the trust again with a new peer. Spends one escrow attempt. |
+| `apw login [--anisette-url URL] [--account EMAIL] [--refresh] [--join] [--no-join]` | Sign in. On the first run it joins the trust and syncs. `--refresh` re-reads the service URLs from the stored session. |
+| `apw join` | Join the trust again with a new peer. Spends one escrow attempt. |
 | `apw sync [--force] [--fixture PATH]` | Refresh the snapshot. |
-| `apw status` | Print account, counts, last sync, and snapshot path. |
+| `apw status` | Print account, counts, last sync, snapshot path, and size. |
 | `apw list [QUERY] [--personal] [--group UUID]` | List logins by name. |
 | `apw get QUERY [--username NAME] [--group UUID] [--personal] [--password-only]` | Print every match, including Wi-Fi networks. |
 | `apw wifi [QUERY]` | List saved Wi-Fi networks. |
@@ -20,15 +18,19 @@ This build signs in, joins the trust, and syncs against a live account. See [Pro
 
 `--json`, `--wide`, and `--no-header` are global. Tables are the default on a terminal; a pipe or a redirect gets JSON. `--wide` and `--no-header` keep the text form through a pipe.
 
-`QUERY` matches a substring of the name, domain, URL, or username, case-insensitive. `get` prints all matches as labeled blocks, best match first; `--password-only` prints one password per line and always stays text. `otp` with a query prints just the code, so `$(apw otp github.com)` works.
+`QUERY` matches a substring of the name, domain, URL, or username, case-insensitive. `get` prints all matches as labeled blocks, best match first; `--password-only` prints one password per line and always stays text. `otp` with a query prints only the code, so `$(apw otp github.com)` works.
+
+Hidden `probe` subcommands exist for development. They are not part of the stable interface.
 
 ## Files
 
 | Path | Contents |
 | --- | --- |
-| `$XDG_CONFIG_HOME/apw/config.toml` | Anisette URL, account, KDF salt, sync settings |
+| `$XDG_CONFIG_HOME/apw/config.toml` | Anisette URL, account, KDF salt |
 | `$XDG_DATA_HOME/apw/snapshot.bin` | Encrypted snapshot |
-| `$XDG_STATE_HOME/apw/state.json` | Last sync, source, counts |
+| `$XDG_DATA_HOME/apw/snapshot.bin.prev` | Copy of the snapshot before the last replace |
+| `$XDG_DATA_HOME/apw/snapshot.lock` | Advisory lock held by write commands |
+| `$XDG_STATE_HOME/apw/state.json` | Last sync, source, counts, failures |
 | `$XDG_CONFIG_HOME/systemd/user/apw-sync.{service,timer}` | Timer units |
 
 Defaults are `~/.config/apw`, `~/.local/share/apw`, and `~/.local/state/apw`.
@@ -38,25 +40,30 @@ Defaults are `~/.config/apw`, `~/.local/share/apw`, and `~/.local/state/apw`.
 ```toml
 anisette_url = "http://127.0.0.1:6969"
 account = "you@example.com"
-kdf_salt = "..."          # written on the first passphrase unlock
+kdf_salt = "..."          # written on the first passphrase key derivation
 
 [sync]
 min_interval_seconds = 300
-max_backoff_seconds = 21600
 ```
 
-`kdf_salt` is the base64 salt for the Argon2id fallback. Leave it alone. Changing it makes the existing snapshot unreadable.
+`kdf_salt` is the base64 salt for the Argon2id passphrase key. Leave it alone. Losing it makes a passphrase snapshot unreadable; changing it does the same.
 
 ## Environment
 
 | Variable | Effect |
 | --- | --- |
 | `APW_ANISETTE_URL` | Overrides `anisette_url`. |
-| `APW_PASSPHRASE` | Uses the Argon2id key instead of Secret Service. |
+| `APW_PASSPHRASE` | Uses the Argon2id key instead of Secret Service. Also the non-interactive passphrase input. |
+| `APW_ESCROW_PASSCODE` | Escrow passcode for a non-interactive `login` or `join`. |
+| `APW_PASSWORD` | Apple ID password for a non-interactive `login`. |
+| `APW_2FA_CODE` | Two-factor code for a non-interactive `login`. |
+| `APW_ALLOW_PARTIAL` | Set to `1` to write a snapshot after a partial decrypt. |
+| `APW_SKIP_ESCROW_BUDGET` | Set to `1` to join when the escrow attempt count cannot be read. |
 | `APW_FIXTURE` | Fixture path when `--fixture` is absent. |
 | `APW_CONFIG_DIR` | Replaces `$XDG_CONFIG_HOME/apw`. |
 | `APW_DATA_DIR` | Replaces `$XDG_DATA_HOME/apw`. |
 | `APW_STATE_DIR` | Replaces `$XDG_STATE_HOME/apw`. |
+| `APW_DEBUG` | Prints protocol and sync diagnostics to stderr. Never prints secrets. |
 
 The three directory variables exist for tests and for running from a removable volume.
 
@@ -82,11 +89,11 @@ Failure goes to stderr, and the process exits with the same status:
 | 3 | No results |
 | 4 | Not signed in, or the session expired |
 | 5 | Network or Apple service failure |
-| 6 | Locked: wrong snapshot passcode, or an undecryptable item |
+| 6 | Locked: wrong snapshot key, or an undecryptable item |
 
 `error.code` is one of `usage`, `not_found`, `auth`, `network`, `locked`, or `error`.
 
-`list` and `wifi` results carry `id`, `name`, `username`, `domain`, `sites`, `title`, `notes`, and `group` when present. `name` is the stored title, or the domain when the title only repeats it. `get` adds `password`. `otp` results carry `id`, `name`, `username`, `domain`, `source`, and `code`.
+`list` and `wifi` results carry `id`, `name`, `username`, `domain`, `sites`, `title`, `notes`, and `group` when present. `name` is the stored title, or the domain when the title only repeats it. `get` adds `password`. `otp` results carry `id`, `name`, `username`, `domain`, `source`, and `code`. `sync` adds `partial`.
 
 ## Snapshot format
 
@@ -99,7 +106,7 @@ The snapshot is one AES-256-GCM message:
 | Nonce | 12 bytes | Random per write |
 | Ciphertext | rest | JSON vault, authenticated with the header as AAD |
 
-Writes go to a temporary file, fsync, then rename, with mode `0600`. A reader sees the old snapshot or the new one, never a partial file.
+Writes use a unique temporary file, fsync, and rename, with mode `0600`. A reader sees the old snapshot or the new one, never a partial file. Write commands also take an advisory lock on `snapshot.lock`, so a manual sync and the timer do not interleave.
 
 ## Vault model
 
@@ -108,7 +115,7 @@ Writes go to a temporary file, fsync, then rename, with mode `0600`. A reader se
 | `account` | Apple ID |
 | `generated_at` | Snapshot time, RFC 3339 |
 | `source` | `fixture` or `icloud` |
-| `entries` | Logins, notes, passkey metadata |
+| `entries` | Logins, notes, passkey metadata, Wi-Fi networks |
 | `groups` | Shared groups |
 
 An entry has `id`, `kind` (`login`, `note`, `passkey`, `card`, `wifi`, `other`), `title`, `url`, `sites`, `username`, `password`, `notes`, `totp`, `passkey`, `group`, and `updated_at`.
@@ -120,9 +127,10 @@ A TOTP seed has `secret` (base32), `algorithm` (`SHA1`, `SHA256`, `SHA512`), `di
 | Limit | Value |
 | --- | --- |
 | Sync floor | 300 seconds |
-| Sync backoff ceiling | 6 hours |
 | Escrow attempts | About 10, then the recovery record is destroyed |
 | Snapshot key | 32 bytes |
 | Argon2id | 64 MiB, 3 iterations, 1 lane |
+| HTTP connect timeout | 10 to 15 seconds |
+| HTTP request timeout | 30 to 120 seconds |
 
 Apple's iCloud terms prohibit automated access. `apw` stays polite: paced syncs, no automatic retries, one escrow attempt per user action. The contract risk is yours.

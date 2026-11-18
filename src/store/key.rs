@@ -112,11 +112,20 @@ fn existing_secret_service_key() -> Option<[u8; KEY_LEN]> {
     decode_key(&encoded).ok()
 }
 
-/// Store the key in the Secret Service so a later passphrase entry can be
-/// replaced. Callers treat a backend failure as non-fatal.
+/// Cache a passphrase-derived key in Secret Service. A readable entry is left
+/// alone: it may belong to a snapshot in another data directory, and replacing
+/// it would orphan that snapshot.
 #[cfg(feature = "keyring")]
 pub fn remember(key: &[u8; KEY_LEN]) -> Result<()> {
     let entry = keyring::Entry::new(SERVICE, ACCOUNT)?;
+    if entry
+        .get_password()
+        .ok()
+        .and_then(|encoded| decode_key(&encoded).ok())
+        .is_some()
+    {
+        return Ok(());
+    }
     entry.set_password(&base64::engine::general_purpose::STANDARD.encode(key))?;
     Ok(())
 }

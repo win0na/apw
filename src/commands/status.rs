@@ -25,6 +25,7 @@ pub fn run(paths: &Paths, config: &Config, style: Style) -> Result<()> {
         "groups": state.groups,
         "shared_entries": state.shared_entries,
         "last_sync": state.last_sync,
+        "last_status": state.last_status,
         "snapshot": paths.snapshot_file,
         "snapshot_bytes": snapshot.map(|meta| meta.len()).unwrap_or(0),
         "needs_sync": needs_sync,
@@ -54,6 +55,10 @@ pub fn run(paths: &Paths, config: &Config, style: Style) -> Result<()> {
         (
             "Last sync",
             result["last_sync"].as_str().unwrap_or("never").to_string(),
+        ),
+        (
+            "Last status",
+            result["last_status"].as_str().unwrap_or("-").to_string(),
         ),
         (
             "Snapshot",

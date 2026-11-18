@@ -1,47 +1,45 @@
 <h1>
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="./assets/icon/renders/icon-512-dark.png">
-    <img alt="apw" src="./assets/icon/renders/icon-512.png" width="70" valign="middle">
-  </picture>
-  &nbsp;apw
+<picture>
+<source media="(prefers-color-scheme: dark)" srcset="./assets/icon/renders/icon-512-dark.png">
+<img alt="apw" src="./assets/icon/renders/icon-512.png" width="70" valign="middle">
+</picture>
+&nbsp;apw
 </h1>
 
-`apw` reads Apple Passwords on Linux. It is a single Rust binary that keeps an encrypted local snapshot and answers queries offline.
+`apw` reads Apple Passwords on Linux. It is one Rust binary with an encrypted local snapshot, and the query commands work offline.
 
-Apple ships Passwords for macOS, Windows, and iOS, with no Linux client and no public API for iCloud Keychain. `apw` signs in with an Apple ID, joins the device trust circle, decrypts the keychain records through escrow, and stores them in a snapshot. Keychain and CloudKit records are read-only. The one write is the new trust peer that `login` or `join` adds; it cannot be removed by `apw`.
+Apple has no Linux client and no public API for iCloud Keychain. `apw` signs in with an Apple ID, joins the device trust circle, decrypts keychain records through escrow, and stores them locally. Keychain and CloudKit records stay read-only. The one remote write is the trust peer that `login` or `join` adds.
 
-Sign in, join, and sync run against a live account.
+## Requirements
 
-## Get started
-
-### Requirements
-
-- Linux on x86_64 or aarch64, glibc.
+- Linux on x86_64 or aarch64 with glibc.
 - An Apple ID with two-factor authentication.
-- An [anisette server](docs/install.md#set-up-anisette) for sign-in.
+- An anisette server. See [Install](docs/install.md#set-up-anisette).
 - A Secret Service provider (GNOME Keyring, KWallet) or `APW_PASSPHRASE`.
 
-Rust 1.85 or later is needed only to build from source.
+Rust 1.88 or later, `cmake`, `perl`, and `libdbus-1` are needed only to build. On Debian and Ubuntu install `libdbus-1-dev`; on Arch install `dbus`.
 
-### Install
+## Install
 
 ```sh
 cargo install --git https://github.com/win0na/apw
 ```
 
-The binary lands in `~/.cargo/bin/apw`. [Install](docs/install.md) covers the anisette server and the build from a checkout.
+The binary lands in `~/.cargo/bin/apw`. [Install](docs/install.md) covers the anisette server, packages, and a build from a checkout.
 
-### Sign in
+## First run
 
 ```sh
 apw login --account you@example.com
 ```
 
-`apw login` asks for the Apple ID, a new apw passcode, the Apple ID password, and a two-factor code, then joins the trust and writes the first snapshot. The apw passcode encrypts the snapshot and is reused for escrow, so enter your device passcode. The anisette server defaults to `http://127.0.0.1:6969`; pass `--anisette-url` only when yours runs elsewhere.
+`apw login` asks for the Apple ID password, a two-factor code, and the escrow passcode. It joins the trust and writes the first snapshot, so one command leaves you with a usable vault.
 
-Escrow allows about ten attempts before the record is destroyed, so read [Troubleshooting](docs/troubleshooting.md) before retrying a failed sign-in.
+The snapshot key goes to Secret Service on first write. Without it, `apw` asks for a new apw passphrase. The escrow passcode is the device passcode or iCloud Security Code; it is used once, never stored, and never reused as the snapshot passphrase.
 
-### Sync and query
+Escrow allows about ten attempts before Apple destroys the recovery record. Read [Troubleshooting](docs/troubleshooting.md) before retrying a failed sign-in.
+
+## Query
 
 ```sh
 apw sync
@@ -51,15 +49,15 @@ apw wifi
 apw otp example.com
 ```
 
-`apw sync` decrypts the iCloud records into the snapshot. `apw pw` and `apw otp` read the snapshot and never touch the network.
+`apw sync` decrypts iCloud records into the snapshot. `list`, `get`, `wifi`, and `otp` never touch the network.
 
-`--json` works on every command:
+`--json` works on every command. A pipe or redirect gets JSON too; `--wide` and `--no-header` keep the table form.
 
 ```json
 {"status":0,"data":[{"id":"login-example","name":"Example","username":"alice","domain":"example.com","sites":["example.com"],"password":"hunter2"}]}
 ```
 
-### Refresh on a timer
+## Timer
 
 ```sh
 apw install-units
@@ -68,52 +66,42 @@ systemctl --user enable --now apw-sync.timer
 
 The timer runs `apw sync` hourly. Sync refuses to run more often than every five minutes unless you pass `--force`.
 
-### Upgrade or uninstall
+## Upgrade or uninstall
 
 ```sh
 cargo install --git https://github.com/win0na/apw --force
-cargo uninstall apw
 ```
 
-`cargo uninstall apw` leaves the snapshot and config in place. Remove them with:
+To remove `apw`, stop the timer before the binary:
 
 ```sh
+systemctl --user disable --now apw-sync.timer
+rm -f ~/.config/systemd/user/apw-sync.service ~/.config/systemd/user/apw-sync.timer
+systemctl --user daemon-reload
+cargo uninstall apw
 rm -rf ~/.config/apw ~/.local/share/apw ~/.local/state/apw
+secret-tool clear service apw account snapshot-key
 ```
 
-## Next steps
+`secret-tool` is part of `libsecret`. Skip the last line if you never used Secret Service.
 
-- [Install](docs/install.md): anisette, sign-in, timer, source build.
-- [Operate](docs/operate.md): sync, status, re-authentication, shared groups.
-- [Reference](docs/reference.md): commands, paths, config, JSON, limits.
-- [Secrets](docs/secrets.md): snapshot key, passphrase, escrow, threat model.
-- [Troubleshooting](docs/troubleshooting.md): symptoms and fixes.
-- [Design](docs/design.md): protocols, architecture, passes.
-- [Contributing](CONTRIBUTING.md): build, tests, fixtures, live gate.
-
-## Read-only
-
-This build has no `pw save` and no item edit. `apw pw save` fails as an unknown command.
-
-Apple's iCloud terms prohibit automated access. `apw` stays polite: paced syncs, no automatic retries, one escrow attempt per user action. The contract risk is yours.
-
-## Project status
+## Status
 
 | Area | State |
 | --- | --- |
-| CLI, encrypted snapshot, `list`, `get`, `wifi`, `otp`, `status`, `install-units` | Works; 48 unit and 15 integration tests |
-| `login`: GSA SRP, anisette, 2FA, token exchange | Works against the live account |
-| `join`: Octagon trust, escrow recovery | Works; peer joined, restore point stored |
-| `sync` from iCloud | Works; 383 items, 370 logins, 33 passkeys, 47 codes |
+| CLI, snapshot, `list`, `get`, `wifi`, `otp`, `status`, `install-units` | Works; 57 unit and 18 integration tests |
+| `login`, `join`, `sync` against iCloud | Works; 383 items, 370 logins, 33 passkeys, 47 codes |
 | Shared groups | Read path implemented; the test account has no shared items |
-| Passkeys, notes, cards | Read; passkeys are listed separately |
-| Packaging: tarball, .deb, AUR, Nix | GitHub release, `.deb`, and AUR `apw-cli`; Nix recipe in `flake.nix` |
+| Passkeys, notes, cards | Read; passkeys are counted in `status` but not listed |
+| Packaging | Tarball, `.deb`, AUR `apw-cli`, Nix flake |
 
-The Deno implementation for macOS stays under `legacy/` for reference. It is not built or supported.
+There is no `save` or edit command. Apple's iCloud terms prohibit automated access; `apw` stays polite with paced syncs, no automatic retries, and one escrow attempt per user action. The contract risk is yours.
 
-## Contributing
+The Deno implementation for macOS stays under `legacy/` as reference. It is not built.
 
-Contributions are welcome. [Contributing](CONTRIBUTING.md) covers the build, the test suite, fixtures, and the live gate.
+## Docs
+
+[Install](docs/install.md) · [Operate](docs/operate.md) · [Reference](docs/reference.md) · [Secrets](docs/secrets.md) · [Troubleshooting](docs/troubleshooting.md) · [Design](docs/design.md) · [Icon](docs/icon.md) · [Contributing](CONTRIBUTING.md)
 
 ## License
 

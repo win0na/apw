@@ -1,16 +1,14 @@
 # Install
 
-This page takes a Linux machine to a signed-in snapshot and a systemd timer.
-
-This build signs in, joins the trust, and syncs against a live account. See [Project status](../README.md#project-status).
+This page takes a Linux machine from nothing to a signed-in snapshot and an hourly systemd timer.
 
 ## Requirements
 
-- Linux on x86_64 or aarch64, glibc.
+- Linux on x86_64 or aarch64 with glibc.
 - An Apple ID with two-factor authentication.
 - An anisette server. See [Set up anisette](#set-up-anisette).
 - A Secret Service provider (GNOME Keyring, KWallet) or `APW_PASSPHRASE`.
-- Rust 1.85 or later, plus `cmake` and `perl` (the aws-lc build) to build from source.
+- To build: Rust 1.88 or later, `cmake`, `perl`, and `libdbus-1`. On Debian and Ubuntu install `libdbus-1-dev` and `pkg-config`; on Arch install `dbus`, `cmake`, `perl`, and `pkgconf`.
 
 The binary needs glibc and a D-Bus session for Secret Service. It does not need Deno, Chrome, or Apple software.
 
@@ -18,7 +16,7 @@ The binary needs glibc and a D-Bus session for Secret Service. It does not need 
 
 Anisette is the device identity Apple expects on account requests. Apple does not document it, and `apw` ships no Apple binary. Run a server and give `apw` its URL.
 
-The tested server is `anisette-server-rs` 0.2.1. It serves a Windows identity by default and a macOS one on request; `apw` uses both, so the server must support `?backend=macos`:
+The tested server is `anisette-server-rs` 0.2.1. It serves a Windows identity by default and a macOS identity on request. `apw` uses both, so the server must support `?backend=macos`.
 
 ```sh
 podman run -d --name apw-anisette \
@@ -29,13 +27,9 @@ podman run -d --name apw-anisette \
 
 `apw` uses `http://127.0.0.1:6969` by default. Pass `--anisette-url` or set `APW_ANISETTE_URL` when the server runs elsewhere. `anisette-v3-server` in Docker also works if it answers the same routes.
 
-```sh
-apw login --account you@example.com
-```
+The server holds a device identity that Apple ties to your account. Self-host it or use a host you trust.
 
-`APW_ANISETTE_URL` overrides the config file. The server holds a device identity that Apple ties to your account. Self-host it or use a host you trust.
-
-## Install
+## Install the binary
 
 With Cargo:
 
@@ -50,18 +44,18 @@ cargo build --release
 install -m755 target/release/apw ~/.local/bin/apw
 ```
 
-`apw --version` prints `0.1.5`.
+`apw --version` prints `0.2.0`.
 
 Prebuilt formats live in `packaging/`:
 
 | Format | Command | Output |
 | --- | --- | --- |
-| Tarball | `packaging/tarball.sh` | `dist/apw-0.1.5-<target>.tar.gz` |
-| Debian | `packaging/debian/build.sh` | `dist/apw_0.1.5_<arch>.deb` |
+| Tarball | `packaging/tarball.sh` | `dist/apw-0.2.0-<target>.tar.gz` |
+| Debian | `packaging/debian/build.sh` | `dist/apw_0.2.0_<arch>.deb` |
 | AUR | `yay -S apw-cli` | installed package |
 | Nix | `nix build` | `result/bin/apw` |
 
-The AUR package is `apw-cli`; it installs `/usr/bin/apw` and conflicts with the unrelated `apw` wrapper. The recipe builds from the `v0.1.5` tag. The tarball and Debian scripts build the release binary first; set `APW_SKIP_BUILD=1` to reuse an existing one.
+The AUR package is `apw-cli`. It installs `/usr/bin/apw` and conflicts with the unrelated `apw` wrapper. The recipe builds from the `v0.2.0` tag. The tarball and Debian scripts build the release binary first; set `APW_SKIP_BUILD=1` to reuse an existing one.
 
 ## Sign in
 
@@ -69,11 +63,13 @@ The AUR package is `apw-cli`; it installs `/usr/bin/apw` and conflicts with the 
 apw login --account you@example.com
 ```
 
-On the first run `apw login` asks for the Apple ID, a new apw passcode, the Apple ID password, and a two-factor code. It then joins the Octagon trust circle and syncs, so one command leaves you with a usable snapshot.
+On the first run `apw login` asks for the Apple ID password, a two-factor code, and the escrow passcode. Then it joins the Octagon trust circle and syncs, so one command leaves you with a usable snapshot.
 
-The apw passcode encrypts the local snapshot and is reused as the escrow passcode. Enter your device passcode, or the iCloud Security Code if you set one, so the join needs no second prompt. Pass `--passcode` to use a different code for escrow.
+The snapshot key goes to Secret Service on first write. If Secret Service is unavailable, `apw` asks for a new apw passphrase and derives the key with Argon2id. Set `APW_PASSPHRASE` to choose passphrase mode from the start.
 
-Later logins keep the existing peer and only sync. Pass `--no-join` to skip the join, or `--join` to replace the peer. `apw join` does the same join on its own.
+The escrow passcode is your device passcode, or the iCloud Security Code if you set one. It is used once, never stored, and never reused as the snapshot passphrase. In a non-interactive run, set `APW_ESCROW_PASSCODE`.
+
+Later logins keep the existing peer and only sync. Pass `--no-join` to skip the join, `--join` to replace the peer, or `--refresh` to re-read the service URLs without signing in again. `apw join` runs the join on its own.
 
 Escrow allows about ten attempts before Apple destroys the recovery record. Each join makes one attempt and never retries on its own. A wrong passcode stops the command.
 
@@ -87,14 +83,16 @@ systemctl --user daemon-reload
 systemctl --user enable --now apw-sync.timer
 ```
 
-The timer runs `apw sync` hourly. It reads `~/.config/apw/sync.env` when that file exists, so a headless passphrase or anisette URL can live there with mode 0600:
+The timer runs `apw sync` hourly. It reads `~/.config/apw/sync.env` when the file exists, so a headless passphrase or anisette URL can live in a mode 0600 file:
 
 ```sh
 install -m600 /dev/null ~/.config/apw/sync.env
-printf 'APW_PASSPHRASE=%s\n' 'your passcode' > ~/.config/apw/sync.env
+printf 'APW_PASSPHRASE=%s\n' 'your apw passphrase' > ~/.config/apw/sync.env
 ```
 
-`Persistent=true` catches up after a suspend or a missed run. Enable lingering when the user session is not always active:
+Use the apw passphrase here, never the device passcode. In Secret Service mode, the timer needs an unlocked keyring instead of this file.
+
+`Persistent=true` catches up after suspend or a missed run. Enable lingering when the user session is not always active:
 
 ```sh
 loginctl enable-linger "$USER"
@@ -108,4 +106,4 @@ apw list
 apw otp example.com
 ```
 
-`apw status` prints the account, source, entry count, and snapshot path.
+`apw status` prints the account, source, entry count, and snapshot path. Next, read [Operate](operate.md) for sync and re-authentication, or [Troubleshooting](troubleshooting.md) when a step fails.
