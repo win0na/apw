@@ -62,7 +62,9 @@ pub struct SpdFields {
 }
 
 pub struct Gsa {
-    client: reqwest::Client,
+    // Building the client fails on systems without a CA store. Keep the error
+    // instead of panicking, as `reqwest::Client::new` does.
+    client: std::result::Result<reqwest::Client, String>,
     endpoint: String,
     identity: Identity,
 }
@@ -80,10 +82,16 @@ impl Gsa {
                 .connect_timeout(Duration::from_secs(10))
                 .timeout(Duration::from_secs(30))
                 .build()
-                .unwrap_or_else(|_| reqwest::Client::new()),
+                .map_err(|error| format!("cannot create the GSA HTTP client: {error}")),
             endpoint,
             identity,
         }
+    }
+
+    fn client(&self) -> Result<&reqwest::Client> {
+        self.client
+            .as_ref()
+            .map_err(|error| Error::Message(error.clone()))
     }
 
     pub async fn init(&self, username: &str, public: &[u8]) -> Result<InitResponse> {
@@ -132,7 +140,7 @@ impl Gsa {
         plist::to_writer_xml(&mut bytes, &body)?;
 
         let response = self
-            .client
+            .client()?
             .post(&self.endpoint)
             .header("Content-Type", "text/x-xml-plist")
             .header("Accept", "*/*")

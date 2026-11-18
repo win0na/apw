@@ -571,16 +571,13 @@ fn hmac_sha256(key: &[u8], data: &[u8]) -> Vec<u8> {
 
 /// RFC 3394 AES key unwrap with a 128-bit KEK.
 fn aes_key_unwrap(kek: &[u8; 16], blob: &[u8]) -> Result<Vec<u8>> {
-    if blob.len() < 24 || blob.len() % 8 != 0 {
+    if blob.len() < 24 || !blob.len().is_multiple_of(8) {
         return Err(Error::Message("bad AES key wrap length".into()));
     }
     let cipher = Aes128::new_from_slice(kek).map_err(|_| Error::Message("bad KEK".into()))?;
     let n = blob.len() / 8 - 1;
     let mut a: [u8; 8] = blob[..8].try_into().expect("checked length");
-    let mut blocks: Vec<[u8; 8]> = blob[8..]
-        .chunks_exact(8)
-        .map(|chunk| chunk.try_into().expect("checked length"))
-        .collect();
+    let mut blocks: Vec<[u8; 8]> = blob[8..].as_chunks::<8>().0.to_vec();
 
     for round in (0..6u64).rev() {
         for index in (0..n).rev() {

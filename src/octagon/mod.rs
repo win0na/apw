@@ -109,6 +109,7 @@ pub async fn join(
         ))
     })?;
     {
+        let mut budget: Option<i64> = None;
         for (record_label, metadata) in &records {
             if record_label != label {
                 continue;
@@ -119,21 +120,37 @@ pub async fn join(
             if std::env::var_os("APW_DEBUG").is_some() {
                 eprintln!("escrow metadata: {:?}", dict.keys().collect::<Vec<_>>());
             }
-            let remaining = dict
+            if let Some(remaining) = dict
                 .iter()
                 .find(|(key, _)| key.to_lowercase().contains("remaining"))
                 .and_then(|(_, value)| match value {
                     plist::Value::Integer(number) => number.as_signed(),
                     _ => None,
-                });
-            if let Some(remaining) = remaining {
-                if remaining <= 0 {
-                    return Err(Error::Message(
-                        "the escrow record has no attempts left".into(),
-                    ));
-                }
+                })
+            {
+                budget = Some(remaining);
+            }
+        }
+        match budget {
+            Some(remaining) if remaining <= 0 => {
+                return Err(Error::Message(
+                    "the escrow record has no attempts left".into(),
+                ));
+            }
+            Some(remaining) => {
                 if std::env::var_os("APW_DEBUG").is_none() {
                     eprintln!("escrow attempts remaining: {remaining}");
+                }
+            }
+            None => {
+                if skip_escrow_budget() {
+                    eprintln!(
+                        "escrow budget unavailable; continuing because APW_SKIP_ESCROW_BUDGET=1"
+                    );
+                } else {
+                    return Err(Error::Message(
+                        "cannot read the escrow attempt budget; refusing to recover".into(),
+                    ));
                 }
             }
         }
@@ -141,11 +158,15 @@ pub async fn join(
 
     // Read the trust before spending the attempt: a failure here costs nothing,
     // a failure after RECOVER costs one of ten.
-    let mut trust = fetch_changes(gateway).await?;
+    fetch_changes(gateway).await?;
 
     eprintln!("joining the trust spends one escrow attempt");
     let entropy = escrow.entropy(label, passcode, adsid).await?;
     let sponsor = escrow::recover_identity(&bottle, &entropy, adsid)?;
+
+    // Re-read the trust after recovery so the voucher carries a restore point
+    // that already knows about the sponsor.
+    let mut trust = fetch_changes(gateway).await?;
 
     let sponsor_info = trust
         .peers
@@ -211,6 +232,14 @@ pub async fn tlk_shares(gateway: &Gateway, peer_id: &str) -> Result<Vec<u8>> {
     gateway
         .invoke("fetchRecoverableTLKShares", request.as_slice())
         .await
+}
+
+/// The documented escape hatch for an unreadable budget: only the exact value
+/// `1` opts out, so a typo cannot silently skip the check.
+fn skip_escrow_budget() -> bool {
+    std::env::var("APW_SKIP_ESCROW_BUDGET")
+        .map(|value| value == "1")
+        .unwrap_or(false)
 }
 
 fn parse_changes(data: &[u8]) -> Result<Trust> {

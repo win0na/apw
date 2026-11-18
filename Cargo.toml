@@ -2,7 +2,7 @@
 name = "apw"
 version = "0.2.0"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.88"
 description = "Read Apple Passwords on Linux"
 license = "GPL-3.0-only"
 repository = "https://github.com/win0na/apw"

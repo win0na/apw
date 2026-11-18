@@ -61,12 +61,19 @@ fn sync_fixture(paths: &Paths, config: &mut Config, fixture: &Path, json: bool) 
     }
     snapshot.account = config.account.clone().or(snapshot.account);
     snapshot.generated_at = Some(chrono::Utc::now());
+    if paths.snapshot_file.exists() {
+        let _ = std::fs::copy(
+            &paths.snapshot_file,
+            paths.snapshot_file.with_extension("bin.prev"),
+        );
+    }
     vault::save(paths, config, &snapshot)?;
     finish(
         paths,
         &snapshot,
         json,
         &format!("fixture {}", fixture.display()),
+        false,
         true,
     )
 }
@@ -258,17 +265,26 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Resu
     let class_keys = ckks::unwrap_class_keys(&synckeys, &tlks);
     let decrypted = ckks::decrypt_items(&items, &class_keys);
     let wifi_decrypted = ckks::decrypt_items(&wifi_records, &class_keys);
-    // A partial decrypt must not silently shrink the snapshot.
-    let lost = items.len().saturating_sub(decrypted.len())
-        + wifi_records.len().saturating_sub(wifi_decrypted.len());
-    if lost > 0 && !snapshot.entries.is_empty() {
-        if std::env::var("APW_ALLOW_PARTIAL").ok().as_deref() == Some("1") {
-            eprintln!("sync: accepted a partial sync; {lost} item(s) could not be decrypted");
-        } else {
+    // A partial decrypt must not silently shrink the snapshot. Structural skips
+    // (`no_parent`, `no_data`, `no_wrapped`) are not data loss.
+    let total = items.len() + wifi_records.len();
+    let got = decrypted.values.len() + wifi_decrypted.values.len();
+    let lost = decrypted.lost + wifi_decrypted.lost;
+    let allow = std::env::var("APW_ALLOW_PARTIAL").ok().as_deref() == Some("1");
+    if !allow && (lost > 0 || (total > 0 && got == 0)) {
+        if lost > 0 {
             return Err(Error::Message(format!(
                 "sync could not decrypt {lost} item(s); keeping the previous snapshot (set APW_ALLOW_PARTIAL=1 to accept a partial sync)"
             )));
         }
+        return Err(Error::Message(
+            "sync decrypted no items; refusing to write an empty snapshot (set APW_ALLOW_PARTIAL=1 to accept a partial sync)".into(),
+        ));
+    }
+    if allow && (lost > 0 || (total > 0 && got == 0)) {
+        eprintln!(
+            "sync: accepted a partial sync; {lost} of {total} item(s) could not be decrypted"
+        );
     }
     if std::env::var_os("APW_DEBUG").is_some() {
         eprintln!(
@@ -278,12 +294,12 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Resu
             items.len(),
             tlks.len(),
             class_keys.len(),
-            decrypted.len()
+            decrypted.values.len()
         );
     }
     if std::env::var_os("APW_DEBUG").is_some() {
         let mut groups: std::collections::BTreeMap<String, (usize, usize)> = Default::default();
-        for (_, value) in &decrypted {
+        for (_, value) in &decrypted.values {
             let Some(dict) = value.as_dictionary() else {
                 continue;
             };
@@ -308,7 +324,7 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Resu
         }
     }
 
-    let service_keys = service_keys(&decrypted);
+    let service_keys = service_keys(&decrypted.values);
     let mut group_data = Vec::new();
     let mut group_warnings: Vec<String> = Vec::new();
     if !service_keys.is_empty() {
@@ -354,13 +370,20 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Resu
     // A zone that failed to bootstrap, a zone that failed to read, or an item
     // that failed to decrypt all mean the shared view is incomplete. Keep the
     // previous shared entries rather than deleting them.
-    let incomplete = !group_warnings.is_empty() || group_data.iter().any(|data| data.skipped > 0);
+    if service_keys.is_empty() && !snapshot.groups.is_empty() {
+        group_warnings.push(
+            "shared group keys were not available; keeping the previous shared entries".into(),
+        );
+    }
+    let incomplete = !group_warnings.is_empty()
+        || group_data.iter().any(|data| data.skipped > 0)
+        || (service_keys.is_empty() && !snapshot.groups.is_empty());
 
     let mut logins: Vec<Entry> = Vec::new();
     let mut sidecars: Vec<Entry> = Vec::new();
     let mut passkeys: Vec<Entry> = Vec::new();
 
-    for (id, value) in &decrypted {
+    for (id, value) in &decrypted.values {
         let Some(entry) = ckks::entry_from_plist(id, value) else {
             continue;
         };
@@ -488,6 +511,7 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Resu
     }
 
     let mut wifi: Vec<Entry> = wifi_decrypted
+        .values
         .iter()
         .filter(|(_, value)| {
             value
@@ -539,7 +563,7 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Resu
         tlks.len(),
         class_keys.len()
     );
-    finish(paths, &snapshot, json, &note, emit)
+    finish(paths, &snapshot, json, &note, incomplete || lost > 0, emit)
 }
 
 fn is_uuid(value: &str) -> bool {
@@ -555,11 +579,12 @@ fn finish(
     snapshot: &crate::model::Vault,
     json: bool,
     note: &str,
+    partial: bool,
     emit: bool,
 ) -> Result<()> {
     let state = State {
         last_sync: snapshot.generated_at,
-        last_status: Some("ok".into()),
+        last_status: Some(if partial { "partial" } else { "ok" }.into()),
         account: snapshot.account.clone(),
         source: Some(snapshot.source.to_string()),
         entries: snapshot.item_count() as u32,
@@ -586,6 +611,7 @@ fn finish(
         "wifi": snapshot.wifi_count(),
         "groups": snapshot.groups.len(),
         "snapshot": paths.snapshot_file,
+        "partial": partial,
     });
 
     if emit {

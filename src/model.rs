@@ -270,6 +270,11 @@ fn usernames_compatible(login: Option<&str>, sidecar: Option<&str>) -> bool {
 /// unambiguous.
 fn unique_domain_match(logins: &[Entry], sidecar: &Entry) -> Option<usize> {
     let domain = sidecar.domain();
+    // A sidecar with no domain must not attach itself to a domain-less note
+    // just because both sides agree on "nothing".
+    if domain.is_empty() {
+        return None;
+    }
     let mut candidates = logins.iter().enumerate().filter(|(_, login)| {
         login.domain().eq_ignore_ascii_case(&domain)
             && usernames_compatible(login.username.as_deref(), sidecar.username.as_deref())

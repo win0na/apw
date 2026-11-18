@@ -160,6 +160,33 @@ pub fn save_state(paths: &Paths, state: &State) -> Result<()> {
     write_private(&paths.state_file, &text)
 }
 
+/// Held for the lifetime of a command that loads, refreshes and saves the
+/// snapshot. The file itself carries no data; the kernel lock is the state.
+pub struct SnapshotLock {
+    _file: std::fs::File,
+}
+
+/// Serialize snapshot writers across processes so a timer run and a manual
+/// sync cannot both load, fetch and save and lose one side's updates.
+pub fn lock_snapshot(paths: &Paths) -> Result<SnapshotLock> {
+    use std::os::unix::fs::OpenOptionsExt;
+    paths.ensure()?;
+    let path = paths.data_dir.join("snapshot.lock");
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(&path)?;
+    let fd = std::os::unix::io::AsRawFd::as_raw_fd(&file);
+    // SAFETY: fd is open for the lifetime of `file`.
+    if unsafe { libc::flock(fd, libc::LOCK_EX) } != 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Ok(SnapshotLock { _file: file })
+}
+
 pub fn write_private(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
     use std::io::Write;
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -210,8 +237,15 @@ pub fn write_private(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
         drop(file);
         std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
         std::fs::rename(&tmp, path)?;
-        // Persist the directory entry so the rename survives a crash.
-        std::fs::File::open(parent)?.sync_all()?;
+        // Persist the directory entry so the rename survives a crash. Some
+        // filesystems reject a directory fsync and an fd limit can refuse the
+        // open, but the bytes are already durable and the rename already
+        // happened, so a failure here must not report the write as failed.
+        if let Err(error) = std::fs::File::open(parent).and_then(|dir| dir.sync_all()) {
+            if std::env::var_os("APW_DEBUG").is_some() {
+                eprintln!("config: directory fsync failed: {error}");
+            }
+        }
         Ok(())
     };
 

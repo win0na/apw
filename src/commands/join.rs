@@ -18,10 +18,6 @@ use crate::vault;
 pub fn run(paths: &Paths, config: &mut Config, json: bool) -> Result<()> {
     let joined = perform(paths, config)?;
 
-    let mut state = config::load_state(paths)?;
-    state.last_status = Some("joined".into());
-    config::save_state(paths, &state)?;
-
     let result = serde_json::json!({
         "peer": joined.peer,
         "sponsor": joined.sponsor,
@@ -46,6 +42,28 @@ pub struct Joined {
 }
 
 pub fn perform(paths: &Paths, config: &mut Config) -> Result<Joined> {
+    match perform_inner(paths, config) {
+        Ok(joined) => {
+            let mut state = config::load_state(paths)?;
+            state.failures = 0;
+            state.last_status = Some("joined".into());
+            config::save_state(paths, &state)?;
+            Ok(joined)
+        }
+        Err(error) => {
+            // Count the failure so `login` stops retrying on its own. A state
+            // write failure must not hide the join error.
+            if let Ok(mut state) = config::load_state(paths) {
+                state.failures = state.failures.saturating_add(1);
+                state.last_status = Some("join-failed".into());
+                let _ = config::save_state(paths, &state);
+            }
+            Err(error)
+        }
+    }
+}
+
+fn perform_inner(paths: &Paths, config: &mut Config) -> Result<Joined> {
     if !paths.snapshot_file.exists() {
         return Err(Error::Auth("run `apw login` first".into()));
     }

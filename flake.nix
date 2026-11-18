@@ -23,7 +23,8 @@
         # nixpkgs asks aws-lc-sys to link a system AWS-LC that this closure
         # does not provide. Build it from source instead.
         AWS_LC_SYS_USE_SYSTEM = "0";
-        nativeBuildInputs = with pkgs; [ cmake perl pkg-config dbus ];
+        nativeBuildInputs = with pkgs; [ cmake perl pkg-config ];
+        buildInputs = with pkgs; [ dbus ];
         preBuild = ''
           export AWS_LC_SYS_USE_SYSTEM=0
         '';
@@ -61,6 +62,10 @@
             rustc
             rustfmt
             clippy
+            cmake
+            perl
+            pkg-config
+            dbus
           ];
         };
       });

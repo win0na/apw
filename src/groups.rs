@@ -53,12 +53,15 @@ async fn zones(gateway: &Gateway) -> Result<Vec<crate::cloudkit::ZoneInfo>> {
         let page = gateway.zone_changes(token.as_deref()).await?;
         out.extend(page.zones);
         pages += 1;
-        if page.status == 2 || pages >= 10 {
+        if page.status == 2 {
             break;
+        }
+        if pages >= 10 {
+            return Err(Error::Message("zone list did not finish paging".into()));
         }
         match page.token {
             Some(next) if Some(&next) != token.as_ref() => token = Some(next),
-            _ => break,
+            _ => return Err(Error::Message("zone list did not finish paging".into())),
         }
     }
     Ok(out)
@@ -74,12 +77,15 @@ async fn records(gateway: &Gateway, zone: &str, owner: &str) -> Result<Vec<Recor
             .await?;
         out.extend(page.records);
         pages += 1;
-        if page.status != 1 || pages >= 20 {
+        if page.status != 1 {
             break;
+        }
+        if pages >= 20 {
+            return Err(Error::Message(format!("zone {zone} did not finish paging")));
         }
         match page.token {
             Some(next) if Some(&next) != token.as_ref() => token = Some(next),
-            _ => break,
+            _ => return Err(Error::Message(format!("zone {zone} did not finish paging"))),
         }
     }
     Ok(out)

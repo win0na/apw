@@ -35,7 +35,7 @@ pub struct SnapshotKey {
 /// snapshot.
 pub fn load(config: &mut Config, paths: &Paths) -> Result<SnapshotKey> {
     if let Some(passphrase) = env_passphrase() {
-        return derive_from_passphrase(config, paths, &passphrase);
+        return derive_from_passphrase(config, paths, &passphrase, false);
     }
 
     #[cfg(feature = "keyring")]
@@ -47,14 +47,25 @@ pub fn load(config: &mut Config, paths: &Paths) -> Result<SnapshotKey> {
     }
 
     let passphrase = read_passphrase()?;
-    derive_from_passphrase(config, paths, &passphrase)
+    derive_from_passphrase(config, paths, &passphrase, false)
+}
+
+/// Derive a key for reading an existing snapshot. A missing KDF salt is an
+/// error: minting one here would derive a key that cannot open the snapshot and
+/// would overwrite the salt the writer used.
+pub fn derive_for_load(
+    config: &mut Config,
+    paths: &Paths,
+    passphrase: &str,
+) -> Result<SnapshotKey> {
+    derive_from_passphrase(config, paths, passphrase, false)
 }
 
 /// Create the key for a first write. Only this path may store a new Secret
 /// Service entry or prompt for a new passphrase.
 pub fn create(config: &mut Config, paths: &Paths) -> Result<SnapshotKey> {
     if let Some(passphrase) = env_passphrase() {
-        return derive_from_passphrase(config, paths, &passphrase);
+        return derive_from_passphrase(config, paths, &passphrase, true);
     }
 
     #[cfg(feature = "keyring")]
@@ -83,7 +94,7 @@ pub fn create(config: &mut Config, paths: &Paths) -> Result<SnapshotKey> {
         return Err(Error::Invalid("the passphrases do not match".into()));
     }
     std::env::set_var("APW_PASSPHRASE", &passphrase);
-    derive_from_passphrase(config, paths, &passphrase)
+    derive_from_passphrase(config, paths, &passphrase, true)
 }
 
 fn env_passphrase() -> Option<String> {
@@ -101,16 +112,32 @@ fn existing_secret_service_key() -> Option<[u8; KEY_LEN]> {
     decode_key(&encoded).ok()
 }
 
-/// Store a fresh Secret Service key. Returns `None` when the backend is
-/// unavailable so the caller can fall back to a passphrase.
+/// Store the key in the Secret Service so a later passphrase entry can be
+/// replaced. Callers treat a backend failure as non-fatal.
+#[cfg(feature = "keyring")]
+pub fn remember(key: &[u8; KEY_LEN]) -> Result<()> {
+    let entry = keyring::Entry::new(SERVICE, ACCOUNT)?;
+    entry.set_password(&base64::engine::general_purpose::STANDARD.encode(key))?;
+    Ok(())
+}
+
+/// Resolve the Secret Service key for a first write. An existing readable entry
+/// is reused and never overwritten: it may belong to a snapshot in another data
+/// directory, and replacing it would orphan that snapshot.
 #[cfg(feature = "keyring")]
 fn create_secret_service_key() -> Option<[u8; KEY_LEN]> {
     let entry = keyring::Entry::new(SERVICE, ACCOUNT).ok()?;
-    let key = random_key();
-    entry
-        .set_password(&base64::engine::general_purpose::STANDARD.encode(key))
-        .ok()?;
-    Some(key)
+    match entry.get_password() {
+        Ok(encoded) => decode_key(&encoded).ok(),
+        Err(keyring::Error::NoEntry) => {
+            let key = random_key();
+            entry
+                .set_password(&base64::engine::general_purpose::STANDARD.encode(key))
+                .ok()?;
+            Some(key)
+        }
+        Err(_) => None,
+    }
 }
 
 fn read_passphrase() -> Result<String> {
@@ -128,11 +155,17 @@ fn derive_from_passphrase(
     config: &mut Config,
     paths: &Paths,
     passphrase: &str,
+    create_salt: bool,
 ) -> Result<SnapshotKey> {
     let salt = match &config.kdf_salt {
         Some(encoded) => base64::engine::general_purpose::STANDARD
             .decode(encoded)
             .map_err(|_| Error::Message("config kdf_salt is not valid base64".into()))?,
+        None if !create_salt => {
+            return Err(Error::Message(
+                "config has no kdf_salt; cannot derive the passphrase key".into(),
+            ));
+        }
         None => {
             let mut salt = [0u8; 16];
             rand::rngs::OsRng.fill_bytes(&mut salt);
@@ -170,4 +203,60 @@ fn decode_key(encoded: &str) -> Result<[u8; KEY_LEN]> {
     bytes
         .try_into()
         .map_err(|_| Error::Message("Secret Service holds a key of the wrong length".into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{derive_from_passphrase, KeySource, KEY_LEN};
+    use crate::config::{Config, Paths};
+
+    fn test_paths(dir: &std::path::Path) -> Paths {
+        Paths {
+            config_dir: dir.join("config"),
+            config_file: dir.join("config").join("config.toml"),
+            data_dir: dir.join("data"),
+            snapshot_file: dir.join("data").join("snapshot.bin"),
+            state_dir: dir.join("state"),
+            state_file: dir.join("state").join("state.json"),
+        }
+    }
+
+    #[test]
+    fn load_does_not_mint_a_missing_salt() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = test_paths(dir.path());
+        let mut config = Config::default();
+
+        let error = match derive_from_passphrase(&mut config, &paths, "hunter2", false) {
+            Ok(_) => panic!("the load path derived a key from a missing salt"),
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains("kdf_salt"),
+            "unexpected error: {error}"
+        );
+        assert!(config.kdf_salt.is_none());
+        assert!(!paths.config_file.exists(), "load wrote the config file");
+    }
+
+    #[test]
+    fn create_mints_a_salt_and_derives_a_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = test_paths(dir.path());
+        let mut config = Config::default();
+
+        let key = derive_from_passphrase(&mut config, &paths, "hunter2", true).unwrap();
+        assert_eq!(key.key.len(), KEY_LEN);
+        assert_ne!(key.key, [0u8; KEY_LEN]);
+        assert_eq!(key.source, KeySource::Passphrase);
+
+        let salt = config.kdf_salt.clone().expect("a salt was minted");
+        assert!(!salt.is_empty());
+        let saved = Config::load(&paths).unwrap();
+        assert_eq!(saved.kdf_salt.as_deref(), Some(salt.as_str()));
+
+        let again = derive_from_passphrase(&mut config, &paths, "hunter2", true).unwrap();
+        assert_eq!(again.key, key.key);
+        assert_eq!(config.kdf_salt.as_deref(), Some(salt.as_str()));
+    }
 }

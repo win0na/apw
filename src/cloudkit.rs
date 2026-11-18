@@ -209,7 +209,9 @@ impl Gateway {
             .connect_timeout(Duration::from_secs(15))
             .timeout(Duration::from_secs(120))
             .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
+            .map_err(|error| {
+                Error::Message(format!("cannot create the CloudKit HTTP client: {error}"))
+            })?;
         let url = format!("{GATEWAY}{CK_APP_INIT}?container={container}");
         let authorization = format!(
             "Basic {}",

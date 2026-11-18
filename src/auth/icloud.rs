@@ -54,7 +54,7 @@ pub async fn login_delegates(
 
     let authorization =
         base64::engine::general_purpose::STANDARD.encode(format!("{apple_id}:{pet}"));
-    let response = client()
+    let response = client()?
         .post(format!("{}/setup/iosbuddy/loginDelegates", setup_base()))
         .headers(base_headers(identity)?)
         .header("Authorization", format!("Basic {authorization}"))
@@ -87,7 +87,7 @@ pub async fn account_settings(
     let authorization =
         base64::engine::general_purpose::STANDARD.encode(format!("{dsid}:{mme_auth_token}"));
 
-    let response = client()
+    let response = client()?
         .post(format!("{}/setup/get_account_settings", setup_base()))
         .headers(base_headers(identity)?)
         .header("Authorization", format!("Basic {authorization}"))
@@ -307,12 +307,12 @@ fn setup_base() -> String {
         .unwrap_or_else(|| "https://setup.icloud.com".to_string())
 }
 
-fn client() -> reqwest::Client {
+fn client() -> Result<reqwest::Client> {
     reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(30))
         .build()
-        .unwrap_or_else(|_| reqwest::Client::new())
+        .map_err(|error| Error::Message(format!("cannot create the iCloud HTTP client: {error}")))
 }
 
 fn uuid_v4() -> String {

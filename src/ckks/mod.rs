@@ -122,11 +122,17 @@ pub fn unwrap_class_keys(
     out
 }
 
+/// Decrypted items plus the number that could not be decrypted.
+pub struct Decrypted {
+    pub values: Vec<(String, Value)>,
+    /// Items whose class key was missing or whose key/plaintext failed to
+    /// decrypt. Structural skips (`no_parent`, `no_data`, `no_wrapped`) are not
+    /// counted as loss.
+    pub lost: usize,
+}
+
 /// Decrypt every item whose class key is known.
-pub fn decrypt_items(
-    records: &[Record],
-    class_keys: &BTreeMap<String, Vec<u8>>,
-) -> Vec<(String, Value)> {
+pub fn decrypt_items(records: &[Record], class_keys: &BTreeMap<String, Vec<u8>>) -> Decrypted {
     let mut out = Vec::new();
     let (mut no_parent, mut no_key, mut no_data, mut no_wrapped, mut bad_key, mut bad_plain) =
         (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
@@ -171,7 +177,10 @@ pub fn decrypt_items(
             out.len()
         );
     }
-    out
+    Decrypted {
+        values: out,
+        lost: no_key + bad_key + bad_plain,
+    }
 }
 
 /// Split a `fetchRecoverableTlkshares` response into TLK share records and the

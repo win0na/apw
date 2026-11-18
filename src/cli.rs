@@ -161,6 +161,27 @@ pub fn run() -> i32 {
 
 fn execute(cli: Cli) -> Result<()> {
     let paths = Paths::resolve()?;
+    // Commands that load the snapshot, talk to the network and save it hold a
+    // cross-process lock, so the timer and a manual run serialize. `login` and
+    // `join` take it here and must not take it again internally.
+    let _snapshot_lock = if matches!(
+        &cli.command,
+        Command::Login { .. }
+            | Command::Join
+            | Command::Sync { .. }
+            | Command::ProbeEscrow
+            | Command::ProbeSettings
+            | Command::ProbeZone { .. }
+            | Command::ProbeTlks
+            | Command::ProbeRefresh
+            | Command::ProbeZones
+            | Command::ProbeGroup { .. }
+            | Command::ProbeStats
+    ) {
+        Some(crate::config::lock_snapshot(&paths)?)
+    } else {
+        None
+    };
     let mut config = Config::load(&paths)?;
     let table_command = matches!(
         &cli.command,

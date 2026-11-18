@@ -93,11 +93,10 @@ pub fn run(
     state.passkeys = snapshot.passkey_count() as u32;
     state.groups = snapshot.groups.len() as u32;
     state.last_status = Some("logged-in".into());
-    state.failures = 0;
     config::save_state(paths, &state)?;
 
     let had_peer = snapshot.peer.is_some();
-    let should_join = join_plan(join, no_join, had_peer);
+    let should_join = join_plan(join, no_join, had_peer, state.failures);
 
     let joined = if should_join {
         Some(crate::commands::join::perform(paths, config)?)
@@ -190,8 +189,11 @@ fn refresh_services(paths: &Paths, config: &mut Config, account: &str, json: boo
 }
 
 /// Join on first login; keep later logins cheap unless forced.
-fn join_plan(force: bool, no_join: bool, has_peer: bool) -> bool {
-    force || (!no_join && !has_peer)
+///
+/// A failed join leaves `failures >= 1` behind, so a login stops retrying on
+/// its own. `--join` still forces the attempt.
+fn join_plan(force: bool, no_join: bool, has_peer: bool, failures: u32) -> bool {
+    force || (!no_join && !has_peer && failures == 0)
 }
 
 #[cfg(test)]
@@ -200,17 +202,28 @@ mod tests {
 
     #[test]
     fn joins_a_fresh_account() {
-        assert!(join_plan(false, false, false));
+        assert!(join_plan(false, false, false, 0));
     }
 
     #[test]
     fn skips_an_joined_account() {
-        assert!(!join_plan(false, false, true));
+        assert!(!join_plan(false, false, true, 0));
+    }
+
+    #[test]
+    fn stops_auto_joining_after_a_failure() {
+        assert!(!join_plan(false, false, false, 1));
+        assert!(!join_plan(false, false, false, 3));
+    }
+
+    #[test]
+    fn forced_join_ignores_failures() {
+        assert!(join_plan(true, false, false, 2));
     }
 
     #[test]
     fn no_join_wins_unless_forced() {
-        assert!(!join_plan(false, true, false));
-        assert!(join_plan(true, true, false));
+        assert!(!join_plan(false, true, false, 0));
+        assert!(join_plan(true, true, false, 0));
     }
 }

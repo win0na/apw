@@ -17,7 +17,7 @@ pub fn identity_token(adsid: &str, idms_token: &str) -> String {
 }
 
 pub async fn request_trusted_device(identity_token: &str, identity: &Identity) -> Result<()> {
-    let response = client()
+    let response = client()?
         .get(format!("{}/auth/verify/trusteddevice", base()))
         .headers(headers(identity_token, identity)?)
         .send()
@@ -38,7 +38,7 @@ pub async fn submit_trusted_device(
     identity_token: &str,
     identity: &Identity,
 ) -> Result<Option<String>> {
-    let response = client()
+    let response = client()?
         .get(format!("{}/grandslam/GsService2/validate", base()))
         .headers(headers(identity_token, identity)?)
         .header("security-code", code)
@@ -118,12 +118,14 @@ fn base() -> String {
         .unwrap_or_else(|| "https://gsa.apple.com".to_string())
 }
 
-fn client() -> reqwest::Client {
+fn client() -> Result<reqwest::Client> {
     reqwest::Client::builder()
         .http1_only()
         .pool_max_idle_per_host(0)
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(30))
         .build()
-        .unwrap_or_else(|_| reqwest::Client::new())
+        .map_err(|error| {
+            Error::Message(format!("cannot create the two-factor HTTP client: {error}"))
+        })
 }
