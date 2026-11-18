@@ -48,7 +48,11 @@ pub fn run(paths: &Paths, config: &mut Config, query: Option<&str>, style: Style
         .iter()
         .map(|result| {
             vec![
-                result["name"].as_str().unwrap_or_default().to_string(),
+                result["name"]
+                    .as_str()
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or_else(|| result["domain"].as_str().unwrap_or_default())
+                    .to_string(),
                 result["username"].as_str().unwrap_or_default().to_string(),
                 result["code"].as_str().unwrap_or_default().to_string(),
             ]

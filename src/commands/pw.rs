@@ -22,7 +22,7 @@ pub fn list(
         .filter(|entry| query.is_none_or(|value| entry.matches(value)))
         .filter(|entry| in_scope(entry, personal, group.as_deref()))
         .collect();
-    entries.sort_by_key(|entry| entry.name().to_lowercase());
+    entries.sort_by_key(|entry| entry.display_name().to_lowercase());
 
     if style.json {
         let data = entries
@@ -42,7 +42,7 @@ pub fn list(
         .iter()
         .map(|entry| {
             vec![
-                entry.name(),
+                entry.display_name(),
                 entry.username.clone().unwrap_or_default(),
                 entry.domain(),
                 entry
@@ -70,7 +70,7 @@ pub fn wifi(paths: &Paths, config: &mut Config, query: Option<&str>, style: Styl
         .filter(|entry| entry.kind == EntryKind::Wifi)
         .filter(|entry| query.is_none_or(|value| entry.matches(value)))
         .collect();
-    entries.sort_by_key(|entry| entry.name().to_lowercase());
+    entries.sort_by_key(|entry| entry.display_name().to_lowercase());
 
     if style.json {
         let data = entries
@@ -83,7 +83,7 @@ pub fn wifi(paths: &Paths, config: &mut Config, query: Option<&str>, style: Styl
 
     let rows = entries
         .iter()
-        .map(|entry| vec![entry.name()])
+        .map(|entry| vec![entry.display_name()])
         .collect::<Vec<_>>();
     output::print_table_opts(&["NETWORK"], &rows, style.no_header, style.wide);
     Ok(())
@@ -127,9 +127,11 @@ pub fn get(
     entries.sort_by(|left, right| {
         let left_exact = exact(left, query);
         let right_exact = exact(right, query);
-        right_exact
-            .cmp(&left_exact)
-            .then_with(|| left.name().to_lowercase().cmp(&right.name().to_lowercase()))
+        right_exact.cmp(&left_exact).then_with(|| {
+            left.display_name()
+                .to_lowercase()
+                .cmp(&right.display_name().to_lowercase())
+        })
     });
 
     if style.json {
@@ -152,7 +154,7 @@ pub fn get(
         if index > 0 {
             println!();
         }
-        let mut rows = vec![("Name", entry.name())];
+        let mut rows = vec![("Name", entry.display_name())];
         if let Some(username) = entry.username.clone() {
             rows.push(("Username", username));
         }

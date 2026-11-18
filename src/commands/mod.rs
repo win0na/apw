@@ -17,6 +17,7 @@ pub fn login_result(entry: &Entry, include_password: bool) -> Value {
         "username": entry.username.clone().unwrap_or_default(),
         "domain": entry.domain(),
         "name": entry.name(),
+        "url": entry.url.clone().unwrap_or_default(),
         "sites": entry.sites,
     });
     let object = result.as_object_mut().expect("object");
@@ -50,6 +51,7 @@ pub fn otp_result(entry: &Entry, code: &str) -> Value {
         "username": entry.username.clone().unwrap_or_default(),
         "domain": entry.domain(),
         "name": entry.name(),
+        "url": entry.url.clone().unwrap_or_default(),
         "source": source,
         "code": code,
     })

@@ -54,7 +54,7 @@ apw otp example.com
 `--json` works on every command. A pipe or redirect gets JSON too; `--wide` and `--no-header` keep the table form.
 
 ```json
-{"status":0,"data":[{"id":"login-example","name":"Example","username":"alice","domain":"example.com","sites":["example.com"],"password":"hunter2"}]}
+{"status":0,"data":[{"id":"login-example","name":"Example","username":"alice","domain":"example.com","url":"https://example.com","sites":["example.com"],"password":"hunter2"}]}
 ```
 
 ## Timer

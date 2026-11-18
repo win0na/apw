@@ -164,20 +164,32 @@ impl Entry {
         rest.split('/').next().unwrap_or(rest).to_string()
     }
 
-    /// The display name: the stored title when it carries information, else
-    /// the domain. Titles the sync synthesizes as `domain (user)` add nothing
-    /// to the domain, so they fall back.
+    /// The name Apple Passwords stores for the entry, or an empty string.
+    /// This never falls back to the domain: a host is not a name.
     pub fn name(&self) -> String {
         let domain = self.domain();
         let title = self.title.as_deref().unwrap_or("").trim();
-        if title.is_empty() {
-            return domain;
-        }
         let user = self.username.as_deref().unwrap_or("");
-        if title == format!("{domain} ({user})") || title == format!("{domain} ()") {
-            return domain;
+        if title.is_empty()
+            || title == domain
+            || title == format!("{domain} ({user})")
+            || title == format!("{domain} ()")
+            || title.starts_with("Password Manager Metadata")
+        {
+            return String::new();
         }
         title.to_string()
+    }
+
+    /// The name to show in a terminal. Falls back to the domain when Apple
+    /// stored no name, so a table row still identifies the account.
+    pub fn display_name(&self) -> String {
+        let name = self.name();
+        if name.is_empty() {
+            self.domain()
+        } else {
+            name
+        }
     }
 
     pub fn matches(&self, query: &str) -> bool {
@@ -301,14 +313,14 @@ pub fn merge_sidecars(logins: &mut [Entry], sidecars: Vec<Entry>) -> Vec<Entry> 
             continue;
         };
         let login = &mut logins[index];
-        let login_domain = login.domain();
-        let placeholder = login.title.as_deref().is_none_or(|title| {
-            title == login_domain
-                || title.starts_with("Password Manager Metadata")
-                || title.ends_with(" ()")
-        });
-        if placeholder {
-            login.title = sidecar.title;
+        // The sidecar title is the user's name for the login. Apple writes it
+        // only when the name was changed, and it wins over the item label.
+        if let Some(title) = sidecar.title.as_deref().map(str::trim).filter(|title| {
+            !title.is_empty()
+                && !title.starts_with("Password Manager Metadata")
+                && !title.ends_with(" ()")
+        }) {
+            login.title = Some(title.to_string());
         }
         if login.notes.is_none() {
             login.notes = sidecar.notes;
@@ -390,6 +402,39 @@ mod tests {
         assert_eq!(entry.title.as_deref(), Some(domain));
         assert!(entry.notes.is_none());
         assert!(entry.totp.is_none());
+    }
+
+    #[test]
+    fn name_does_not_fall_back_to_the_domain() {
+        let entry = login("id-solo", "example.com", "solo@example.com");
+        assert_eq!(entry.name(), "");
+        assert_eq!(entry.display_name(), "example.com");
+    }
+
+    #[test]
+    fn sidecar_title_wins_over_an_item_label() {
+        let mut logins = vec![login("id-google", "accounts.google.com", "me@gmail.com")];
+        let mut metadata = sidecar("sidecar", "accounts.google.com", Some("me@gmail.com"));
+        metadata.title = Some("Google".to_string());
+
+        let unmatched = merge_sidecars(&mut logins, vec![metadata]);
+
+        assert!(unmatched.is_empty());
+        assert_eq!(logins[0].title.as_deref(), Some("Google"));
+        assert_eq!(logins[0].name(), "Google");
+    }
+
+    #[test]
+    fn metadata_label_is_not_used_as_a_name() {
+        let mut logins = vec![login("id-solo", "example.com", "solo@example.com")];
+        let mut metadata = sidecar("sidecar", "example.com", None);
+        metadata.title =
+            Some("Password Manager Metadata: example.com (solo@example.com)".to_string());
+
+        merge_sidecars(&mut logins, vec![metadata]);
+
+        assert_eq!(logins[0].title.as_deref(), Some("example.com"));
+        assert_eq!(logins[0].name(), "");
     }
 
     #[test]

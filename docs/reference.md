@@ -72,7 +72,7 @@ The three directory variables exist for tests and for running from a removable v
 Every command prints one object. Lists put an array in `data`; single results put an object:
 
 ```json
-{"status":0,"data":[{"id":"login-example","name":"Example","username":"alice","domain":"example.com","sites":["example.com"]}]}
+{"status":0,"data":[{"id":"login-example","name":"Example","username":"alice","domain":"example.com","url":"https://example.com","sites":["example.com"]}]}
 ```
 
 Failure goes to stderr, and the process exits with the same status:
@@ -93,7 +93,7 @@ Failure goes to stderr, and the process exits with the same status:
 
 `error.code` is one of `usage`, `not_found`, `auth`, `network`, `locked`, or `error`.
 
-`list` and `wifi` results carry `id`, `name`, `username`, `domain`, `sites`, `title`, `notes`, and `group` when present. `name` is the stored title, or the domain when the title only repeats it. `get` adds `password`. `otp` results carry `id`, `name`, `username`, `domain`, `source`, and `code`. `sync` adds `partial`.
+`list` and `wifi` results carry `id`, `name`, `url`, `username`, `domain`, `sites`, and `title`, `notes`, or `group` when present. `name` is the title Apple Passwords stores for the entry, or an empty string when Apple stored none; a host is never used as a name. `url` is the stored site URL, and `domain` is its host. `get` adds `password`. `otp` results carry `id`, `name`, `username`, `domain`, `source`, and `code`. `sync` adds `partial`.
 
 ## Snapshot format
 
