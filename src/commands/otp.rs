@@ -18,8 +18,10 @@ pub fn run(paths: &Paths, config: &mut Config, query: Option<&str>, style: Style
             }
         }
         if let Some(secret) = &entry.totp {
-            let code = totp::generate(secret, now)?;
-            results.push(otp_result(entry, &code));
+            // One bad secret must not hide every other code.
+            if let Ok(code) = totp::generate(secret, now) {
+                results.push(otp_result(entry, &code));
+            }
         }
     }
 

@@ -10,7 +10,7 @@ This build signs in, joins the trust, and syncs against a live account. See [Pro
 - An Apple ID with two-factor authentication.
 - An anisette server. See [Set up anisette](#set-up-anisette).
 - A Secret Service provider (GNOME Keyring, KWallet) or `APW_PASSPHRASE`.
-- Rust 1.85 or later to build from source.
+- Rust 1.85 or later, plus `cmake` and `perl` (the aws-lc build) to build from source.
 
 The binary needs glibc and a D-Bus session for Secret Service. It does not need Deno, Chrome, or Apple software.
 
@@ -87,7 +87,14 @@ systemctl --user daemon-reload
 systemctl --user enable --now apw-sync.timer
 ```
 
-The timer runs `apw sync` hourly. `Persistent=true` catches up after a suspend or a missed run. Enable lingering when the user session is not always active:
+The timer runs `apw sync` hourly. It reads `~/.config/apw/sync.env` when that file exists, so a headless passphrase or anisette URL can live there with mode 0600:
+
+```sh
+install -m600 /dev/null ~/.config/apw/sync.env
+printf 'APW_PASSPHRASE=%s\n' 'your passcode' > ~/.config/apw/sync.env
+```
+
+`Persistent=true` catches up after a suspend or a missed run. Enable lingering when the user session is not always active:
 
 ```sh
 loginctl enable-linger "$USER"

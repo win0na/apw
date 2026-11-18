@@ -151,6 +151,7 @@ dependencies = [
  "hkdf",
  "hmac",
  "keyring",
+ "libc",
  "num-bigint",
  "num-traits",
  "p256",

@@ -139,7 +139,27 @@ pub enum Command {
 }
 
 pub fn run() -> i32 {
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(error) => {
+            use clap::error::ErrorKind;
+            if matches!(
+                error.kind(),
+                ErrorKind::DisplayHelp | ErrorKind::DisplayVersion
+            ) {
+                let _ = error.print();
+                return 0;
+            }
+            if std::env::args().any(|arg| arg == "--json") {
+                crate::output::print_json_err(&crate::output::failure(
+                    &crate::error::Error::Invalid(error.to_string()),
+                ));
+            } else {
+                let _ = error.print();
+            }
+            return 2;
+        }
+    };
     match execute(cli) {
         Ok(()) => 0,
         Err(error) => {
@@ -152,7 +172,15 @@ pub fn run() -> i32 {
 fn execute(cli: Cli) -> Result<()> {
     let paths = Paths::resolve()?;
     let mut config = Config::load(&paths)?;
-    let style = Style::new(cli.json, cli.wide, cli.no_header);
+    let table_command = matches!(
+        &cli.command,
+        Command::List { .. } | Command::Get { .. } | Command::Wifi { .. } | Command::Otp { .. }
+    );
+    let mut style = Style::new(cli.json, cli.wide, cli.no_header);
+    if table_command && !style.explicit_json && (cli.wide || cli.no_header) {
+        style.json = false;
+    }
+    let otp_query = matches!(&cli.command, Command::Otp { query: Some(_) });
 
     match cli.command {
         Command::Login {
@@ -218,7 +246,14 @@ fn execute(cli: Cli) -> Result<()> {
             )
         }
         Command::Wifi { query } => commands::pw::wifi(&paths, &mut config, query.as_deref(), style),
-        Command::Otp { query } => commands::otp::run(&paths, &mut config, query.as_deref(), style),
+        Command::Otp { query } => {
+            let mut style = style;
+            // `$(apw otp x)` must be a code, not JSON.
+            if otp_query && !style.explicit_json {
+                style.json = false;
+            }
+            commands::otp::run(&paths, &mut config, query.as_deref(), style)
+        }
         Command::InstallUnits => commands::units::run(&paths, &config, style.json),
         Command::ProbeEscrow => commands::probe::escrow(&paths, &mut config, style.json),
         Command::ProbeSettings => commands::probe::settings(&paths, &mut config, style.json),

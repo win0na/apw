@@ -48,6 +48,18 @@ pub fn run(
 
 fn sync_fixture(paths: &Paths, config: &mut Config, fixture: &Path, json: bool) -> Result<()> {
     let mut snapshot = vault::fixture::read(fixture)?;
+    // A fixture has no session or peer. Keep the ones a live snapshot already
+    // holds so testing does not orphan the trust peer.
+    if paths.snapshot_file.exists() {
+        if let Ok(existing) = vault::load(paths, config) {
+            if snapshot.session.is_none() {
+                snapshot.session = existing.session;
+            }
+            if snapshot.peer.is_none() {
+                snapshot.peer = existing.peer;
+            }
+        }
+    }
     snapshot.account = config.account.clone().or(snapshot.account);
     snapshot.generated_at = Some(chrono::Utc::now());
     vault::save(paths, config, &snapshot)?;
@@ -138,31 +150,42 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Resu
             if std::env::var_os("APW_DEBUG").is_some() {
                 eprintln!("sync: tlk shares for {peer}");
             }
-            match octagon::tlk_shares(&gateway, &peer).await {
-                Ok(response) => {
-                    let (mut shares, mut keys) = ckks::shares_from_response(&response)?;
-                    tlkshares.append(&mut shares);
-                    synckeys.append(&mut keys);
-                }
-                Err(error) => {
-                    if std::env::var_os("APW_DEBUG").is_some() {
-                        eprintln!("sync: tlk shares for {peer} failed: {error}");
-                    }
-                }
-            }
+            let response = octagon::tlk_shares(&gateway, &peer)
+                .await
+                .map_err(|error| Error::Message(format!("TLK shares for {peer}: {error}")))?;
+            let (mut shares, mut keys) = ckks::shares_from_response(&response)?;
+            tlkshares.append(&mut shares);
+            synckeys.append(&mut keys);
+        }
+        if tlkshares.is_empty() {
+            return Err(Error::Message(
+                "no TLK shares; keeping the previous snapshot".into(),
+            ));
         }
 
         let mut wifi_records = Vec::new();
         for zone in ["Passwords", "Manatee", "WiFi"] {
             let mut token: Option<Vec<u8>> = None;
+            let mut pages = 0usize;
             loop {
+                pages += 1;
+                if pages > 100 {
+                    return Err(Error::Message(format!("zone {zone} did not finish paging")));
+                }
                 if std::env::var_os("APW_DEBUG").is_some() {
                     eprintln!("sync: zone {zone} token {:?}", token.as_ref().map(Vec::len));
                 }
                 let page = match gateway.record_sync(zone, None, token.as_deref()).await {
                     Ok(page) => page,
-                    Err(error) if error.to_string().to_lowercase().contains("zone") => break,
-                    Err(error) => return Err(error),
+                    Err(error) => {
+                        let text = error.to_string().to_lowercase();
+                        // A missing zone is normal (Wi-Fi is absent on some
+                        // accounts); anything else is a failed sync.
+                        if text.contains("does not exist") || text.contains("zonenotfound") {
+                            break;
+                        }
+                        return Err(error);
+                    }
                 };
                 for record in page.records {
                     match record.record_type.as_str() {

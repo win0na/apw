@@ -14,12 +14,13 @@ pub fn list(
     style: Style,
 ) -> Result<()> {
     let vault = vault::load(paths, config)?;
+    let group = group.map(|query| resolve_group(&vault, query));
     let mut entries: Vec<_> = vault
         .entries
         .iter()
         .filter(|entry| entry.kind == EntryKind::Login)
         .filter(|entry| query.is_none_or(|value| entry.matches(value)))
-        .filter(|entry| in_scope(entry, personal, group))
+        .filter(|entry| in_scope(entry, personal, group.as_deref()))
         .collect();
     entries.sort_by_key(|entry| entry.name().to_lowercase());
 
@@ -74,7 +75,7 @@ pub fn wifi(paths: &Paths, config: &mut Config, query: Option<&str>, style: Styl
     if style.json {
         let data = entries
             .iter()
-            .map(|entry| login_result(entry, true))
+            .map(|entry| login_result(entry, false))
             .collect::<Vec<_>>();
         output::print_json(&output::success(data.into()));
         return Ok(());
@@ -100,12 +101,13 @@ pub fn get(
     style: Style,
 ) -> Result<()> {
     let vault = vault::load(paths, config)?;
+    let group = group.map(|query| resolve_group(&vault, query));
     let mut entries: Vec<_> = vault
         .entries
         .iter()
         .filter(|entry| matches!(entry.kind, EntryKind::Login | EntryKind::Wifi))
         .filter(|entry| entry.matches(query))
-        .filter(|entry| in_scope(entry, personal, group))
+        .filter(|entry| in_scope(entry, personal, group.as_deref()))
         .filter(|entry| match username {
             Some(name) => entry
                 .username
@@ -179,6 +181,30 @@ fn exact(entry: &Entry, query: &str) -> bool {
             .username
             .as_deref()
             .is_some_and(|value| value.eq_ignore_ascii_case(query))
+}
+
+/// Accept a group id, a unique id prefix, or the display name.
+fn resolve_group(vault: &crate::model::Vault, query: &str) -> String {
+    vault
+        .groups
+        .iter()
+        .find(|group| group.id == query)
+        .or_else(|| {
+            vault.groups.iter().find(|group| {
+                group
+                    .name
+                    .as_deref()
+                    .is_some_and(|name| name.eq_ignore_ascii_case(query))
+            })
+        })
+        .or_else(|| {
+            vault
+                .groups
+                .iter()
+                .find(|group| group.id.starts_with(query))
+        })
+        .map(|group| group.id.clone())
+        .unwrap_or_else(|| query.to_string())
 }
 
 fn in_scope(entry: &Entry, personal: bool, group: Option<&str>) -> bool {

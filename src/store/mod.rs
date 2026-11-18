@@ -65,9 +65,7 @@ pub fn open(bytes: &[u8], key: &[u8; 32]) -> Result<Vault> {
                 aad: header,
             },
         )
-        .map_err(|_| {
-            Error::Message("cannot decrypt the snapshot: wrong key or damaged file".into())
-        })?;
+        .map_err(|_| Error::Aead)?;
 
     Ok(serde_json::from_slice(&plaintext)?)
 }

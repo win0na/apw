@@ -30,8 +30,8 @@ pub fn ensure_passphrase(paths: &Paths) -> Result<Option<String>> {
     let passphrase = if paths.snapshot_file.exists() {
         rpassword::prompt_password("apw passcode: ")?
     } else {
-        println!("The apw passcode encrypts the local snapshot.");
-        println!("Use your device passcode so the escrow step can reuse it.");
+        eprintln!("The apw passcode encrypts the local snapshot.");
+        eprintln!("Use your device passcode so the escrow step can reuse it.");
         let first = rpassword::prompt_password("Enter a new apw passcode: ")?;
         let second = rpassword::prompt_password("Confirm the apw passcode: ")?;
         if first != second {
@@ -52,7 +52,7 @@ pub fn load(paths: &Paths, config: &mut Config) -> Result<Vault> {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Err(Error::Message(format!(
-                "no snapshot at {}; run `apw sync` first",
+                "no snapshot at {}; run `apw login` first",
                 paths.snapshot_file.display()
             )));
         }

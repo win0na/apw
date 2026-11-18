@@ -8,7 +8,7 @@ url='https://github.com/win0na/apw'
 license=('GPL-3.0-only')
 depends=('gcc-libs' 'glibc')
 conflicts=('apw')
-makedepends=('cargo' 'rust')
+makedepends=('cargo' 'rust' 'cmake' 'perl')
 source=("apw-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
 sha256sums=('4f98f322b5b5f42be2dae646868627eb7b298ce5eaba53b77c3a6911914e7e44')
 

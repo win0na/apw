@@ -56,7 +56,7 @@ apw otp example.com
 `--json` works on every command:
 
 ```json
-{"results":[{"id":"login-example","username":"alice","domain":"example.com","sites":["example.com"],"title":"Example","password":"hunter2"}],"status":0}
+{"status":0,"data":[{"id":"login-example","name":"Example","username":"alice","domain":"example.com","sites":["example.com"],"password":"hunter2"}]}
 ```
 
 ### Refresh on a timer
@@ -101,13 +101,13 @@ Apple's iCloud terms prohibit automated access. `apw` stays polite: paced syncs,
 
 | Area | State |
 | --- | --- |
-| CLI, encrypted snapshot, `pw`, `otp`, `status`, `install-units` | Works; 44 unit and 11 integration tests |
+| CLI, encrypted snapshot, `list`, `get`, `wifi`, `otp`, `status`, `install-units` | Works; 48 unit and 15 integration tests |
 | `login`: GSA SRP, anisette, 2FA, token exchange | Works against the live account |
 | `join`: Octagon trust, escrow recovery | Works; peer joined, restore point stored |
 | `sync` from iCloud | Works; 383 items, 370 logins, 33 passkeys, 47 codes |
 | Shared groups | Read path implemented; the test account has no shared items |
-| Passkeys, notes, cards | Read and listed |
-| Packaging: tarball, .deb, AUR, Nix | Recipes in `packaging/`; not yet published |
+| Passkeys, notes, cards | Read; passkeys are listed separately |
+| Packaging: tarball, .deb, AUR, Nix | GitHub release, `.deb`, and AUR `apw-cli`; Nix recipe in `flake.nix` |
 
 The Deno implementation for macOS stays under `legacy/` for reference. It is not built or supported.
 

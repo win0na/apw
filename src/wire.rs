@@ -185,10 +185,10 @@ impl<'a> Reader<'a> {
     }
 
     fn need(&self, len: usize) -> Result<()> {
-        if self.pos + len > self.data.len() {
-            return Err(Error::Message("truncated protobuf message".into()));
+        match self.pos.checked_add(len) {
+            Some(end) if end <= self.data.len() => Ok(()),
+            _ => Err(Error::Message("truncated protobuf message".into())),
         }
-        Ok(())
     }
 
     fn varint(&mut self) -> Result<u64> {
@@ -258,11 +258,12 @@ pub fn decode_delimited(data: &[u8]) -> Result<Vec<&[u8]>> {
     let mut out = Vec::new();
     while pos < data.len() {
         let len = read_varint(data, &mut pos)? as usize;
-        if pos + len > data.len() {
-            return Err(Error::Message("truncated delimited frame".into()));
-        }
-        out.push(&data[pos..pos + len]);
-        pos += len;
+        let end = pos
+            .checked_add(len)
+            .filter(|end| *end <= data.len())
+            .ok_or_else(|| Error::Message("truncated delimited frame".into()))?;
+        out.push(&data[pos..end]);
+        pos = end;
     }
     Ok(out)
 }

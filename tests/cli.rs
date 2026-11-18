@@ -138,18 +138,19 @@ fn wrong_passphrase_fails_cleanly() {
         .env("APW_PASSPHRASE", "wrong passphrase")
         .args(["get", "example.com", "--json"])
         .assert()
-        .failure()
-        .stderr(predicate::str::contains("cannot decrypt the snapshot"));
+        .code(6)
+        .stderr(predicate::str::contains("cannot decrypt the snapshot"))
+        .stderr(predicate::str::contains("\"code\":\"locked\""));
 }
 
 #[test]
-fn missing_snapshot_points_at_sync() {
+fn missing_snapshot_points_at_login() {
     let dir = TempDir::new().unwrap();
     apw(&dir)
         .args(["list", "--json"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("run `apw sync` first"));
+        .stderr(predicate::str::contains("run `apw login` first"));
 }
 
 #[test]
@@ -245,4 +246,37 @@ fn missing_session_uses_the_auth_exit_code() {
         .args(["join", "--passcode", "1234"])
         .assert()
         .code(4);
+}
+
+#[test]
+fn otp_query_prints_a_code_through_a_pipe() {
+    let dir = TempDir::new().unwrap();
+    sync(&dir);
+
+    let output = apw(&dir).args(["otp", "example.com"]).output().unwrap();
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    let code = text.trim();
+    assert_eq!(code.len(), 6);
+    assert!(code.chars().all(|c| c.is_ascii_digit()));
+}
+
+#[test]
+fn wifi_json_does_not_include_the_password() {
+    let dir = TempDir::new().unwrap();
+    sync(&dir);
+
+    let output = apw(&dir).args(["wifi", "--json"]).output().unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(value["data"][0]["password"].is_null());
+}
+
+#[test]
+fn usage_errors_keep_the_json_envelope() {
+    let dir = TempDir::new().unwrap();
+    apw(&dir)
+        .args(["--json", "get"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("\"code\":\"usage\""));
 }

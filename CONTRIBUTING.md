@@ -82,9 +82,9 @@ The auth, Octagon, and CKKS passes cannot be tested in CI: they need a real Appl
 apw login --account you@example.com
 apw status
 apw sync
-apw pw list
-apw pw get example.com
-apw otp get example.com
+apw list
+apw get example.com
+apw otp example.com
 ```
 
 `apw login` makes one escrow attempt per run. Do not loop it.

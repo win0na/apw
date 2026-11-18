@@ -35,8 +35,8 @@ pub fn run(
     let account = match config.account.clone() {
         Some(account) => account,
         None if std::io::stdin().is_terminal() => {
-            print!("Apple ID: ");
-            std::io::stdout().flush()?;
+            eprint!("Apple ID: ");
+            std::io::stderr().flush()?;
             let mut line = String::new();
             std::io::stdin().read_line(&mut line)?;
             let account = line.trim().to_string();
