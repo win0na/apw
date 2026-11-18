@@ -59,6 +59,9 @@ fn reopen_with_passphrase(paths: &Paths, config: &mut Config, bytes: &[u8]) -> R
             .map_err(|error| Error::Message(format!("cannot read passphrase: {error}")))?;
         let derived = store::key::derive_for_load(config, paths, &passphrase)?;
         let vault = store::open(bytes, &derived.key)?;
+        // Later saves in this process must use the key that opened the file,
+        // not the stale keyring entry that failed above.
+        store::key::remember_session(paths, &derived);
         #[cfg(feature = "keyring")]
         {
             // The vault is open; a backend failure must not hide that.

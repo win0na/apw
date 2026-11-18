@@ -25,6 +25,7 @@ impl std::fmt::Display for KeySource {
     }
 }
 
+#[derive(Clone)]
 pub struct SnapshotKey {
     pub key: [u8; KEY_LEN],
     pub source: KeySource,
@@ -34,20 +35,29 @@ pub struct SnapshotKey {
 /// missing Secret Service entry must not mint a new key behind an old
 /// snapshot.
 pub fn load(config: &mut Config, paths: &Paths) -> Result<SnapshotKey> {
+    if let Some(key) = session_key(paths) {
+        return Ok(key);
+    }
     if let Some(passphrase) = env_passphrase() {
-        return derive_from_passphrase(config, paths, &passphrase, false);
+        let key = derive_from_passphrase(config, paths, &passphrase, false)?;
+        remember_session(paths, &key);
+        return Ok(key);
     }
 
     #[cfg(feature = "keyring")]
     if let Some(key) = existing_secret_service_key() {
-        return Ok(SnapshotKey {
+        let key = SnapshotKey {
             key,
             source: KeySource::SecretService,
-        });
+        };
+        remember_session(paths, &key);
+        return Ok(key);
     }
 
     let passphrase = read_passphrase()?;
-    derive_from_passphrase(config, paths, &passphrase, false)
+    let key = derive_from_passphrase(config, paths, &passphrase, false)?;
+    remember_session(paths, &key);
+    Ok(key)
 }
 
 /// Derive a key for reading an existing snapshot. A missing KDF salt is an
@@ -64,16 +74,23 @@ pub fn derive_for_load(
 /// Create the key for a first write. Only this path may store a new Secret
 /// Service entry or prompt for a new passphrase.
 pub fn create(config: &mut Config, paths: &Paths) -> Result<SnapshotKey> {
+    if let Some(key) = session_key(paths) {
+        return Ok(key);
+    }
     if let Some(passphrase) = env_passphrase() {
-        return derive_from_passphrase(config, paths, &passphrase, true);
+        let key = derive_from_passphrase(config, paths, &passphrase, true)?;
+        remember_session(paths, &key);
+        return Ok(key);
     }
 
     #[cfg(feature = "keyring")]
     if let Some(key) = create_secret_service_key() {
-        return Ok(SnapshotKey {
+        let key = SnapshotKey {
             key,
             source: KeySource::SecretService,
-        });
+        };
+        remember_session(paths, &key);
+        return Ok(key);
     }
 
     use std::io::IsTerminal;
@@ -94,7 +111,32 @@ pub fn create(config: &mut Config, paths: &Paths) -> Result<SnapshotKey> {
         return Err(Error::Invalid("the passphrases do not match".into()));
     }
     std::env::set_var("APW_PASSPHRASE", &passphrase);
-    derive_from_passphrase(config, paths, &passphrase, true)
+    let key = derive_from_passphrase(config, paths, &passphrase, true)?;
+    remember_session(paths, &key);
+    Ok(key)
+}
+
+/// The key resolved earlier in this process. A command may load the snapshot
+/// and save it again; the passphrase must be asked for once, not twice.
+static SESSION: std::sync::OnceLock<std::sync::Mutex<Option<(std::path::PathBuf, SnapshotKey)>>> =
+    std::sync::OnceLock::new();
+
+fn session() -> &'static std::sync::Mutex<Option<(std::path::PathBuf, SnapshotKey)>> {
+    SESSION.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+fn session_key(paths: &Paths) -> Option<SnapshotKey> {
+    let guard = session().lock().ok()?;
+    guard
+        .as_ref()
+        .filter(|(path, _)| path == &paths.snapshot_file)
+        .map(|(_, key)| key.clone())
+}
+
+pub fn remember_session(paths: &Paths, key: &SnapshotKey) {
+    if let Ok(mut guard) = session().lock() {
+        *guard = Some((paths.snapshot_file.clone(), key.clone()));
+    }
 }
 
 fn env_passphrase() -> Option<String> {
@@ -216,7 +258,9 @@ fn decode_key(encoded: &str) -> Result<[u8; KEY_LEN]> {
 
 #[cfg(test)]
 mod tests {
-    use super::{derive_from_passphrase, KeySource, KEY_LEN};
+    use super::{
+        derive_from_passphrase, remember_session, session_key, KeySource, SnapshotKey, KEY_LEN,
+    };
     use crate::config::{Config, Paths};
 
     fn test_paths(dir: &std::path::Path) -> Paths {
@@ -228,6 +272,27 @@ mod tests {
             state_dir: dir.join("state"),
             state_file: dir.join("state").join("state.json"),
         }
+    }
+
+    #[test]
+    fn session_cache_is_scoped_to_one_snapshot() {
+        let first = std::env::temp_dir().join("apw-session-test-a.bin");
+        let second = std::env::temp_dir().join("apw-session-test-b.bin");
+        let paths = |snapshot: &std::path::Path| Paths {
+            config_dir: std::env::temp_dir(),
+            config_file: std::env::temp_dir().join("config.toml"),
+            data_dir: std::env::temp_dir(),
+            snapshot_file: snapshot.to_path_buf(),
+            state_dir: std::env::temp_dir(),
+            state_file: std::env::temp_dir().join("state.json"),
+        };
+        let key = SnapshotKey {
+            key: [7u8; KEY_LEN],
+            source: KeySource::Passphrase,
+        };
+        remember_session(&paths(&first), &key);
+        assert!(session_key(&paths(&first)).is_some());
+        assert!(session_key(&paths(&second)).is_none());
     }
 
     #[test]
