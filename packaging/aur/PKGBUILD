@@ -11,7 +11,7 @@ conflicts=('apw')
 provides=('apw')
 makedepends=('cargo' 'rust' 'cmake' 'perl' 'dbus')
 source=("apw-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
-sha256sums=('4f98f322b5b5f42be2dae646868627eb7b298ce5eaba53b77c3a6911914e7e44')
+sha256sums=('37c70b236a6fe6d3fccc7e2929b0f1275e03ecd055c8e40153d102d14cc1cc02')
 
 build() {
   cd "apw-$pkgver"
