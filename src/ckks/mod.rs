@@ -241,6 +241,18 @@ pub fn entry_from_plist_kind(
     forced: Option<EntryKind>,
 ) -> Option<Entry> {
     let dict = value.as_dictionary()?;
+    // A negative item records "never save for this site"; it is not a login.
+    if dict
+        .get("nega")
+        .and_then(|value| {
+            value
+                .as_boolean()
+                .or_else(|| value.as_signed_integer().map(|number| number != 0))
+        })
+        .unwrap_or(false)
+    {
+        return None;
+    }
     let agrp = string(dict, "agrp").unwrap_or_default();
     let is_metadata = agrp == "com.apple.password-manager";
     let mut srvr = text(dict, "srvr");

@@ -18,7 +18,7 @@ pub fn list(
     let mut entries: Vec<_> = vault
         .entries
         .iter()
-        .filter(|entry| entry.kind == EntryKind::Login)
+        .filter(|entry| entry.kind == EntryKind::Login && !entry.is_placeholder())
         .filter(|entry| query.is_none_or(|value| entry.matches(value)))
         .filter(|entry| in_scope(entry, personal, group.as_deref()))
         .collect();
@@ -67,7 +67,7 @@ pub fn wifi(paths: &Paths, config: &mut Config, query: Option<&str>, style: Styl
     let mut entries: Vec<_> = vault
         .entries
         .iter()
-        .filter(|entry| entry.kind == EntryKind::Wifi)
+        .filter(|entry| entry.kind == EntryKind::Wifi && !entry.is_placeholder())
         .filter(|entry| query.is_none_or(|value| entry.matches(value)))
         .collect();
     entries.sort_by_key(|entry| entry.display_name().to_lowercase());

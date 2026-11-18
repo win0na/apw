@@ -192,6 +192,20 @@ impl Entry {
         }
     }
 
+    /// Safari records "never save for this site" as a login-shaped item with
+    /// this label. It has no password and is not shown in Apple Passwords.
+    pub fn is_placeholder(&self) -> bool {
+        self.username
+            .as_deref()
+            .is_some_and(|user| user.trim().eq_ignore_ascii_case("Passwords not saved"))
+            || self.title.as_deref().is_some_and(|title| {
+                title
+                    .trim_end()
+                    .to_lowercase()
+                    .ends_with("(passwords not saved)")
+            })
+    }
+
     pub fn matches(&self, query: &str) -> bool {
         let needle = query.to_lowercase();
         let domain = self.domain();
@@ -446,6 +460,14 @@ mod tests {
 
         assert_eq!(logins[0].title.as_deref(), Some("example.com"));
         assert_eq!(logins[0].name(), "");
+    }
+
+    #[test]
+    fn negative_placeholder_is_not_a_name() {
+        let mut entry = login("id-solo", "accounts.google.com", "Passwords not saved");
+        entry.title = Some("accounts.google.com (Passwords not saved)".to_string());
+        assert!(entry.is_placeholder());
+        assert_eq!(entry.name(), "");
     }
 
     #[test]

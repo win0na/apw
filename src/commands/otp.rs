@@ -11,7 +11,11 @@ pub fn run(paths: &Paths, config: &mut Config, query: Option<&str>, style: Style
     let now = std::time::SystemTime::now();
 
     let mut results = Vec::new();
-    for entry in vault.entries.iter().filter(|entry| entry.totp.is_some()) {
+    for entry in vault
+        .entries
+        .iter()
+        .filter(|entry| entry.totp.is_some() && !entry.is_placeholder())
+    {
         if let Some(value) = query {
             if !entry.matches(value) {
                 continue;
