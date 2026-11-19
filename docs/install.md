@@ -54,7 +54,7 @@ Prebuilt formats live in `packaging/`:
 | Debian | `packaging/debian/build.sh` | `dist/apw_0.2.1_<arch>.deb` |
 | Nix | `nix build` | `result/bin/apw` |
 
-The tarball and Debian scripts build the release binary first; set `APW_SKIP_BUILD=1` to reuse an existing one. The AUR recipe in `packaging/aur/` is not published, and installs `/usr/bin/apw` when it is.
+The tarball and Debian scripts build the release binary first; set `APW_SKIP_BUILD=1` to reuse an existing one. The AUR recipe in `packaging/aur/` is not published; when it is, it installs `/usr/bin/apw`.
 
 ## Sign in
 
