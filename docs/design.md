@@ -10,7 +10,7 @@ This page records the decisions behind the Linux rewrite and the protocols it de
 
 apw 2.0 is one Rust binary that reads Apple Passwords data from iCloud:
 
-- Live iCloud Keychain access through Apple ID authentication and an Octagon trust join. Reads and writes use the same CloudKit gateway; writes are limited to personal logins.
+- Live iCloud Keychain access through Apple ID authentication and an Octagon trust join. Reads and writes use the same CloudKit gateway; writes cover personal logins, Wi-Fi networks and notes.
 - No Chrome, no Apple extension, no native messaging host, no daemon.
 - A local encrypted snapshot serves every query; a systemd user timer refreshes it.
 - Logins, notes and titles, TOTP, passkey metadata, and shared groups, including shared-with-me.
@@ -113,7 +113,7 @@ There are no live Apple credentials in the development environment, and escrow a
 - Two undocumented protocols to maintain (GSA, Octagon/CKKS). Apple can change them without notice.
 - The CloudKit gateway is internal. Its request framing and error codes can change without notice.
 - An anisette server is a hard prerequisite for login.
-- Writes limited to personal logins. No passkey creation, no shared-item writes, no Recently Deleted.
+- Writes limited to personal logins, Wi-Fi networks and notes. No card, passkey or shared-item writes, no Recently Deleted.
 - Shared-with-me depends on the owner's PCS key delivery in the share record. It is the least proven part of the design and the test account has no shared items.
 - Apple's iCloud terms prohibit automated access. The client stays polite: paced syncs, no retries, one login attempt per action. The contract risk is the user's.
 

@@ -14,9 +14,12 @@ Commands, files, configuration, output, and limits.
 | `apw get QUERY [--username NAME] [--group UUID] [--personal] [--password-only]` | Print every match, including Wi-Fi networks. |
 | `apw wifi [QUERY]` | List saved Wi-Fi networks. |
 | `apw otp [QUERY]` | List current codes, or print the code for a query. |
-| `apw add login URL [--username NAME] [--title TEXT] [--notes TEXT] [--password-stdin] [--generate] [--dry-run]` | Add a personal login and queue it. |
-| `apw edit QUERY [--id UUID] [--title TEXT] [--notes TEXT] [--clear-notes] [--password-stdin] [--generate] [--dry-run]` | Change a login and queue the change. |
-| `apw rm QUERY [--id UUID] [--yes] [--dry-run]` | Delete a login and queue the delete. |
+| `apw add login URL [--username NAME] [--title TEXT] [--notes TEXT] [--totp URI\|BASE32] [--password-stdin] [--generate] [--dry-run]` | Add a personal login and queue it. |
+| `apw add wifi SSID [--password-stdin] [--generate] [--dry-run]` | Add a Wi-Fi network and queue it. |
+| `apw add note TITLE [--body TEXT] [--body-stdin] [--dry-run]` | Add a note and queue it. |
+| `apw notes [QUERY]` | List notes. |
+| `apw edit QUERY [--id UUID] [--title TEXT] [--notes TEXT] [--clear-notes] [--totp URI\|BASE32] [--clear-totp] [--password-stdin] [--generate] [--dry-run]` | Change a login, note or Wi-Fi network and queue the change. |
+| `apw rm QUERY [--id UUID] [--yes] [--dry-run]` | Delete a login, note or Wi-Fi network and queue the delete. |
 | `apw pending` | List changes that have not been pushed. |
 | `apw resolve ID [--local] [--remote]` | Force or drop a blocked change. |
 | `apw install-units` | Write the systemd user service and timer. |
@@ -35,11 +38,15 @@ Hidden `probe` subcommands exist for development. They are not part of the stabl
 
 A queued change stores the base it was made from. On push, `apw` reads the server record, decrypts it, and compares it with that base. A record that still matches is written with a fresh item key under the same class key. A record that changed elsewhere blocks the operation: the change stays queued with its reason and id. `apw resolve <id> --local` pushes the local copy anyway; `--remote` drops it and keeps the server copy.
 
-Writes cover personal logins. Shared entries, Wi-Fi networks, notes, cards, and passkey creation stay read-only. A login is two records, the item and its password-manager metadata. A create or edit writes the item first and the metadata second; a delete removes the metadata first. If the second write fails, the next sync sees the first one already done and writes only the rest.
+Writes cover personal logins, Wi-Fi networks and notes. Cards, shared entries and passkey creation stay read-only.
+
+Logins and notes live in the Passwords zone; Wi-Fi networks live in the WiFi zone and are sealed under its classC key. A login is an item plus password-manager metadata. A note is an empty item plus metadata that carries the title and body. A Wi-Fi entry is one item with the network name in `acct` and `labl` and no metadata. A create or edit writes the item first and the metadata second; a delete removes the metadata first. If the second write fails, the next sync sees the first one already done and writes only the rest.
 
 `rm` deletes permanently. Recently Deleted is not implemented, so there is no undo in `apw` or in Apple Passwords.
 
 Passwords enter through `--password-stdin` (one line, trailing newline removed), `--generate` (20 characters, printed once), or a prompt that asks twice. There is no `--password` flag. A password edit appends the old value to Apple's password history.
+
+`--totp` accepts an `otpauth://` URI or a bare base32 secret. It is stored in the login's metadata the way Apple stores it: raw secret bytes, algorithm, digits, period, and the original URI when one was given. `--clear-totp` removes the key. A note's body is metadata `notes`; `apw edit` changes it with `--notes` or `--body-stdin`. A Wi-Fi edit accepts only a password, because the SSID is the join key.
 
 Changing a site or username is refused, because the item and its metadata join on both. Delete the entry and add a new login instead.
 

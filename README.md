@@ -61,6 +61,10 @@ apw otp example.com
 
 ```sh
 apw add login https://example.com --username alice --password-stdin
+apw add login https://example.com --username alice --totp 'otpauth://totp/...' --password-stdin
+apw add wifi "Home" --password-stdin
+apw add note "Recovery codes" --body "codes go here"
+apw notes
 apw edit example.com --title "Example"
 apw rm example.com --yes
 apw pending
@@ -68,11 +72,13 @@ apw pending
 
 `add`, `edit`, and `rm` change the snapshot and queue the change. `apw sync` pushes queued changes after it reads, so an edit made offline goes out on the next sync. `apw pending` lists the queue.
 
-A password comes from `--password-stdin`, from `--generate`, or from a prompt that asks twice. There is no `--password` flag, so a password does not land in shell history. `--dry-run` prints the queued change without writing it.
+A password comes from `--password-stdin`, from `--generate`, or from a prompt that asks twice. There is no `--password` flag, so a password does not land in shell history. `--totp` takes an `otpauth://` URI or a base32 secret, and `apw edit` also takes `--clear-totp`. `--dry-run` prints the queued change without writing it.
 
 If another device changed the same entry, the push blocks instead of overwriting it and prints the pending id. `apw resolve <id> --local` pushes the local version; `--remote` drops it and takes the server copy.
 
-Writes cover personal logins. Wi-Fi networks, notes, cards, shared items, and passkey creation stay read-only for now. `rm` is permanent: Recently Deleted is not implemented, so Apple Passwords has no copy to restore either. Changing a site or username is not supported in place; delete the entry and add it again.
+Writes cover personal logins, Wi-Fi networks and notes. Cards, shared items and passkey creation stay read-only. A login and a note are two records, the item and its metadata; a Wi-Fi entry is one. The item goes first on create and edit, and last on delete, so an interrupted write leaves a readable entry rather than an orphan.
+
+`rm` is permanent: Recently Deleted is not implemented, so Apple Passwords has no copy to restore either. Changing a login's site or username, or a network's SSID, is not supported in place; delete the entry and add it again.
 
 ## Timer
 
