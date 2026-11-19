@@ -8,19 +8,40 @@ Commands, files, configuration, output, and limits.
 | --- | --- |
 | `apw login [--anisette-url URL] [--account EMAIL] [--refresh] [--join] [--no-join]` | Sign in. On the first run it joins the trust and syncs. `--refresh` re-reads the service URLs from the stored session. |
 | `apw join` | Join the trust again with a new peer. Spends one escrow attempt. |
-| `apw sync [--force] [--fixture PATH]` | Refresh the snapshot. |
+| `apw sync [--force] [--fixture PATH]` | Refresh the snapshot and push queued changes. |
 | `apw status` | Print account, counts, last sync, snapshot path, and size. |
 | `apw list [QUERY] [--personal] [--group UUID]` | List logins by name. |
 | `apw get QUERY [--username NAME] [--group UUID] [--personal] [--password-only]` | Print every match, including Wi-Fi networks. |
 | `apw wifi [QUERY]` | List saved Wi-Fi networks. |
 | `apw otp [QUERY]` | List current codes, or print the code for a query. |
+| `apw add login URL [--username NAME] [--title TEXT] [--notes TEXT] [--password-stdin] [--generate] [--dry-run]` | Add a personal login and queue it. |
+| `apw edit QUERY [--id UUID] [--title TEXT] [--notes TEXT] [--clear-notes] [--password-stdin] [--generate] [--dry-run]` | Change a login and queue the change. |
+| `apw rm QUERY [--id UUID] [--yes] [--dry-run]` | Delete a login and queue the delete. |
+| `apw pending` | List changes that have not been pushed. |
+| `apw resolve ID [--local] [--remote]` | Force or drop a blocked change. |
 | `apw install-units` | Write the systemd user service and timer. |
 
 `--json`, `--wide`, and `--no-header` are global. Tables are the default on a terminal; a pipe or a redirect gets JSON. `--wide` and `--no-header` keep the text form through a pipe.
 
 `QUERY` matches a substring of the name, domain, URL, or username, case-insensitive. `get` prints all matches as labeled blocks, best match first; `--password-only` prints one password per line and always stays text. `otp` with a query prints only the code, so `$(apw otp github.com)` works.
 
+`--id` selects one entry by record id instead of by query.
+
 Hidden `probe` subcommands exist for development. They are not part of the stable interface.
+
+## Writes
+
+`add`, `edit`, and `rm` write the encrypted snapshot and append a pending operation. Nothing goes to Apple until `apw sync`, which pushes the queue after the read and before saving. The sync interval does not hold back a queued change.
+
+A queued change stores the base it was made from. On push, `apw` reads the server record, decrypts it, and compares it with that base. A record that still matches is written with a fresh item key under the same class key. A record that changed elsewhere blocks the operation: the change stays queued with its reason and id. `apw resolve <id> --local` pushes the local copy anyway; `--remote` drops it and keeps the server copy.
+
+Writes cover personal logins. Shared entries, Wi-Fi networks, notes, cards, and passkey creation stay read-only. A login is two records, the item and its password-manager metadata. A create or edit writes the item first and the metadata second; a delete removes the metadata first. If the second write fails, the next sync sees the first one already done and writes only the rest.
+
+`rm` deletes permanently. Recently Deleted is not implemented, so there is no undo in `apw` or in Apple Passwords.
+
+Passwords enter through `--password-stdin` (one line, trailing newline removed), `--generate` (20 characters, printed once), or a prompt that asks twice. There is no `--password` flag. A password edit appends the old value to Apple's password history.
+
+Changing a site or username is refused, because the item and its metadata join on both. Delete the entry and add a new login instead.
 
 ## Files
 

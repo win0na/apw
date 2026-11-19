@@ -6,9 +6,9 @@
 &nbsp;apw
 </h1>
 
-`apw` reads Apple Passwords on Linux. It is one Rust binary with an encrypted local snapshot, and the query commands work offline.
+`apw` reads and writes Apple Passwords on Linux. It is one Rust binary with an encrypted local snapshot: queries work offline, and edits wait for the next sync.
 
-Apple has no Linux client and no public API for iCloud Keychain. `apw` signs in with an Apple ID, joins the device trust circle, decrypts keychain records through escrow, and stores them locally. Keychain and CloudKit records stay read-only. The one remote write is the trust peer that `login` or `join` adds.
+Apple has no Linux client and no public API for iCloud Keychain. `apw` signs in with an Apple ID, joins the device trust circle, decrypts keychain records through escrow, and stores them locally. Queries never touch the network. Writes change the snapshot first and go back through CloudKit on `sync`.
 
 ## Requirements
 
@@ -57,6 +57,23 @@ apw otp example.com
 {"status":0,"data":[{"id":"login-example","name":"Example","username":"alice","domain":"example.com","url":"https://example.com","sites":["example.com"],"password":"hunter2"}]}
 ```
 
+## Write
+
+```sh
+apw add login https://example.com --username alice --password-stdin
+apw edit example.com --title "Example"
+apw rm example.com --yes
+apw pending
+```
+
+`add`, `edit`, and `rm` change the snapshot and queue the change. `apw sync` pushes queued changes after it reads, so an edit made offline goes out on the next sync. `apw pending` lists the queue.
+
+A password comes from `--password-stdin`, from `--generate`, or from a prompt that asks twice. There is no `--password` flag, so a password does not land in shell history. `--dry-run` prints the queued change without writing it.
+
+If another device changed the same entry, the push blocks instead of overwriting it and prints the pending id. `apw resolve <id> --local` pushes the local version; `--remote` drops it and takes the server copy.
+
+Writes cover personal logins. Wi-Fi networks, notes, cards, shared items, and passkey creation stay read-only for now. `rm` is permanent: Recently Deleted is not implemented, so Apple Passwords has no copy to restore either. Changing a site or username is not supported in place; delete the entry and add it again.
+
 ## Timer
 
 ```sh
@@ -64,7 +81,7 @@ apw install-units
 systemctl --user enable --now apw-sync.timer
 ```
 
-The timer runs `apw sync` hourly. Sync refuses to run more often than every five minutes unless you pass `--force`.
+The timer runs `apw sync` hourly. It also pushes queued edits. Sync refuses to run more often than every five minutes unless you pass `--force`, or a queued change is waiting.
 
 ## Upgrade or uninstall
 
