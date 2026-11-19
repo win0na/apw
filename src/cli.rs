@@ -188,6 +188,9 @@ pub enum Command {
     /// Probe one CloudKit zone.
     #[command(hide = true)]
     ProbeZone { zone: String },
+    /// Print a zone's PCS protection sizes.
+    #[command(hide = true)]
+    ProbeZoneInfo { zone: String },
     /// Probe recoverable TLK share function names.
     #[command(hide = true)]
     ProbeTlks,
@@ -323,6 +326,7 @@ fn execute(cli: Cli) -> Result<()> {
             | Command::ProbeEscrow
             | Command::ProbeSettings
             | Command::ProbeZone { .. }
+            | Command::ProbeZoneInfo { .. }
             | Command::ProbeTlks
             | Command::ProbeRefresh
             | Command::ProbeZones
@@ -520,6 +524,9 @@ fn execute(cli: Cli) -> Result<()> {
         Command::ProbeSettings => commands::probe::settings(&paths, &mut config, style.json),
         Command::ProbeZone { zone } => {
             commands::probe::zone(&paths, &mut config, &zone, style.json)
+        }
+        Command::ProbeZoneInfo { zone } => {
+            commands::probe::zoneinfo(&paths, &mut config, &zone, style.json)
         }
         Command::ProbeTlks => commands::probe::tlks(&paths, &mut config, style.json),
         Command::ProbeRefresh => commands::probe::refresh(&paths, &mut config, style.json),

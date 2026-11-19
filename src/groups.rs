@@ -144,6 +144,11 @@ async fn read_zone(
     }
 
     let keys = open_zone(&zone, share, gateway, service_keys)?;
+    if std::env::var_os("APW_DEBUG").is_some() {
+        for key in &keys {
+            eprintln!("groups: key id {:02x?}", &key.key_id()[..4]);
+        }
+    }
     let id = zone_name.trim_start_matches("group-").to_string();
 
     let mut entries = Vec::new();
@@ -210,10 +215,39 @@ async fn read_zone(
         .and_then(|record| record.bytes("displayName"))
         .and_then(|value| {
             let aad = format!("{zone_name}-cloudkit.zoneshare-displayName");
+            if std::env::var_os("APW_DEBUG").is_some() {
+                eprintln!(
+                    "groups: displayName {} bytes, {} keys",
+                    value.len(),
+                    keys.len()
+                );
+            }
             decrypt_any(&keys, value, &aad).ok()
         })
-        .and_then(|plain| String::from_utf8(plain).ok());
+        .and_then(|plain| {
+            if std::env::var_os("APW_DEBUG").is_some() {
+                eprintln!(
+                    "groups: displayName plain {} bytes {plain:02x?}",
+                    plain.len()
+                );
+            }
+            // The name is a protobuf string: tag 1, length, UTF-8.
+            // Protobuf string: a length-delimited field (wire type 2),
+            // observed as field 6 (`0x32`) on Apple's zoneshare.
+            let text = match plain.split_first() {
+                Some((tag, rest))
+                    if tag & 0x07 == 2 && rest.first() == Some(&(rest.len() as u8 - 1)) =>
+                {
+                    &rest[1..]
+                }
+                _ => &plain[..],
+            };
+            String::from_utf8(text.to_vec()).ok()
+        });
 
+    if std::env::var_os("APW_DEBUG").is_some() {
+        eprintln!("group {zone_name}: name={name:?}");
+    }
     Ok(Some(GroupData {
         group: Group {
             id,
@@ -296,11 +330,23 @@ fn open_zone(
         zone_protection.decode(&service, false)?
     };
 
+    if std::env::var_os("APW_DEBUG").is_some() {
+        eprintln!(
+            "groups: zone protection keys {} identities {}",
+            decoded.keys.len(),
+            decoded.identities.len()
+        );
+    }
     let mut keys = decoded.keys;
     if let Some(record_protection) = zone.record_protection_info.as_deref() {
         let record_protection = Protection::parse(record_protection)?;
-        if let Ok(record) = record_protection.decode(&decoded.identities, false) {
-            keys.extend(record.keys);
+        match record_protection.decode(&decoded.identities, false) {
+            Ok(record) => keys.extend(record.keys),
+            Err(error) => {
+                if std::env::var_os("APW_DEBUG").is_some() {
+                    eprintln!("groups: record protection: {error}");
+                }
+            }
         }
     }
     Ok(keys)
@@ -337,7 +383,12 @@ fn decrypt_any(keys: &[PcsKey], ciphertext: &[u8], aad: &str) -> Result<Vec<u8>>
     for key in keys {
         match key.decrypt(ciphertext, aad.as_bytes()) {
             Ok(plain) => return Ok(plain),
-            Err(error) => last = Some(error),
+            Err(error) => {
+                if std::env::var_os("APW_DEBUG").is_some() {
+                    eprintln!("pcs: field decrypt failed: {error}");
+                }
+                last = Some(error);
+            }
         }
     }
     Err(last.unwrap_or_else(|| Error::Message("no PCS key for this field".into())))

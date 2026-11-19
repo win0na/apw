@@ -395,11 +395,12 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Resu
                 crate::cloudkit::Scope::Private,
                 crate::cloudkit::Scope::Shared,
             ] {
-                let gateway = match Gateway::bootstrap(
+                let gateway = match Gateway::bootstrap_with_bundle(
                     &session,
                     &mac,
                     crate::cloudkit::SHARED_CONTAINER,
                     scope,
+                    crate::cloudkit::BUNDLE_SHARING,
                 )
                 .await
                 {

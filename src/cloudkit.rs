@@ -21,6 +21,7 @@ pub const CONTAINER: &str = "com.apple.security.keychain";
 /// Groups live in their own CloudKit container.
 pub const SHARED_CONTAINER: &str = "com.apple.security.shared.keychain";
 pub const BUNDLE_RECORDS: &str = "com.apple.securityd";
+pub const BUNDLE_SHARING: &str = "com.apple.security.kcsharing";
 pub const BUNDLE_CUTTLEFISH: &str = "com.apple.security.cuttlefish";
 
 const GATEWAY: &str = "https://gateway.icloud.com";
@@ -45,6 +46,9 @@ const OP_FUNCTION_INVOKE: u64 = 1101;
 pub const SAVE_CREATE: u32 = 2;
 pub const SAVE_UPDATE: u32 = 3;
 
+/// `Record.Field.Value.type` for an encrypted bytes field.
+pub const ENCRYPTED_BYTES_TYPE: u64 = 20;
+
 #[derive(Debug, Clone)]
 pub enum FieldValue {
     Bytes(Vec<u8>),
@@ -65,9 +69,15 @@ pub struct Record {
     pub etag: Option<String>,
     pub record_type: String,
     pub fields: BTreeMap<String, FieldValue>,
+    /// `pluginFields` (record field 12), in the order the server sent them.
+    pub plugin_fields: Vec<(String, FieldValue)>,
     pub protection_info: Option<Vec<u8>>,
+    /// `permission` (record field 15).
+    pub permission: Option<u32>,
     pub pcs_key: Option<Vec<u8>>,
     pub share_info: Option<ShareInfo>,
+    /// `stableUrl` (record field 22), carried by a share record.
+    pub stable_url: Option<StableUrl>,
 }
 
 /// A record to write to CloudKit.
@@ -81,24 +91,125 @@ pub struct OutgoingRecord {
     pub record_type: String,
     pub etag: Option<String>,
     pub semantics: u32,
-    pub fields: Vec<(String, FieldValue)>,
+    pub fields: Vec<OutgoingField>,
+    /// `pluginFields` (record field 12).
+    pub plugin_fields: Vec<OutgoingField>,
     pub delete_fields: Vec<String>,
+    /// Raw `ShareInfo` message bytes (record field 16), echoed verbatim from
+    /// [`ShareInfo::raw`] so a re-save keeps the share intact.
+    pub share_info: Option<Vec<u8>>,
+    /// Raw `StableUrl` message bytes (record field 22).
+    pub stable_url: Option<Vec<u8>>,
+    /// `pcsKey` (record field 24).
+    pub pcs_key: Option<Vec<u8>>,
 }
 
-/// The zone-wide share record (`cloudkit.zoneshare`).
+/// One `Record.Field`.
 #[derive(Debug, Clone)]
+pub struct OutgoingField {
+    pub name: String,
+    pub value: FieldValue,
+    /// Encrypted fields are written as bytes with `type = 20` and
+    /// `isEncrypted = true`, which CloudKit wraps in the zone key.
+    pub encrypted: bool,
+}
+
+/// A `ProtectionInfo` message: a DER encoded key plus its tag.
+///
+/// Deref exposes the DER bytes so callers that only want the key can use
+/// `Option::as_deref`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProtectionInfoBytes {
+    /// `protectionInfo` / `der`, the DER encoded key.
+    pub der: Vec<u8>,
+    /// `protectionInfoTag`, an uppercase hex SHA-1.
+    pub tag: Option<String>,
+}
+
+impl std::ops::Deref for ProtectionInfoBytes {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        &self.der
+    }
+}
+
+/// The zone-wide share record's `shareInfo` (`CKDPShare`).
+///
+/// `raw` holds the whole message as received. The writers send it back
+/// untouched, so fields this crate does not model survive a re-save.
+#[derive(Debug, Clone, Default)]
 pub struct ShareInfo {
-    pub invited_pcs: Option<Vec<u8>>,
+    pub raw: Vec<u8>,
+    /// `identifier`, the raw `ShareIdentifier` message.
+    pub identifier: Option<Vec<u8>>,
+    pub etag: Option<String>,
+    pub public_access: i32,
+    pub invited_pcs: Option<ProtectionInfoBytes>,
+    pub self_added_pcs: Option<ProtectionInfoBytes>,
     pub participants: Vec<Participant>,
+    pub short_token_routing_key: Option<String>,
+    pub add_potential_match: Vec<Participant>,
+    pub invited_key_to_removes: Vec<Vec<u8>>,
+    pub publisher_model: bool,
+    pub annonymous_public_access: bool,
+    pub displayed_hostname: Option<String>,
+    pub publisher_model_type: i32,
+    pub participant_self_removal_behavior: i32,
+    pub deny_access_requests: bool,
+    /// `requestingAccess`, the raw (empty) message.
+    pub requesting_access: Option<Vec<u8>>,
+    /// `blockedAccess`, the raw (empty) message.
+    pub blocked_access: Option<Vec<u8>>,
+    pub crypto_requirements_signing_key: Option<Vec<u8>>,
+    pub allow_anyone_to_resolve_share: bool,
+    /// `pcsInvitedKeysToRemove`, the raw (empty) message.
+    pub pcs_invited_keys_to_remove: Option<Vec<u8>>,
+    /// `pcsAddedKeysToRemove`, the raw (empty) message.
+    pub pcs_added_keys_to_remove: Option<Vec<u8>>,
+    pub short_token_hash: Option<Vec<u8>>,
+    pub origin: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+/// `ShareInfo.Participant.contactInformation`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ContactInformation {
+    pub email_address: Option<String>,
+    pub container_scoped_user_id: Option<String>,
+    pub first_name: Option<String>,
+    pub last_name: Option<String>,
+    pub phone_number: Option<String>,
+    pub canonical_phone_number: Option<String>,
+}
+
+/// `ShareInfo.Participant`.
+#[derive(Debug, Clone, Default)]
 pub struct Participant {
+    /// `participantId`, the raw `Identifier` message.
+    pub participant_id: Option<Vec<u8>>,
+    /// `userId`, the name inside the `Identifier` message.
     pub user_id: Option<String>,
-    pub public_key: Option<Vec<u8>>,
-    pub protection_info: Option<Vec<u8>>,
+    pub contact: Option<ContactInformation>,
     pub state: i32,
+    pub participant_type: i32,
     pub permission: i32,
+    /// `publicKey`, the DER bytes inside its `ProtectionInfo` wrapper.
+    pub public_key: Option<Vec<u8>>,
+    pub protection_info: Option<ProtectionInfoBytes>,
+    /// `protectionInfoPublicKey`, the raw bytes.
+    pub protection_info_public_key: Option<ProtectionInfoBytes>,
+    pub public_key_version: i32,
+}
+
+/// A share record's `stableUrl`.
+#[derive(Debug, Clone, Default)]
+pub struct StableUrl {
+    pub raw: Vec<u8>,
+    pub routing_key: Option<String>,
+    pub short_token_hash: Option<Vec<u8>>,
+    pub protected_full_token: Option<Vec<u8>>,
+    pub encrypted_public_sharing_key: Option<Vec<u8>>,
+    pub displayed_hostname: Option<String>,
 }
 
 impl Record {
@@ -234,6 +345,7 @@ pub struct Gateway {
     identity: Identity,
     device: Device,
     container: String,
+    bundle: String,
     scope: Scope,
 }
 
@@ -251,6 +363,18 @@ impl Gateway {
         identity: &Identity,
         container: &str,
         scope: Scope,
+    ) -> Result<Self> {
+        Self::bootstrap_with_bundle(session, identity, container, scope, BUNDLE_RECORDS).await
+    }
+
+    /// Some containers only answer when the bundle id matches the client that
+    /// owns them: password groups use `com.apple.security.kcsharing`.
+    pub async fn bootstrap_with_bundle(
+        session: &Session,
+        identity: &Identity,
+        container: &str,
+        scope: Scope,
+        bundle: &str,
     ) -> Result<Self> {
         let http = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(15))
@@ -272,7 +396,7 @@ impl Gateway {
             .header("accept", "application/json")
             .header("user-agent", "CloudKit/1970 (19H384)")
             .header("x-cloudkit-containerid", container)
-            .header("x-cloudkit-bundleid", BUNDLE_RECORDS)
+            .header("x-cloudkit-bundleid", bundle)
             .header("x-cloudkit-databasescope", scope.header())
             .header("x-cloudkit-environment", "Production")
             .header("x-mme-client-info", &identity.client_info);
@@ -309,8 +433,13 @@ impl Gateway {
             identity: identity.clone(),
             device: Device::new(),
             container: container.to_string(),
+            bundle: bundle.to_string(),
             scope,
         })
+    }
+
+    pub fn bundle(&self) -> &str {
+        &self.bundle
     }
 
     pub fn user_id(&self) -> &str {
@@ -336,7 +465,7 @@ impl Gateway {
         request.uint64(4, 500);
 
         let outcome = self
-            .call(RECORD_SYNC, BUNDLE_RECORDS, OP_RECORD_SYNC, &request, None)
+            .call(RECORD_SYNC, &self.bundle, OP_RECORD_SYNC, &request, None)
             .await?;
         let outcome = outcome.check()?;
         Ok(outcome.changes.unwrap_or_default())
@@ -353,7 +482,7 @@ impl Gateway {
         let request = save_request(record, zone, owner);
 
         let outcome = self
-            .call(RECORD_SAVE, BUNDLE_RECORDS, OP_RECORD_SAVE, &request, None)
+            .call(RECORD_SAVE, &self.bundle, OP_RECORD_SAVE, &request, None)
             .await?;
         let outcome = outcome.check()?;
         Ok(outcome.record.and_then(|record| record.etag))
@@ -367,7 +496,7 @@ impl Gateway {
 
         self.call(
             RECORD_DELETE,
-            BUNDLE_RECORDS,
+            &self.bundle,
             OP_RECORD_DELETE,
             &request,
             None,
@@ -398,7 +527,7 @@ impl Gateway {
         let outcome = self
             .call(
                 RECORD_RETRIEVE,
-                BUNDLE_RECORDS,
+                &self.bundle,
                 OP_RECORD_RETRIEVE,
                 &request,
                 None,
@@ -421,7 +550,7 @@ impl Gateway {
         request.uint64(2, 200);
 
         let outcome = self
-            .call(ZONE_SYNC, BUNDLE_RECORDS, OP_ZONE_SYNC, &request, None)
+            .call(ZONE_SYNC, &self.bundle, OP_ZONE_SYNC, &request, None)
             .await?;
         let outcome = outcome.check()?;
         outcome
@@ -437,7 +566,7 @@ impl Gateway {
         let outcome = self
             .call(
                 ZONE_RETRIEVE,
-                BUNDLE_RECORDS,
+                &self.bundle,
                 OP_ZONE_RETRIEVE,
                 &request,
                 None,
@@ -619,50 +748,63 @@ fn record_identifier(zone: &str, owner: &str, name: &str) -> Writer {
 
 /// `Record.Field.Value` with an explicit type code. References carry only the
 /// target record name, so `zone` and `owner` complete the reference.
-fn value_message(value: &FieldValue, zone: &str, owner: &str) -> Writer {
+fn value_message(value: &FieldValue, encrypted: bool, zone: &str, owner: &str) -> Writer {
     let mut out = Writer::new();
+    let field_type = |code: u64| {
+        if encrypted {
+            ENCRYPTED_BYTES_TYPE
+        } else {
+            code
+        }
+    };
     match value {
         FieldValue::Bytes(bytes) => {
-            out.uint64(1, 1);
+            out.uint64(1, field_type(1));
             out.bytes(2, bytes);
         }
         FieldValue::Date(seconds) => {
-            out.uint64(1, 2);
+            out.uint64(1, field_type(2));
             let mut date = Writer::new();
             date.fixed64(1, (*seconds as f64).to_bits());
             out.message(6, &date);
         }
         FieldValue::Text(text) => {
-            out.uint64(1, 3);
+            out.uint64(1, field_type(3));
             out.string(7, text);
         }
         FieldValue::Reference(name) => {
-            out.uint64(1, 5);
+            out.uint64(1, field_type(5));
             let mut reference = Writer::new();
             reference.uint64(1, 3);
             reference.message(2, &record_identifier(zone, owner, name));
             out.message(9, &reference);
         }
         FieldValue::Int(number) => {
-            out.uint64(1, 7);
+            out.uint64(1, field_type(7));
             out.int64(4, *number);
         }
         FieldValue::Double(number) => {
-            out.uint64(1, 8);
+            out.uint64(1, field_type(8));
             out.fixed64(5, number.to_bits());
         }
+    }
+    if encrypted {
+        out.boolean(13, true);
     }
     out
 }
 
-fn record_field_writer(name: &str, value: &FieldValue, zone: &str, owner: &str) -> Writer {
+fn record_field_writer(field: &OutgoingField, zone: &str, owner: &str) -> Writer {
     let mut identifier = Writer::new();
-    identifier.string(1, name);
+    identifier.string(1, &field.name);
 
-    let mut field = Writer::new();
-    field.message(1, &identifier);
-    field.message(2, &value_message(value, zone, owner));
-    field
+    let mut out = Writer::new();
+    out.message(1, &identifier);
+    out.message(
+        2,
+        &value_message(&field.value, field.encrypted, zone, owner),
+    );
+    out
 }
 
 fn save_request(record: &OutgoingRecord, zone: &str, owner: &str) -> Writer {
@@ -676,8 +818,20 @@ fn save_request(record: &OutgoingRecord, zone: &str, owner: &str) -> Writer {
     record_type.string(1, &record.record_type);
     record_message.message(3, &record_type);
 
-    for (name, value) in &record.fields {
-        record_message.message(7, &record_field_writer(name, value, zone, owner));
+    for field in &record.fields {
+        record_message.message(7, &record_field_writer(field, zone, owner));
+    }
+    for field in &record.plugin_fields {
+        record_message.message(12, &record_field_writer(field, zone, owner));
+    }
+    if let Some(share_info) = &record.share_info {
+        record_message.bytes(16, share_info);
+    }
+    if let Some(stable_url) = &record.stable_url {
+        record_message.bytes(22, stable_url);
+    }
+    if let Some(pcs_key) = &record.pcs_key {
+        record_message.bytes(24, pcs_key);
     }
 
     let mut request = Writer::new();
@@ -936,9 +1090,12 @@ pub fn parse_record(data: &[u8]) -> Result<Record> {
         etag: None,
         record_type: String::new(),
         fields: BTreeMap::new(),
+        plugin_fields: Vec::new(),
         protection_info: None,
+        permission: None,
         pcs_key: None,
         share_info: None,
+        stable_url: None,
     };
     while let Some(field) = reader.next()? {
         match field.number {
@@ -954,8 +1111,32 @@ pub fn parse_record(data: &[u8]) -> Result<Record> {
                 let (name, value) = parse_record_field(field.message()?)?;
                 record.fields.insert(name, value);
             }
+            12 => {
+                let (name, value) = parse_record_field(field.message()?)?;
+                record.plugin_fields.push((name, value));
+            }
             13 => record.protection_info = parse_protection_info(field.message()?)?,
-            16 => record.share_info = Some(parse_share_info(field.message()?)?),
+            15 => record.permission = Some(field.varint()? as u32),
+            16 => {
+                let data = field.bytes()?;
+                record.share_info = Some(parse_share_info(data).unwrap_or_else(|error| {
+                    debug_warning(&format!("shareInfo left unparsed: {error}"));
+                    ShareInfo {
+                        raw: data.to_vec(),
+                        ..ShareInfo::default()
+                    }
+                }));
+            }
+            22 => {
+                let data = field.bytes()?;
+                record.stable_url = Some(parse_stable_url(data).unwrap_or_else(|error| {
+                    debug_warning(&format!("stableUrl left unparsed: {error}"));
+                    StableUrl {
+                        raw: data.to_vec(),
+                        ..StableUrl::default()
+                    }
+                }));
+            }
             24 => record.pcs_key = Some(field.bytes()?.to_vec()),
             _ => {}
         }
@@ -963,47 +1144,145 @@ pub fn parse_record(data: &[u8]) -> Result<Record> {
     Ok(record)
 }
 
-fn parse_share_info(mut reader: Reader<'_>) -> Result<ShareInfo> {
+/// A malformed optional submessage keeps its raw bytes and only warns under
+/// `APW_DEBUG`; it must not fail the whole record.
+fn debug_warning(message: &str) {
+    if std::env::var_os("APW_DEBUG").is_some() {
+        eprintln!("cloudkit: {message}");
+    }
+}
+
+fn parse_share_info(data: &[u8]) -> Result<ShareInfo> {
     let mut share = ShareInfo {
-        invited_pcs: None,
-        participants: Vec::new(),
+        raw: data.to_vec(),
+        ..ShareInfo::default()
     };
+    let mut reader = Reader::new(data);
     while let Some(field) = reader.next()? {
         match field.number {
-            4 => share.invited_pcs = parse_protection_info(field.message()?)?,
-            6 => share
-                .participants
-                .push(parse_participant(field.message()?)?),
+            1 => share.identifier = Some(field.bytes()?.to_vec()),
+            2 => share.etag = Some(field.string()?.to_string()),
+            3 => share.public_access = field.varint()? as i32,
+            4 => share.invited_pcs = Some(parse_protection_info_bytes(field.message()?)?),
+            5 => share.self_added_pcs = Some(parse_protection_info_bytes(field.message()?)?),
+            6 => share.participants.push(parse_participant(field.bytes()?)?),
+            7 => share.short_token_routing_key = Some(field.string()?.to_string()),
+            8 => share
+                .add_potential_match
+                .push(parse_participant(field.bytes()?)?),
+            9 => share.invited_key_to_removes.push(field.bytes()?.to_vec()),
+            10 => share.publisher_model = field.varint()? != 0,
+            11 => share.annonymous_public_access = field.varint()? != 0,
+            12 => share.displayed_hostname = Some(field.string()?.to_string()),
+            13 => share.publisher_model_type = field.varint()? as i32,
+            14 => share.participant_self_removal_behavior = field.varint()? as i32,
+            15 => share.deny_access_requests = field.varint()? != 0,
+            18 => share.requesting_access = Some(field.bytes()?.to_vec()),
+            19 => share.blocked_access = Some(field.bytes()?.to_vec()),
+            20 => share.crypto_requirements_signing_key = Some(field.bytes()?.to_vec()),
+            21 => share.allow_anyone_to_resolve_share = field.varint()? != 0,
+            22 => share.pcs_invited_keys_to_remove = Some(field.bytes()?.to_vec()),
+            23 => share.pcs_added_keys_to_remove = Some(field.bytes()?.to_vec()),
+            101 => share.short_token_hash = Some(field.bytes()?.to_vec()),
+            102 => share.origin = Some(field.string()?.to_string()),
             _ => {}
         }
     }
     Ok(share)
 }
 
-fn parse_participant(mut reader: Reader<'_>) -> Result<Participant> {
-    let mut participant = Participant {
-        user_id: None,
-        public_key: None,
-        protection_info: None,
-        state: 0,
-        permission: 0,
-    };
+fn parse_participant(data: &[u8]) -> Result<Participant> {
+    let mut participant = Participant::default();
+    let mut reader = Reader::new(data);
     while let Some(field) = reader.next()? {
         match field.number {
+            1 => participant.participant_id = Some(field.bytes()?.to_vec()),
             2 => {
                 let name = parse_identifier_name(field.message()?)?;
                 if !name.is_empty() {
                     participant.user_id = Some(name);
                 }
             }
+            3 => participant.contact = Some(parse_contact_information(field.message()?)?),
             4 => participant.state = field.varint()? as i32,
+            5 => participant.participant_type = field.varint()? as i32,
             6 => participant.permission = field.varint()? as i32,
-            9 => participant.public_key = parse_protection_info(field.message()?)?,
-            11 => participant.protection_info = parse_protection_info(field.message()?)?,
+            9 => participant.public_key = Some(public_key_bytes(field.bytes()?)),
+            11 => {
+                participant.protection_info = Some(parse_protection_info_bytes(field.message()?)?);
+            }
+            14 => participant.public_key_version = field.varint()? as i32,
+            19 => {
+                participant.protection_info_public_key = Some(ProtectionInfoBytes {
+                    der: field.bytes()?.to_vec(),
+                    tag: None,
+                });
+            }
             _ => {}
         }
     }
     Ok(participant)
+}
+
+/// `publicKey` is a `ProtectionInfo` message in the proto, but older shapes
+/// carry the raw key. Return the DER bytes in both cases.
+fn public_key_bytes(raw: &[u8]) -> Vec<u8> {
+    let mut reader = Reader::new(raw);
+    if let Ok(Some(field)) = reader.next() {
+        if field.number == 1 {
+            if let Ok(der) = field.bytes() {
+                return der.to_vec();
+            }
+        }
+    }
+    raw.to_vec()
+}
+
+fn parse_contact_information(mut reader: Reader<'_>) -> Result<ContactInformation> {
+    let mut contact = ContactInformation::default();
+    while let Some(field) = reader.next()? {
+        match field.number {
+            1 => contact.email_address = Some(field.string()?.to_string()),
+            2 => contact.container_scoped_user_id = Some(field.string()?.to_string()),
+            3 => contact.first_name = Some(field.string()?.to_string()),
+            4 => contact.last_name = Some(field.string()?.to_string()),
+            5 => contact.phone_number = Some(field.string()?.to_string()),
+            6 => contact.canonical_phone_number = Some(field.string()?.to_string()),
+            _ => {}
+        }
+    }
+    Ok(contact)
+}
+
+fn parse_protection_info_bytes(mut reader: Reader<'_>) -> Result<ProtectionInfoBytes> {
+    let mut info = ProtectionInfoBytes::default();
+    while let Some(field) = reader.next()? {
+        match field.number {
+            1 => info.der = field.bytes()?.to_vec(),
+            2 => info.tag = Some(field.string()?.to_string()),
+            _ => {}
+        }
+    }
+    Ok(info)
+}
+
+fn parse_stable_url(data: &[u8]) -> Result<StableUrl> {
+    let mut url = StableUrl {
+        raw: data.to_vec(),
+        ..StableUrl::default()
+    };
+    let mut reader = Reader::new(data);
+    while let Some(field) = reader.next()? {
+        match field.number {
+            1 => url.routing_key = Some(field.string()?.to_string()),
+            2 => url.short_token_hash = Some(field.bytes()?.to_vec()),
+            3 => url.protected_full_token = Some(field.bytes()?.to_vec()),
+            4 => url.encrypted_public_sharing_key = Some(field.bytes()?.to_vec()),
+            5 => url.displayed_hostname = Some(field.string()?.to_string()),
+            _ => {}
+        }
+    }
+    Ok(url)
 }
 
 /// Parse a `RecordIdentifier`:
@@ -1173,9 +1452,17 @@ mod tests {
     }
 
     fn record_value<'a>(record_fields: &[wire::Field<'a>], name: &str) -> &'a [u8] {
+        record_field_value(record_fields, 7, name)
+    }
+
+    fn record_field_value<'a>(
+        record_fields: &[wire::Field<'a>],
+        number: u32,
+        name: &str,
+    ) -> &'a [u8] {
         record_fields
             .iter()
-            .filter(|f| f.number == 7)
+            .filter(|f| f.number == number)
             .find_map(|f| {
                 let parts = fields_of(f.bytes().ok()?);
                 let identifier = fields_of(field(&parts, 1).bytes().ok()?);
@@ -1186,6 +1473,14 @@ mod tests {
                 }
             })
             .unwrap()
+    }
+
+    fn plain(name: &str, value: FieldValue) -> OutgoingField {
+        OutgoingField {
+            name: name.into(),
+            value,
+            encrypted: false,
+        }
     }
 
     #[test]
@@ -1235,14 +1530,18 @@ mod tests {
             etag: Some("etag-1".into()),
             semantics: SAVE_UPDATE,
             fields: vec![
-                ("data".into(), FieldValue::Bytes(vec![1, 2, 3])),
-                ("srvr".into(), FieldValue::Text("example.com".into())),
-                ("count".into(), FieldValue::Int(42)),
-                ("ratio".into(), FieldValue::Double(3.5)),
-                ("parent".into(), FieldValue::Reference("parent-1".into())),
-                ("when".into(), FieldValue::Date(1_700_000_000)),
+                plain("data", FieldValue::Bytes(vec![1, 2, 3])),
+                plain("srvr", FieldValue::Text("example.com".into())),
+                plain("count", FieldValue::Int(42)),
+                plain("ratio", FieldValue::Double(3.5)),
+                plain("parent", FieldValue::Reference("parent-1".into())),
+                plain("when", FieldValue::Date(1_700_000_000)),
             ],
+            plugin_fields: Vec::new(),
             delete_fields: vec!["obsolete".into()],
+            share_info: None,
+            stable_url: None,
+            pcs_key: None,
         };
         let request = save_request(&record, "zone-1", "owner-1");
         let top = fields_of(request.as_slice());
@@ -1322,8 +1621,12 @@ mod tests {
             record_type: "item".into(),
             etag: None,
             semantics: SAVE_CREATE,
-            fields: vec![("when".into(), FieldValue::Date(1_700_000_000))],
+            fields: vec![plain("when", FieldValue::Date(1_700_000_000))],
+            plugin_fields: Vec::new(),
             delete_fields: Vec::new(),
+            share_info: None,
+            stable_url: None,
+            pcs_key: None,
         };
         let request = save_request(&record, "zone-1", "owner-1");
         let top = fields_of(request.as_slice());
@@ -1342,6 +1645,290 @@ mod tests {
 
         let parsed = parse_record(field(&top, 1).bytes().unwrap()).unwrap();
         assert_eq!(parsed.int("when"), Some(1_700_000_000));
+    }
+
+    fn protection(der: &[u8], tag: &str) -> Writer {
+        let mut info = Writer::new();
+        info.bytes(1, der);
+        info.string(2, tag);
+        info
+    }
+
+    fn participant(name: &str, id: &[u8], public_key: &[u8]) -> Writer {
+        let mut identifier = Writer::new();
+        identifier.string(1, name);
+        identifier.uint64(2, 7);
+
+        let mut contact = Writer::new();
+        contact.string(1, "ada@example.com");
+        contact.string(2, "cuid-1");
+        contact.string(3, "Ada");
+        contact.string(4, "Lovelace");
+        contact.string(5, "+15550100");
+        contact.string(6, "+15550101");
+
+        let mut participant = Writer::new();
+        participant.bytes(1, id);
+        participant.message(2, &identifier);
+        participant.message(3, &contact);
+        participant.uint64(4, 2);
+        participant.uint64(5, 1);
+        participant.uint64(6, 3);
+        participant.message(9, &protection(public_key, "ABCD"));
+        participant.message(11, &protection(&[9u8; 32], "EF01"));
+        participant.uint64(14, 1);
+        participant.bytes(19, public_key);
+        participant
+    }
+
+    #[test]
+    fn round_trips_a_share_record_through_a_save() {
+        let mut share_identifier_value = Writer::new();
+        share_identifier_value.string(1, "share-1");
+        share_identifier_value.uint64(2, 1);
+        let mut share_identifier = Writer::new();
+        share_identifier.message(1, &share_identifier_value);
+
+        let mut share = Writer::new();
+        share.message(1, &share_identifier);
+        share.string(2, "share-etag");
+        share.uint64(3, 3);
+        share.message(4, &protection(&[7u8; 32], "1111"));
+        share.message(5, &protection(&[8u8; 32], "2222"));
+        share.message(6, &participant("user-1", b"pid-1", &[1u8; 32]));
+        share.message(6, &participant("user-2", b"pid-2", &[2u8; 32]));
+        share.string(7, "routing-1");
+        share.bytes(9, b"removed-key");
+        share.uint64(10, 1);
+        share.uint64(11, 0);
+        share.string(12, "example.icloud.com");
+        share.uint64(13, 4);
+        share.uint64(14, 2);
+        share.uint64(15, 1);
+        share.bytes(20, b"signing-key");
+        share.uint64(21, 1);
+        share.bytes(101, &[3u8; 32]);
+        share.string(102, "https://example.icloud.com");
+        let share_bytes = share.finish();
+
+        let mut stable = Writer::new();
+        stable.string(1, "stable-routing");
+        stable.bytes(2, &[4u8; 32]);
+        stable.bytes(3, b"full-token");
+        stable.bytes(4, b"public-sharing-key");
+        stable.string(5, "example.icloud.com");
+        let stable_bytes = stable.finish();
+
+        let record = OutgoingRecord {
+            name: "cloudkit.zoneshare".into(),
+            record_type: "cloudkit.share".into(),
+            etag: Some("record-etag".into()),
+            semantics: SAVE_UPDATE,
+            fields: vec![plain("displayName", FieldValue::Bytes(vec![5, 5, 5]))],
+            plugin_fields: vec![
+                plain("plugin-a", FieldValue::Text("value-a".into())),
+                plain("plugin-b", FieldValue::Bytes(vec![6, 6])),
+            ],
+            delete_fields: Vec::new(),
+            share_info: Some(share_bytes.clone()),
+            stable_url: Some(stable_bytes.clone()),
+            pcs_key: Some(vec![0xaa, 0xbb]),
+        };
+        let request = save_request(&record, "group-1", "owner-1");
+        let top = fields_of(request.as_slice());
+        let record_fields = fields_of(field(&top, 1).bytes().unwrap());
+
+        let plugin_b = fields_of(record_field_value(&record_fields, 12, "plugin-b"));
+        assert_eq!(field(&plugin_b, 1).varint().unwrap(), 1, "plugin bytes");
+        assert_eq!(field(&plugin_b, 2).bytes().unwrap(), &[6, 6]);
+
+        let parsed = parse_record(field(&top, 1).bytes().unwrap()).unwrap();
+        assert_eq!(parsed.name, "cloudkit.zoneshare");
+        assert_eq!(parsed.record_type, "cloudkit.share");
+        assert_eq!(parsed.etag.as_deref(), Some("record-etag"));
+        assert_eq!(parsed.permission, None, "permission is not written");
+        assert_eq!(parsed.pcs_key.as_deref(), Some([0xaa, 0xbb].as_slice()));
+
+        assert_eq!(parsed.plugin_fields.len(), 2);
+        assert_eq!(parsed.plugin_fields[0].0, "plugin-a");
+        assert!(matches!(&parsed.plugin_fields[0].1, FieldValue::Text(text) if text == "value-a"));
+        assert_eq!(parsed.plugin_fields[1].0, "plugin-b");
+        assert!(matches!(
+            &parsed.plugin_fields[1].1,
+            FieldValue::Bytes(bytes) if bytes == &[6, 6]
+        ));
+
+        let share = parsed.share_info.expect("share info");
+        assert_eq!(share.raw, share_bytes, "raw share bytes survive the trip");
+        assert_eq!(
+            share.identifier.as_deref(),
+            Some(share_identifier.as_slice())
+        );
+        assert_eq!(share.etag.as_deref(), Some("share-etag"));
+        assert_eq!(share.public_access, 3);
+        let invited = share.invited_pcs.as_ref().expect("invited pcs");
+        assert_eq!(invited.der, [7u8; 32]);
+        assert_eq!(invited.tag.as_deref(), Some("1111"));
+        let self_added = share.self_added_pcs.as_ref().expect("self added pcs");
+        assert_eq!(self_added.der, [8u8; 32]);
+        assert_eq!(self_added.tag.as_deref(), Some("2222"));
+        assert_eq!(share.short_token_routing_key.as_deref(), Some("routing-1"));
+        assert_eq!(share.invited_key_to_removes, vec![b"removed-key".to_vec()]);
+        assert!(share.publisher_model);
+        assert!(!share.annonymous_public_access);
+        assert_eq!(
+            share.displayed_hostname.as_deref(),
+            Some("example.icloud.com")
+        );
+        assert_eq!(share.publisher_model_type, 4);
+        assert_eq!(share.participant_self_removal_behavior, 2);
+        assert!(share.deny_access_requests);
+        assert_eq!(
+            share.crypto_requirements_signing_key.as_deref(),
+            Some(b"signing-key".as_slice())
+        );
+        assert!(share.allow_anyone_to_resolve_share);
+        assert_eq!(
+            share.short_token_hash.as_deref(),
+            Some([3u8; 32].as_slice())
+        );
+        assert_eq!(share.origin.as_deref(), Some("https://example.icloud.com"));
+
+        assert_eq!(share.participants.len(), 2);
+        let first = &share.participants[0];
+        assert_eq!(first.participant_id.as_deref(), Some(b"pid-1".as_slice()));
+        assert_eq!(first.user_id.as_deref(), Some("user-1"));
+        assert_eq!(first.state, 2);
+        assert_eq!(first.participant_type, 1);
+        assert_eq!(first.permission, 3);
+        assert_eq!(first.public_key.as_deref(), Some([1u8; 32].as_slice()));
+        let first_protection = first.protection_info.as_ref().expect("participant pcs");
+        assert_eq!(first_protection.der, [9u8; 32]);
+        assert_eq!(first_protection.tag.as_deref(), Some("EF01"));
+        assert_eq!(
+            first
+                .protection_info_public_key
+                .as_ref()
+                .map(|info| &info.der),
+            Some(&[1u8; 32].to_vec())
+        );
+        assert_eq!(first.public_key_version, 1);
+        let contact = first.contact.as_ref().expect("contact");
+        assert_eq!(contact.email_address.as_deref(), Some("ada@example.com"));
+        assert_eq!(contact.container_scoped_user_id.as_deref(), Some("cuid-1"));
+        assert_eq!(contact.first_name.as_deref(), Some("Ada"));
+        assert_eq!(contact.last_name.as_deref(), Some("Lovelace"));
+        assert_eq!(contact.phone_number.as_deref(), Some("+15550100"));
+        assert_eq!(contact.canonical_phone_number.as_deref(), Some("+15550101"));
+        assert_eq!(share.participants[1].user_id.as_deref(), Some("user-2"));
+
+        let url = parsed.stable_url.expect("stable url");
+        assert_eq!(url.raw, stable_bytes);
+        assert_eq!(url.routing_key.as_deref(), Some("stable-routing"));
+        assert_eq!(url.short_token_hash.as_deref(), Some([4u8; 32].as_slice()));
+        assert_eq!(
+            url.protected_full_token.as_deref(),
+            Some(b"full-token".as_slice())
+        );
+        assert_eq!(
+            url.encrypted_public_sharing_key.as_deref(),
+            Some(b"public-sharing-key".as_slice())
+        );
+        assert_eq!(
+            url.displayed_hostname.as_deref(),
+            Some("example.icloud.com")
+        );
+    }
+
+    #[test]
+    fn a_display_name_only_record_has_no_share() {
+        let mut name = Writer::new();
+        name.string(1, "cloudkit.zoneshare");
+        let mut identifier = Writer::new();
+        identifier.message(1, &name);
+        let mut record_type = Writer::new();
+        record_type.string(1, "cloudkit.zoneshare");
+        let mut field = Writer::new();
+        field.string(1, "displayName");
+        field.message(2, &{
+            let mut value = Writer::new();
+            value.bytes(2, b"sealed");
+            value
+        });
+        let mut record = Writer::new();
+        record.message(2, &identifier);
+        record.message(3, &record_type);
+        record.message(7, &field);
+
+        let parsed = parse_record(record.as_slice()).unwrap();
+        assert_eq!(parsed.name, "cloudkit.zoneshare");
+        assert_eq!(parsed.bytes("displayName"), Some(b"sealed".as_slice()));
+        assert!(parsed.share_info.is_none());
+        assert!(parsed.stable_url.is_none());
+        assert!(parsed.plugin_fields.is_empty());
+        assert_eq!(parsed.permission, None);
+        assert!(parsed.pcs_key.is_none());
+    }
+
+    #[test]
+    fn a_malformed_share_info_keeps_the_raw_bytes() {
+        let mut record_type = Writer::new();
+        record_type.string(1, "cloudkit.zoneshare");
+        // Field 1 claims five bytes but only one follows.
+        let malformed = vec![0x0a, 0x05, 0x01];
+        let mut record = Writer::new();
+        record.message(3, &record_type);
+        record.bytes(16, &malformed);
+
+        let parsed = parse_record(record.as_slice()).unwrap();
+        let share = parsed.share_info.expect("raw share is kept");
+        assert_eq!(share.raw, malformed);
+        assert!(share.participants.is_empty());
+        assert!(share.invited_pcs.is_none());
+        assert!(share.displayed_hostname.is_none());
+    }
+
+    #[test]
+    fn parses_record_permission() {
+        let mut record_type = Writer::new();
+        record_type.string(1, "cloudkit.share");
+        let mut record = Writer::new();
+        record.message(3, &record_type);
+        record.uint64(15, 2);
+
+        let parsed = parse_record(record.as_slice()).unwrap();
+        assert_eq!(parsed.permission, Some(2));
+    }
+
+    #[test]
+    fn an_encrypted_field_is_bytes_type_twenty() {
+        let record = OutgoingRecord {
+            name: "item-1".into(),
+            record_type: "item".into(),
+            etag: None,
+            semantics: SAVE_CREATE,
+            fields: vec![OutgoingField {
+                name: "payload".into(),
+                value: FieldValue::Bytes(vec![1, 2, 3]),
+                encrypted: true,
+            }],
+            plugin_fields: Vec::new(),
+            delete_fields: Vec::new(),
+            share_info: None,
+            stable_url: None,
+            pcs_key: None,
+        };
+        let request = save_request(&record, "zone-1", "owner-1");
+        let top = fields_of(request.as_slice());
+        let record_fields = fields_of(field(&top, 1).bytes().unwrap());
+
+        let value = fields_of(record_field_value(&record_fields, 7, "payload"));
+        assert_eq!(field(&value, 1).varint().unwrap(), ENCRYPTED_BYTES_TYPE);
+        assert_eq!(field(&value, 13).varint().unwrap(), 1, "isEncrypted");
+        assert_eq!(field(&value, 2).bytes().unwrap(), &[1, 2, 3]);
+
+        let parsed = parse_record(field(&top, 1).bytes().unwrap()).unwrap();
+        assert_eq!(parsed.bytes("payload"), Some([1, 2, 3].as_slice()));
     }
 
     #[test]

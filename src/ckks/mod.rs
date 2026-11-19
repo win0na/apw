@@ -1104,9 +1104,12 @@ mod tests {
             etag: None,
             record_type: "item".into(),
             fields,
+            plugin_fields: Vec::new(),
             protection_info: None,
+            permission: None,
             pcs_key: None,
             share_info: None,
+            stable_url: None,
         }
     }
 

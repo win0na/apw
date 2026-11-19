@@ -157,6 +157,84 @@ pub fn zone(paths: &Paths, config: &mut Config, zone: &str, json: bool) -> Resul
     Ok(())
 }
 
+/// Print the size of a zone's PCS protection blobs.
+pub fn zoneinfo(paths: &Paths, config: &mut Config, zone: &str, json: bool) -> Result<()> {
+    let snapshot = vault::load(paths, config)?;
+    let session = snapshot
+        .session
+        .clone()
+        .ok_or_else(|| Error::Auth("run `apw login` first".into()))?;
+    let url = config
+        .anisette_url()
+        .ok_or_else(|| Error::Invalid("set an anisette URL in the config".into()))?;
+
+    let container =
+        std::env::var("APW_PROBE_CONTAINER").unwrap_or_else(|_| crate::cloudkit::CONTAINER.into());
+    let bundle = std::env::var("APW_PROBE_BUNDLE")
+        .unwrap_or_else(|_| crate::cloudkit::BUNDLE_RECORDS.into());
+    let scope = match std::env::var("APW_PROBE_SCOPE").as_deref() {
+        Ok("shared") => crate::cloudkit::Scope::Shared,
+        _ => crate::cloudkit::Scope::Private,
+    };
+    let (info, owner) = block_on(async {
+        let identity = Anisette::new(&url).identity().await?;
+        let mac = Anisette::new(&url)
+            .identity_for(Some("macos"))
+            .await
+            .unwrap_or_else(|_| identity.clone());
+        let gateway = crate::cloudkit::Gateway::bootstrap_with_bundle(
+            &session, &mac, &container, scope, &bundle,
+        )
+        .await?;
+        let page = gateway.zone_changes(None).await?;
+        if std::env::var_os("APW_DEBUG").is_some() {
+            let names: Vec<&str> = page
+                .zones
+                .iter()
+                .map(|info| info.name.as_str())
+                .take(20)
+                .collect();
+            eprintln!("zones: {} {:?}", page.zones.len(), names);
+        }
+        let found = page
+            .zones
+            .into_iter()
+            .find(|info| info.name == zone)
+            .ok_or_else(|| Error::NoResults(format!("no zone named {zone}")))?;
+        let info = gateway.zone_retrieve(zone, &found.owner).await?;
+        Ok::<_, Error>((info, found.owner))
+    })?;
+
+    // APW_DUMP_PROTECTIONS writes the raw PCS blobs for the protection codec.
+    if std::env::var_os("APW_DUMP_PROTECTIONS").is_some() {
+        let dir = std::path::Path::new("/tmp/opencode/apw-p1");
+        std::fs::create_dir_all(dir)?;
+        for (name, blob) in [
+            ("zone", info.protection_info.as_deref()),
+            ("record", info.record_protection_info.as_deref()),
+        ] {
+            if let Some(bytes) = blob {
+                let path = dir.join(format!("{}-{name}.bin", info.name));
+                std::fs::write(&path, bytes)?;
+                eprintln!("wrote {} ({} bytes)", path.display(), bytes.len());
+            }
+        }
+    }
+
+    let row = serde_json::json!({
+        "zone": info.name,
+        "owner": owner,
+        "protection_info": info.protection_info.as_ref().map(Vec::len),
+        "record_protection_info": info.record_protection_info.as_ref().map(Vec::len),
+    });
+    if output::use_json(json) {
+        output::print_json(&output::success(row));
+    } else {
+        println!("{}", serde_json::to_string_pretty(&row).unwrap_or_default());
+    }
+    Ok(())
+}
+
 pub fn tlks(paths: &Paths, config: &mut Config, json: bool) -> Result<()> {
     let snapshot = vault::load(paths, config)?;
     let session = snapshot
@@ -366,11 +444,12 @@ pub fn group(paths: &Paths, config: &mut Config, zone: &str, json: bool) -> Resu
             .identity_for(Some("macos"))
             .await
             .unwrap_or_else(|_| identity.clone());
-        let gateway = crate::cloudkit::Gateway::bootstrap(
+        let gateway = crate::cloudkit::Gateway::bootstrap_with_bundle(
             &session,
             &mac,
             crate::cloudkit::SHARED_CONTAINER,
             crate::cloudkit::Scope::Private,
+            crate::cloudkit::BUNDLE_SHARING,
         )
         .await?;
         let owner = gateway.user_id().to_string();
@@ -391,6 +470,47 @@ pub fn group(paths: &Paths, config: &mut Config, zone: &str, json: bool) -> Resu
                     .iter()
                     .map(|record| format!("{}/{}", record.name, record.record_type)),
             );
+            if std::env::var_os("APW_DUMP_PROTECTIONS").is_some() {
+                let dir = std::path::Path::new("/tmp/opencode/apw-p1");
+                std::fs::create_dir_all(dir)?;
+                for record in &page.records {
+                    if std::env::var_os("APW_DEBUG").is_some() {
+                        let fields: Vec<(&str, &str)> = record
+                            .fields
+                            .iter()
+                            .map(|(name, value)| {
+                                let kind = match value {
+                                    crate::cloudkit::FieldValue::Bytes(_) => "bytes",
+                                    crate::cloudkit::FieldValue::Text(_) => "text",
+                                    crate::cloudkit::FieldValue::Int(_) => "int",
+                                    crate::cloudkit::FieldValue::Double(_) => "double",
+                                    crate::cloudkit::FieldValue::Date(_) => "date",
+                                    crate::cloudkit::FieldValue::Reference(_) => "reference",
+                                };
+                                (name.as_str(), kind)
+                            })
+                            .collect();
+                        eprintln!("record {} fields: {fields:?}", record.name);
+                    }
+                    for (field, value) in &record.fields {
+                        let bytes = match value {
+                            crate::cloudkit::FieldValue::Bytes(bytes) => Some(bytes.clone()),
+                            crate::cloudkit::FieldValue::Text(text) => {
+                                Some(text.as_bytes().to_vec())
+                            }
+                            crate::cloudkit::FieldValue::Int(number) => {
+                                Some(number.to_be_bytes().to_vec())
+                            }
+                            _ => None,
+                        };
+                        if let Some(bytes) = bytes {
+                            let name = format!("{}-{}-{field}.bin", zone, record.name);
+                            std::fs::write(dir.join(&name), &bytes)?;
+                            eprintln!("wrote {name} ({} bytes)", bytes.len());
+                        }
+                    }
+                }
+            }
             if page.status != 1 || pages >= 5 {
                 break;
             }

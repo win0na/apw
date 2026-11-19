@@ -11,7 +11,9 @@ use base64::Engine;
 use plist::Value;
 
 use crate::ckks;
-use crate::cloudkit::{FieldValue, Gateway, OutgoingRecord, Record, SAVE_CREATE, SAVE_UPDATE};
+use crate::cloudkit::{
+    FieldValue, Gateway, OutgoingField, OutgoingRecord, Record, SAVE_CREATE, SAVE_UPDATE,
+};
 use crate::error::Error;
 use crate::model::{self, Entry, EntryKind, OpKind, PendingOp};
 
@@ -427,8 +429,19 @@ async fn save(
         record_type: step.record_type.to_string(),
         etag,
         semantics,
-        fields,
+        fields: fields
+            .into_iter()
+            .map(|(name, value)| OutgoingField {
+                name,
+                value,
+                encrypted: false,
+            })
+            .collect(),
+        plugin_fields: Vec::new(),
         delete_fields: Vec::new(),
+        share_info: None,
+        stable_url: None,
+        pcs_key: None,
     };
     env.gateway
         .save_record(step.zone, step.owner, &record)
@@ -552,9 +565,12 @@ mod tests {
             etag: None,
             record_type: "item".to_string(),
             fields,
+            plugin_fields: Vec::new(),
             protection_info: None,
+            permission: None,
             pcs_key: None,
             share_info: None,
+            stable_url: None,
         }
     }
 
