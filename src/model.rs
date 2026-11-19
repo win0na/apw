@@ -234,6 +234,10 @@ pub struct PendingOp {
     /// Uppercase uuid, as shown by `apw pending` and taken by `resolve`.
     pub id: String,
     pub kind: OpKind,
+    /// The kind of entry being written, so push picks the right class key
+    /// (`classC` in the WiFi zone). Old vaults load as a login.
+    #[serde(default)]
+    pub entry_kind: EntryKind,
     pub zone: String,
     #[serde(default)]
     pub owner: Option<String>,
@@ -764,6 +768,7 @@ mod tests {
         vault.pending.push(PendingOp {
             id: "9E107D9D-372B-4C81-8D21-A9C61E8F5D41".to_string(),
             kind: OpKind::Edit,
+            entry_kind: EntryKind::Login,
             zone: "Passwords".to_string(),
             owner: None,
             item_name: "item-1".to_string(),
@@ -795,6 +800,24 @@ mod tests {
         assert_eq!(back.pending, vault.pending);
         assert_eq!(back.synckeys, vault.synckeys);
         assert_eq!(back.pending[0].kind, OpKind::Edit);
+    }
+
+    #[test]
+    fn pending_op_without_an_entry_kind_loads_as_a_login() {
+        let json = r#"{
+            "id": "op-1",
+            "kind": "Edit",
+            "zone": "Passwords",
+            "item_name": "item-1",
+            "item_type": "item",
+            "item_dirty": true,
+            "sidecar_dirty": false
+        }"#;
+
+        let op: PendingOp = serde_json::from_str(json).expect("old op loads");
+
+        assert_eq!(op.entry_kind, EntryKind::Login);
+        assert_eq!(op.kind, OpKind::Edit);
     }
 
     #[test]

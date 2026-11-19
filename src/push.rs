@@ -13,7 +13,7 @@ use plist::Value;
 use crate::ckks;
 use crate::cloudkit::{FieldValue, Gateway, OutgoingRecord, Record, SAVE_CREATE, SAVE_UPDATE};
 use crate::error::Error;
-use crate::model::{self, Entry, OpKind, PendingOp};
+use crate::model::{self, Entry, EntryKind, OpKind, PendingOp};
 
 /// One sync's CloudKit context for pushing.
 pub struct PushEnv<'a> {
@@ -37,6 +37,16 @@ const MAX_ATTEMPTS: u32 = 5;
 /// The synckey class login items and password-manager metadata live under.
 /// `inet` is the plist's `class` key, not the synckey class.
 const ITEM_CLASS: &str = "classA";
+/// Wi-Fi items are generic passwords in the `WiFi` zone under `classC`.
+const WIFI_CLASS: &str = "classC";
+
+/// The synckey class a record of `kind` is sealed under.
+fn item_class(kind: EntryKind) -> &'static str {
+    match kind {
+        EntryKind::Wifi => WIFI_CLASS,
+        _ => ITEM_CLASS,
+    }
+}
 
 enum StepOutcome {
     /// The server already holds the desired state, or a delete target is gone.
@@ -68,6 +78,8 @@ struct StepSpec<'a> {
     /// Sidecars compare and seal the `v_Data` metadata dictionary, not the
     /// outer item plist.
     metadata: bool,
+    /// The synckey class this record is sealed under.
+    class: &'a str,
 }
 
 impl StepSpec<'_> {
@@ -201,6 +213,7 @@ async fn apply_item(op: &PendingOp, env: &PushEnv<'_>) -> Result<StepOutcome, Er
         label: &op.label,
         op_id: &op.id,
         metadata: false,
+        class: item_class(op.entry_kind),
     };
     apply(&spec, env).await
 }
@@ -226,6 +239,7 @@ async fn apply_sidecar(op: &mut PendingOp, env: &PushEnv<'_>) -> Result<StepOutc
         label: &op.label,
         op_id: &op.id,
         metadata: true,
+        class: ITEM_CLASS,
     };
     apply(&spec, env).await
 }
@@ -262,10 +276,10 @@ async fn create(
             step.label
         )));
     };
-    let Some(parent) = parent_for(env, step.zone, None) else {
+    let Some(parent) = parent_for(env, step.zone, None, step.class) else {
         return Ok(StepOutcome::Blocked(format!(
-            "no synckey for {}:{ITEM_CLASS}",
-            step.zone
+            "no synckey for {}:{}",
+            step.zone, step.class
         )));
     };
     let Some(class_key) = env.class_keys.get(&parent) else {
@@ -299,10 +313,10 @@ async fn edit(
     if !step.force && !step.base.is_some_and(|base| step.matches(&value, base)) {
         return Ok(StepOutcome::Blocked(changed(step)));
     }
-    let Some(parent) = parent_for(env, step.zone, Some(server)) else {
+    let Some(parent) = parent_for(env, step.zone, Some(server), step.class) else {
         return Ok(StepOutcome::Blocked(format!(
-            "no synckey for {}:{ITEM_CLASS}",
-            step.zone
+            "no synckey for {}:{}",
+            step.zone, step.class
         )));
     };
     let Some(class_key) = env.class_keys.get(&parent) else {
@@ -351,12 +365,17 @@ fn changed(step: &StepSpec<'_>) -> String {
 }
 
 /// The class-key record name for a write: the server copy's parent reference
-/// first, then the zone's item-class synckey.
-fn parent_for(env: &PushEnv<'_>, zone: &str, server: Option<&Record>) -> Option<String> {
+/// first, then the zone's synckey for this record class.
+fn parent_for(
+    env: &PushEnv<'_>,
+    zone: &str,
+    server: Option<&Record>,
+    class: &str,
+) -> Option<String> {
     server
         .and_then(|record| record.reference("parentkeyref"))
         .map(str::to_string)
-        .or_else(|| env.synckeys.get(&format!("{zone}:{ITEM_CLASS}")).cloned())
+        .or_else(|| env.synckeys.get(&format!("{zone}:{class}")).cloned())
 }
 
 fn record_type(value: &str) -> &str {

@@ -492,26 +492,7 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Resu
     // associated-domain stub; its title comes from the sidecar that was just
     // merged. Reclassify so `pw list` keeps showing credentials only.
     for entry in &mut logins {
-        let empty = entry
-            .password
-            .as_deref()
-            .is_none_or(|password| password.is_empty())
-            && is_uuid(&entry.domain());
-        if !empty {
-            continue;
-        }
-        let title = entry.title.clone().unwrap_or_default();
-        entry.kind = if title.starts_with("Secure Note") || title == "Password" {
-            EntryKind::Note
-        } else if title.starts_with("Credit") || title.starts_with("Debit") {
-            EntryKind::Card
-        } else {
-            EntryKind::Login
-        };
-        if !title.is_empty() && is_uuid(&entry.domain()) {
-            entry.sites = vec![title.clone()];
-            entry.url = None;
-        }
+        classify_stub(entry);
     }
 
     // Sidecars whose domain has no cfnetwork record at all describe credentials
@@ -597,6 +578,12 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Resu
         );
     }
 
+    // Merge the separately built lists first: a queued Wi-Fi or passkey write
+    // must replace the fetched copy, not add beside it when the fetched copy
+    // is appended later.
+    logins.append(&mut passkeys);
+    logins.append(&mut wifi);
+
     // A pending local write must win over the stale server copy the merge just
     // fetched. Overlay the pre-sync entries for queued Create/Edit ids and drop
     // the entries a queued Delete names.
@@ -627,22 +614,13 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Resu
     }
 
     logins.sort_by(|left, right| left.id.cmp(&right.id));
-    passkeys.sort_by(|left, right| left.id.cmp(&right.id));
-    wifi.sort_by(|left, right| left.id.cmp(&right.id));
     if std::env::var_os("APW_DEBUG").is_some() {
-        let with_record = logins
-            .iter()
-            .chain(passkeys.iter())
-            .chain(wifi.iter())
-            .filter(|entry| entry.record.is_some())
-            .count();
+        let with_record = logins.iter().filter(|entry| entry.record.is_some()).count();
         eprintln!(
             "sync: {with_record} entries carry record metadata, {} pending ops",
             snapshot.pending.len()
         );
     }
-    logins.append(&mut passkeys);
-    logins.append(&mut wifi);
 
     // A failed TLK unwrap or a transient zone error yields an empty list. Do
     // not replace a good snapshot with it.
@@ -720,6 +698,34 @@ fn attach_record(entry: &mut Entry, info: &ckks::RecordInfo, zone: &str, value: 
         record.sidecar_plist = Some(base64::engine::general_purpose::STANDARD.encode(&info.bplist));
     }
     entry.record = Some(record);
+}
+
+/// Classify a passwordless item whose site is a UUID: note, card, or stub.
+///
+/// Card titles win over note markers. A metadata `notes` value marks a note
+/// even when its title is custom; a stub with neither stays a login (an
+/// associated-domain record, for example).
+fn classify_stub(entry: &mut Entry) {
+    let empty = entry
+        .password
+        .as_deref()
+        .is_none_or(|password| password.is_empty())
+        && is_uuid(&entry.domain());
+    if !empty {
+        return;
+    }
+    let title = entry.title.clone().unwrap_or_default();
+    entry.kind = if title.starts_with("Credit") || title.starts_with("Debit") {
+        EntryKind::Card
+    } else if title.starts_with("Secure Note") || title == "Password" || entry.notes.is_some() {
+        EntryKind::Note
+    } else {
+        EntryKind::Login
+    };
+    if !title.is_empty() {
+        entry.sites = vec![title];
+        entry.url = None;
+    }
 }
 
 fn is_uuid(value: &str) -> bool {
@@ -810,4 +816,51 @@ fn decode(value: &str) -> Result<Vec<u8>> {
     base64::engine::general_purpose::STANDARD
         .decode(value)
         .map_err(|error| Error::Message(format!("invalid stored peer key: {error}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SITE: &str = "6F1C2A4E-0B7D-4C3A-9E55-1234567890AB";
+
+    fn stub(title: &str, notes: Option<&str>) -> Entry {
+        Entry {
+            id: "item-1".to_string(),
+            kind: EntryKind::Login,
+            title: Some(title.to_string()),
+            notes: notes.map(str::to_string),
+            sites: vec![SITE.to_string()],
+            ..Entry::default()
+        }
+    }
+
+    #[test]
+    fn a_passwordless_uuid_item_with_notes_is_a_note() {
+        let mut entry = stub("My custom title", Some("the body"));
+        classify_stub(&mut entry);
+        assert_eq!(entry.kind, EntryKind::Note);
+        assert_eq!(entry.sites, vec!["My custom title".to_string()]);
+        assert!(entry.url.is_none());
+    }
+
+    #[test]
+    fn a_credit_title_with_notes_stays_a_card() {
+        let mut entry = stub("Credit Card", Some("the body"));
+        classify_stub(&mut entry);
+        assert_eq!(entry.kind, EntryKind::Card);
+    }
+
+    #[test]
+    fn a_secure_note_title_is_a_note_and_a_bare_stub_stays_a_login() {
+        let mut note = stub("Secure Note", None);
+        classify_stub(&mut note);
+        assert_eq!(note.kind, EntryKind::Note);
+
+        let mut associated = stub("example.com", None);
+        associated.password = Some("secret".to_string());
+        classify_stub(&mut associated);
+        assert_eq!(associated.kind, EntryKind::Login);
+        assert_eq!(associated.sites, vec![SITE.to_string()]);
+    }
 }

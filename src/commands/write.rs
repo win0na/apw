@@ -12,13 +12,14 @@ use rand::Rng;
 use serde_json::json;
 
 use crate::ckks::{
-    append_password_change, new_login_plist, new_metadata_dict, new_metadata_plist, plist_bytes,
-    set_metadata_text,
+    append_password_change, new_login_plist, new_metadata_dict, new_metadata_plist,
+    new_note_item_plist, new_wifi_plist, plist_bytes, set_metadata_text, set_metadata_totp,
 };
 use crate::config::{Config, Paths};
 use crate::error::{Error, Result};
 use crate::model::{Entry, EntryKind, OpKind, PendingOp, RecordMeta, Vault};
 use crate::output::{self, Style};
+use crate::totp::{self, TotpSpec};
 use crate::vault;
 
 const GENERATED_CHARSET: &[u8] =
@@ -32,6 +33,7 @@ pub fn add_login(
     username: Option<&str>,
     title: Option<&str>,
     notes: Option<&str>,
+    totp: Option<&str>,
     password_stdin: bool,
     generate: bool,
     dry_run: bool,
@@ -42,6 +44,7 @@ pub fn add_login(
             "pass only one of --password-stdin or --generate".into(),
         ));
     }
+    let totp_spec = totp.map(totp::parse_spec).transpose()?;
     let (url, host) = normalize_url(url)?;
     let password = match (password_stdin, generate) {
         (true, _) => read_stdin_line()?,
@@ -65,6 +68,9 @@ pub fn add_login(
     }
     if let Some(notes) = notes {
         set_metadata_text(&mut metadata, "notes", notes);
+    }
+    if let Some(spec) = &totp_spec {
+        set_metadata_totp(&mut metadata, spec, Utc::now());
     }
     // The outer sidecar item CloudKit receives carries the metadata dictionary
     // in `v_Data`; `metadata_bytes` is the dictionary alone.
@@ -94,6 +100,7 @@ pub fn add_login(
         username: Some(username.to_string()),
         password: Some(password.clone()),
         notes: notes.map(str::to_string),
+        totp: totp_spec.as_ref().map(TotpSpec::to_totp),
         record: Some(RecordMeta {
             zone: "Passwords".into(),
             item_type: "item".into(),
@@ -109,6 +116,7 @@ pub fn add_login(
     let op = PendingOp {
         id: uuid(),
         kind: OpKind::Create,
+        entry_kind: EntryKind::Login,
         zone: "Passwords".into(),
         owner: None,
         item_name: id.clone(),
@@ -174,6 +182,240 @@ pub fn add_login(
     Ok(())
 }
 
+/// Add a Wi-Fi network. One item record in the `WiFi` zone, no sidecar.
+pub fn add_wifi(
+    paths: &Paths,
+    config: &mut Config,
+    ssid: &str,
+    password_stdin: bool,
+    generate: bool,
+    dry_run: bool,
+    style: Style,
+) -> Result<()> {
+    if password_stdin && generate {
+        return Err(Error::Invalid(
+            "pass only one of --password-stdin or --generate".into(),
+        ));
+    }
+    let ssid = ssid.trim();
+    if ssid.is_empty() {
+        return Err(Error::Invalid("a network name is required".into()));
+    }
+    let password = match (password_stdin, generate) {
+        (true, _) => read_stdin_line()?,
+        (_, true) => {
+            let password = generate_password();
+            eprintln!("generated password: {password}");
+            password
+        }
+        _ => prompt_to_make_password()?,
+    };
+
+    let item_b64 = encode(&plist_bytes(&new_wifi_plist(ssid, password.as_bytes()))?);
+    let id = uuid();
+    let entry = Entry {
+        id: id.clone(),
+        kind: EntryKind::Wifi,
+        agrp: Some("apple".into()),
+        title: Some(ssid.to_string()),
+        sites: vec![ssid.to_string()],
+        username: Some(ssid.to_string()),
+        password: Some(password.clone()),
+        record: Some(RecordMeta {
+            zone: "WiFi".into(),
+            item_type: "item".into(),
+            plist: Some(item_b64.clone()),
+            ..RecordMeta::default()
+        }),
+        ..Entry::default()
+    };
+    let label = entry_label(&entry);
+
+    let op = PendingOp {
+        id: uuid(),
+        kind: OpKind::Create,
+        entry_kind: EntryKind::Wifi,
+        zone: "WiFi".into(),
+        owner: None,
+        item_name: id.clone(),
+        item_type: "item".into(),
+        item_base: None,
+        item_new: Some(item_b64),
+        item_etag: None,
+        item_dirty: true,
+        sidecar_name: None,
+        sidecar_type: None,
+        sidecar_base: None,
+        sidecar_new: None,
+        sidecar_write: None,
+        sidecar_etag: None,
+        sidecar_dirty: false,
+        blocked: None,
+        attempts: 0,
+        force: false,
+        label: label.clone(),
+    };
+
+    let mut working = vault::load(paths, config)?;
+    let name = entry.display_name();
+    if dry_run {
+        if style.json {
+            let mut data = json!({
+                "dry_run": true,
+                "id": id,
+                "name": name,
+                "label": label,
+                "pending_id": op.id,
+            });
+            if generate {
+                data["password"] = json!(password);
+            }
+            output::print_json(&output::success(data));
+        } else {
+            println!("would add wifi {id} {name}");
+            println!("would queue create {}", op.id);
+        }
+        return Ok(());
+    }
+
+    working.entries.push(entry);
+    working.pending.push(op.clone());
+    vault::save(paths, config, &working)?;
+
+    if style.json {
+        let mut data = json!({
+            "id": id,
+            "name": name,
+            "label": label,
+            "pending_id": op.id,
+        });
+        if generate {
+            data["password"] = json!(password);
+        }
+        output::print_json(&output::success(data));
+    } else {
+        println!("added {id} {name}");
+        println!("pending {}", op.id);
+    }
+    Ok(())
+}
+
+/// Add a note: a login-shaped stub item plus its metadata sidecar.
+pub fn add_note(
+    paths: &Paths,
+    config: &mut Config,
+    title: &str,
+    body: Option<&str>,
+    body_stdin: bool,
+    dry_run: bool,
+    style: Style,
+) -> Result<()> {
+    if body.is_some() && body_stdin {
+        return Err(Error::Invalid(
+            "pass only one of --body or --body-stdin".into(),
+        ));
+    }
+    let title = title.trim();
+    if title.is_empty() {
+        return Err(Error::Invalid("a note title is required".into()));
+    }
+    let body = if body_stdin {
+        read_stdin_all()?
+    } else {
+        body.unwrap_or("").to_string()
+    };
+
+    let site = uuid();
+    let item_b64 = encode(&plist_bytes(&new_note_item_plist(&site))?);
+
+    let metadata = new_note_metadata(title, &body);
+    let metadata_b64 = encode(&plist_bytes(&Value::Dictionary(metadata.clone()))?);
+    let sidecar_id = uuid();
+    let sidecar_plist = new_metadata_plist(&site, "", &metadata);
+    let sidecar_b64 = encode(&plist_bytes(&sidecar_plist)?);
+
+    let entry = Entry {
+        id: site.clone(),
+        kind: EntryKind::Note,
+        agrp: Some("com.apple.cfnetwork".into()),
+        title: Some(title.to_string()),
+        notes: Some(body.clone()),
+        sites: vec![title.to_string()],
+        record: Some(RecordMeta {
+            zone: "Passwords".into(),
+            item_type: "item".into(),
+            plist: Some(item_b64.clone()),
+            sidecar_name: Some(sidecar_id.clone()),
+            sidecar_type: Some("item".into()),
+            metadata: Some(metadata_b64.clone()),
+            sidecar_plist: Some(sidecar_b64.clone()),
+            ..RecordMeta::default()
+        }),
+        ..Entry::default()
+    };
+    let label = entry_label(&entry);
+
+    let op = PendingOp {
+        id: uuid(),
+        kind: OpKind::Create,
+        entry_kind: EntryKind::Note,
+        zone: "Passwords".into(),
+        owner: None,
+        item_name: site.clone(),
+        item_type: "item".into(),
+        item_base: None,
+        item_new: Some(item_b64),
+        item_etag: None,
+        item_dirty: true,
+        sidecar_name: Some(sidecar_id),
+        sidecar_type: Some("item".into()),
+        sidecar_base: None,
+        sidecar_new: Some(metadata_b64),
+        sidecar_write: Some(sidecar_b64),
+        sidecar_etag: None,
+        sidecar_dirty: true,
+        blocked: None,
+        attempts: 0,
+        force: false,
+        label: label.clone(),
+    };
+
+    let mut working = vault::load(paths, config)?;
+    let name = entry.display_name();
+    if dry_run {
+        if style.json {
+            output::print_json(&output::success(json!({
+                "dry_run": true,
+                "id": site,
+                "name": name,
+                "label": label,
+                "pending_id": op.id,
+            })));
+        } else {
+            println!("would add note {site} {name}");
+            println!("would queue create {}", op.id);
+        }
+        return Ok(());
+    }
+
+    working.entries.push(entry);
+    working.pending.push(op.clone());
+    vault::save(paths, config, &working)?;
+
+    if style.json {
+        output::print_json(&output::success(json!({
+            "id": site,
+            "name": name,
+            "label": label,
+            "pending_id": op.id,
+        })));
+    } else {
+        println!("added {site} {name}");
+        println!("pending {}", op.id);
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn edit(
     paths: &Paths,
@@ -185,6 +427,8 @@ pub fn edit(
     clear_notes: bool,
     password_stdin: bool,
     generate: bool,
+    totp_flag: Option<&str>,
+    clear_totp: bool,
     dry_run: bool,
     style: Style,
 ) -> Result<()> {
@@ -196,6 +440,11 @@ pub fn edit(
     if notes_flag.is_some() && clear_notes {
         return Err(Error::Invalid(
             "pass only one of --notes or --clear-notes".into(),
+        ));
+    }
+    if totp_flag.is_some() && clear_totp {
+        return Err(Error::Invalid(
+            "pass only one of --totp or --clear-totp".into(),
         ));
     }
 
@@ -231,43 +480,90 @@ pub fn edit(
         }
     };
 
+    let wifi = entry.kind == EntryKind::Wifi;
+    let note = entry.kind == EntryKind::Note;
+    if wifi
+        && (title_flag.is_some()
+            || notes_flag.is_some()
+            || clear_notes
+            || totp_flag.is_some()
+            || clear_totp)
+    {
+        return Err(Error::Invalid(format!(
+            "{} is a Wi-Fi network; only its password can change (the SSID is the join key)",
+            entry.display_name()
+        )));
+    }
+    if note && (password_stdin || generate || totp_flag.is_some() || clear_totp) {
+        return Err(Error::Invalid(format!(
+            "{} is a note; it has a title and body, not a password or one-time code",
+            entry.display_name()
+        )));
+    }
+
+    let totp_spec = totp_flag.map(totp::parse_spec).transpose()?;
+
     let mut new_title = entry.title.clone();
     let mut new_notes = entry.notes.clone();
     let mut new_password = entry.password.clone();
+    let mut new_totp = entry.totp.clone();
     let mut title_changed = false;
     let mut notes_changed = false;
     let mut password_changed = false;
+    let mut totp_changed = false;
 
-    if let Some(value) = title_flag {
-        title_changed = true;
-        if value.is_empty() {
-            metadata.remove("title");
-            new_title = None;
-        } else {
-            set_metadata_text(&mut metadata, "title", value);
-            new_title = Some(value.to_string());
+    if !wifi {
+        if let Some(value) = title_flag {
+            title_changed = true;
+            if value.is_empty() {
+                metadata.remove("title");
+                new_title = None;
+            } else {
+                set_metadata_text(&mut metadata, "title", value);
+                new_title = Some(value.to_string());
+            }
+        }
+        if clear_notes {
+            notes_changed = true;
+            metadata.remove("notes");
+            new_notes = None;
+        } else if let Some(value) = notes_flag {
+            notes_changed = true;
+            set_metadata_text(&mut metadata, "notes", value);
+            new_notes = Some(value.to_string());
         }
     }
-    if clear_notes {
-        notes_changed = true;
-        metadata.remove("notes");
-        new_notes = None;
-    } else if let Some(value) = notes_flag {
-        notes_changed = true;
-        set_metadata_text(&mut metadata, "notes", value);
-        new_notes = Some(value.to_string());
+    if !note {
+        if password_stdin {
+            let value = read_stdin_line()?;
+            if wifi {
+                item.insert("v_Data".into(), Value::Data(value.as_bytes().to_vec()));
+            } else {
+                apply_password(&mut item, &mut metadata, &value);
+            }
+            new_password = Some(value);
+            password_changed = true;
+        } else if generate {
+            let value = generate_password();
+            eprintln!("generated password: {value}");
+            if wifi {
+                item.insert("v_Data".into(), Value::Data(value.as_bytes().to_vec()));
+            } else {
+                apply_password(&mut item, &mut metadata, &value);
+            }
+            new_password = Some(value);
+            password_changed = true;
+        }
     }
-    if password_stdin {
-        let value = read_stdin_line()?;
-        apply_password(&mut item, &mut metadata, &value);
-        new_password = Some(value);
-        password_changed = true;
-    } else if generate {
-        let value = generate_password();
-        eprintln!("generated password: {value}");
-        apply_password(&mut item, &mut metadata, &value);
-        new_password = Some(value);
-        password_changed = true;
+    if let Some(spec) = &totp_spec {
+        set_metadata_totp(&mut metadata, spec, Utc::now());
+        new_totp = Some(spec.to_totp());
+        totp_changed = true;
+    }
+    if clear_totp {
+        metadata.remove("totp");
+        new_totp = None;
+        totp_changed = true;
     }
 
     let interactive = title_flag.is_none()
@@ -275,31 +571,42 @@ pub fn edit(
         && !clear_notes
         && !password_stdin
         && !generate
+        && totp_flag.is_none()
+        && !clear_totp
         && !dry_run;
     if interactive {
-        if let Some(value) = prompt_text("Title", entry.title.as_deref())? {
-            title_changed = true;
-            set_metadata_text(&mut metadata, "title", &value);
-            new_title = Some(value);
-        }
-        if let Some(value) = prompt_text("Notes", entry.notes.as_deref())? {
-            notes_changed = true;
-            set_metadata_text(&mut metadata, "notes", &value);
-            new_notes = Some(value);
-        }
-        let entered = rpassword::prompt_password("Password (Enter keeps the current password): ")?;
-        if !entered.is_empty() {
-            let again = rpassword::prompt_password("Password again: ")?;
-            if entered != again {
-                return Err(Error::Invalid("passwords do not match".into()));
+        if !wifi {
+            if let Some(value) = prompt_text("Title", entry.title.as_deref())? {
+                title_changed = true;
+                set_metadata_text(&mut metadata, "title", &value);
+                new_title = Some(value);
             }
-            apply_password(&mut item, &mut metadata, &entered);
-            new_password = Some(entered);
-            password_changed = true;
+            if let Some(value) = prompt_text("Notes", entry.notes.as_deref())? {
+                notes_changed = true;
+                set_metadata_text(&mut metadata, "notes", &value);
+                new_notes = Some(value);
+            }
+        }
+        if !note {
+            let entered =
+                rpassword::prompt_password("Password (Enter keeps the current password): ")?;
+            if !entered.is_empty() {
+                let again = rpassword::prompt_password("Password again: ")?;
+                if entered != again {
+                    return Err(Error::Invalid("passwords do not match".into()));
+                }
+                if wifi {
+                    item.insert("v_Data".into(), Value::Data(entered.as_bytes().to_vec()));
+                } else {
+                    apply_password(&mut item, &mut metadata, &entered);
+                }
+                new_password = Some(entered);
+                password_changed = true;
+            }
         }
     }
 
-    if !title_changed && !notes_changed && !password_changed {
+    if !title_changed && !notes_changed && !password_changed && !totp_changed {
         if style.json {
             output::print_json(&output::success(json!({
                 "id": entry.id,
@@ -312,7 +619,8 @@ pub fn edit(
         return Ok(());
     }
 
-    let sidecar_write = if title_changed || notes_changed {
+    let sidecar_changed = title_changed || notes_changed || totp_changed;
+    let sidecar_write = if sidecar_changed {
         Some(encode(&sidecar_plist(
             record.sidecar_plist.as_deref(),
             &item,
@@ -322,7 +630,12 @@ pub fn edit(
         None
     };
     let item_new = encode(&plist_bytes(&Value::Dictionary(item))?);
-    let metadata_new = encode(&plist_bytes(&Value::Dictionary(metadata))?);
+    // A Wi-Fi record has no sidecar; leave the stored metadata untouched.
+    let metadata_new = if wifi {
+        None
+    } else {
+        Some(encode(&plist_bytes(&Value::Dictionary(metadata))?))
+    };
     let label = entry_label(&Entry {
         title: new_title.clone(),
         notes: new_notes.clone(),
@@ -333,6 +646,7 @@ pub fn edit(
     let op = PendingOp {
         id: uuid(),
         kind: OpKind::Edit,
+        entry_kind: entry.kind,
         zone: record.zone.clone(),
         owner: None,
         item_name: entry.id.clone(),
@@ -344,10 +658,10 @@ pub fn edit(
         sidecar_name: record.sidecar_name.clone(),
         sidecar_type: record.sidecar_type.clone(),
         sidecar_base: record.metadata.clone(),
-        sidecar_new: Some(metadata_new),
+        sidecar_new: metadata_new,
         sidecar_write,
         sidecar_etag: record.sidecar_etag.clone(),
-        sidecar_dirty: title_changed || notes_changed,
+        sidecar_dirty: sidecar_changed,
         blocked: None,
         attempts: 0,
         force: false,
@@ -361,6 +675,10 @@ pub fn edit(
         entry.title = new_title;
         entry.notes = new_notes;
         entry.password = new_password;
+        entry.totp = new_totp;
+        if note {
+            entry.sites = entry.title.iter().cloned().collect();
+        }
         entry.display_name()
     };
 
@@ -431,6 +749,7 @@ pub fn rm(
     let op = PendingOp {
         id: uuid(),
         kind: OpKind::Delete,
+        entry_kind: entry.kind,
         zone: record.zone.clone(),
         owner: None,
         item_name: entry.id.clone(),
@@ -589,6 +908,16 @@ pub fn resolve(
     Ok(())
 }
 
+/// The metadata dictionary a new note starts from: a title, a body, an empty
+/// `s_as`, and no password history.
+fn new_note_metadata(title: &str, body: &str) -> Dictionary {
+    let mut metadata = new_metadata_dict();
+    metadata.insert("s_as".into(), Value::Array(Vec::new()));
+    set_metadata_text(&mut metadata, "title", title);
+    set_metadata_text(&mut metadata, "notes", body);
+    metadata
+}
+
 /// A fresh dashed uppercase UUID, matching the record names CloudKit uses.
 fn uuid() -> String {
     crate::model::record_name()
@@ -695,13 +1024,26 @@ fn prompt_to_make_password() -> Result<String> {
 fn read_stdin_line() -> Result<String> {
     let mut line = String::new();
     std::io::stdin().read_line(&mut line)?;
-    if line.ends_with('\n') {
-        line.pop();
-        if line.ends_with('\r') {
-            line.pop();
+    strip_newline(&mut line);
+    Ok(line)
+}
+
+/// Read all of stdin for a multi-line body, stripping the final newline.
+fn read_stdin_all() -> Result<String> {
+    use std::io::Read;
+    let mut text = String::new();
+    std::io::stdin().read_to_string(&mut text)?;
+    strip_newline(&mut text);
+    Ok(text)
+}
+
+fn strip_newline(text: &mut String) {
+    if text.ends_with('\n') {
+        text.pop();
+        if text.ends_with('\r') {
+            text.pop();
         }
     }
-    Ok(line)
 }
 
 fn prompt_text(label: &str, current: Option<&str>) -> Result<Option<String>> {
@@ -743,6 +1085,7 @@ fn merge_edit(pending: &mut Vec<PendingOp>, op: PendingOp) -> PendingOp {
         }
         existing.item_dirty |= op.item_dirty;
         existing.sidecar_dirty |= op.sidecar_dirty;
+        existing.entry_kind = op.entry_kind;
         existing.blocked = None;
         existing.attempts = 0;
         existing.label = op.label;
@@ -783,8 +1126,10 @@ fn find_entry(vault: &Vault, query: Option<&str>, id: Option<&str>) -> Result<us
                 .iter()
                 .enumerate()
                 .filter(|(_, entry)| {
-                    entry.kind == EntryKind::Login
-                        && !entry.is_placeholder()
+                    matches!(
+                        entry.kind,
+                        EntryKind::Login | EntryKind::Note | EntryKind::Wifi
+                    ) && !entry.is_placeholder()
                         && entry.matches(query)
                 })
                 .map(|(index, _)| index)
@@ -810,6 +1155,9 @@ fn find_entry(vault: &Vault, query: Option<&str>, id: Option<&str>) -> Result<us
 /// The label shown for a queued op: the entry name, else its domain, plus the
 /// username when there is one.
 fn entry_label(entry: &Entry) -> String {
+    if entry.kind == EntryKind::Wifi {
+        return entry.display_name();
+    }
     let mut label = entry.display_name();
     if label.is_empty() {
         label = entry.domain();
@@ -840,5 +1188,28 @@ fn kind_name(kind: OpKind) -> &'static str {
         OpKind::Create => "create",
         OpKind::Edit => "edit",
         OpKind::Delete => "delete",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn note_metadata_stores_title_and_body_as_data() {
+        let metadata = new_note_metadata("Trip ideas", "Pack light");
+        assert_eq!(
+            metadata.get("title").and_then(Value::as_data),
+            Some(b"Trip ideas".as_slice())
+        );
+        assert_eq!(
+            metadata.get("notes").and_then(Value::as_data),
+            Some(b"Pack light".as_slice())
+        );
+        assert_eq!(
+            metadata.get("s_as").and_then(Value::as_array).map(Vec::len),
+            Some(0)
+        );
+        assert!(metadata.get("s_hi").is_none());
     }
 }

@@ -621,6 +621,94 @@ pub fn new_login_plist(site: &str, username: &str, password: &[u8]) -> plist::Va
     Value::Dictionary(dict)
 }
 
+/// Build a create-only Wi-Fi item plist.
+///
+/// Apple stores Wi-Fi credentials as a generic password in the `WiFi` zone
+/// with the access group `apple` and the service name `AirPort`. The key set
+/// matches a live account record exactly; no sidecar exists for these.
+pub fn new_wifi_plist(ssid: &str, password: &[u8]) -> plist::Value {
+    let mut dict = Dictionary::new();
+    dict.insert("acct".into(), Value::String(ssid.into()));
+    dict.insert("agrp".into(), Value::String("apple".into()));
+    dict.insert("cdat".into(), now_date());
+    dict.insert("class".into(), Value::String("genp".into()));
+    dict.insert(
+        "desc".into(),
+        Value::String("AirPort network password".into()),
+    );
+    dict.insert("labl".into(), Value::String(ssid.into()));
+    dict.insert("mdat".into(), now_date());
+    dict.insert("musr".into(), Value::Data(Vec::new()));
+    dict.insert("pdmn".into(), Value::String("ck".into()));
+    dict.insert("sha1".into(), Value::Data(random_bytes::<20>().to_vec()));
+    dict.insert("svce".into(), Value::String("AirPort".into()));
+    dict.insert("tomb".into(), Value::from(0i64));
+    dict.insert("v_Data".into(), Value::Data(password.to_vec()));
+    Value::Dictionary(dict)
+}
+
+/// Build a create-only note item plist.
+///
+/// Apple writes a note as a login-shaped `inet` stub whose site is a fresh
+/// UUID. The label and server are `<uuid> ()` and the secret is empty; the
+/// title and body live in the sidecar metadata record.
+pub fn new_note_item_plist(site_uuid: &str) -> plist::Value {
+    let mut dict = Dictionary::new();
+    dict.insert("acct".into(), Value::String(String::new()));
+    dict.insert("agrp".into(), Value::String("com.apple.cfnetwork".into()));
+    dict.insert("atyp".into(), Value::String("form".into()));
+    dict.insert("cdat".into(), now_date());
+    dict.insert("class".into(), Value::String("inet".into()));
+    dict.insert("desc".into(), Value::String("Web form password".into()));
+    dict.insert("labl".into(), Value::String(format!("{site_uuid} ()")));
+    dict.insert("mdat".into(), now_date());
+    dict.insert("musr".into(), Value::Data(Vec::new()));
+    dict.insert("path".into(), Value::String(String::new()));
+    dict.insert("pdmn".into(), Value::String("ak".into()));
+    dict.insert("port".into(), Value::from(0i64));
+    dict.insert("ptcl".into(), Value::String("htps".into()));
+    dict.insert("sdmn".into(), Value::String(String::new()));
+    dict.insert("sha1".into(), Value::Data(random_bytes::<20>().to_vec()));
+    dict.insert("srvr".into(), Value::String(site_uuid.into()));
+    dict.insert("tomb".into(), Value::from(0i64));
+    dict.insert("v_Data".into(), Value::Data(Vec::new()));
+    Value::Dictionary(dict)
+}
+
+/// Write a one-time-code dictionary into password-manager metadata.
+///
+/// The shape matches what Apple writes for a login with an authenticator:
+/// raw base32-decoded secret bytes, `algorithm` as 0/1/2, and `_initialDate`
+/// pinned to the Unix epoch so the counter is plain TOTP time.
+pub fn set_metadata_totp(
+    metadata: &mut Dictionary,
+    spec: &crate::totp::TotpSpec,
+    now: chrono::DateTime<chrono::Utc>,
+) {
+    // `now` keeps callers on one clock with the surrounding metadata writes;
+    // Apple pins `_initialDate` to the epoch rather than the creation time.
+    let _ = now;
+    let mut totp = Dictionary::new();
+    totp.insert("secret".into(), Value::Data(spec.secret.clone()));
+    totp.insert("digits".into(), Value::from(u64::from(spec.digits)));
+    totp.insert("period".into(), Value::from(u64::from(spec.period)));
+    totp.insert("algorithm".into(), Value::from(u64::from(spec.algorithm)));
+    totp.insert(
+        "_initialDate".into(),
+        Value::Date(plist::Date::from(std::time::UNIX_EPOCH)),
+    );
+    if let Some(issuer) = &spec.issuer {
+        totp.insert("issuer".into(), Value::String(issuer.clone()));
+    }
+    if let Some(account) = &spec.account_name {
+        totp.insert("accountName".into(), Value::String(account.clone()));
+    }
+    if let Some(url) = &spec.original_url {
+        totp.insert("originalURL".into(), Value::String(url.clone()));
+    }
+    metadata.insert("totp".into(), Value::Dictionary(totp));
+}
+
 /// A fresh, empty password-manager metadata dictionary.
 pub fn new_metadata_dict() -> Dictionary {
     Dictionary::new()
@@ -1223,5 +1311,83 @@ mod tests {
         .map(str::to_string)
         .collect();
         assert_eq!(key_set(&value), expected);
+    }
+
+    #[test]
+    fn wifi_plist_has_the_observed_keys() {
+        let value = new_wifi_plist("HomeNet", b"hunter2");
+        let expected: std::collections::BTreeSet<String> = [
+            "acct", "agrp", "cdat", "class", "desc", "labl", "mdat", "musr", "pdmn", "sha1",
+            "svce", "tomb", "v_Data",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+        assert_eq!(key_set(&value), expected);
+
+        let dict = value.as_dictionary().unwrap();
+        assert_eq!(dict.get("svce").and_then(Value::as_string), Some("AirPort"));
+        assert_eq!(dict.get("class").and_then(Value::as_string), Some("genp"));
+        assert_eq!(dict.get("acct").and_then(Value::as_string), Some("HomeNet"));
+        assert_eq!(dict.get("labl").and_then(Value::as_string), Some("HomeNet"));
+        assert_eq!(
+            dict.get("v_Data").and_then(Value::as_data),
+            Some(b"hunter2".as_slice())
+        );
+    }
+
+    #[test]
+    fn note_plist_is_a_stub_with_a_matching_site() {
+        let site = "6F1C2A4E-0B7D-4C3A-9E55-1234567890AB";
+        let value = new_note_item_plist(site);
+        let expected: std::collections::BTreeSet<String> = [
+            "acct", "agrp", "atyp", "cdat", "class", "desc", "labl", "mdat", "musr", "path",
+            "pdmn", "port", "ptcl", "sdmn", "sha1", "srvr", "tomb", "v_Data",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+        assert_eq!(key_set(&value), expected);
+
+        let dict = value.as_dictionary().unwrap();
+        assert_eq!(dict.get("srvr").and_then(Value::as_string), Some(site));
+        let label = dict.get("labl").and_then(Value::as_string).unwrap();
+        assert_eq!(label, format!("{site} ()"));
+        assert_eq!(
+            dict.get("v_Data").and_then(Value::as_data).map(<[u8]>::len),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn totp_metadata_round_trips_through_the_reader() {
+        let spec = crate::totp::TotpSpec {
+            secret: b"Hello!\xde\xad\xbe\xef".to_vec(),
+            digits: 8,
+            period: 60,
+            algorithm: 1,
+            issuer: Some("Example".into()),
+            account_name: Some("alice".into()),
+            original_url: Some("otpauth://totp/Example:alice?secret=JBSWY3DPEHPK3PXP".into()),
+        };
+        let mut metadata = new_metadata_dict();
+        set_metadata_totp(&mut metadata, &spec, chrono::Utc::now());
+
+        let dict = metadata
+            .get("totp")
+            .and_then(Value::as_dictionary)
+            .expect("totp dictionary");
+        let parsed = totp_from_dict(dict).expect("reads back");
+        assert_eq!(parsed.secret, "JBSWY3DPEHPK3PXP");
+        assert_eq!(parsed.digits, 8);
+        assert_eq!(parsed.period, 60);
+        assert_eq!(parsed.algorithm, Algorithm::Sha256);
+        assert_eq!(parsed.issuer.as_deref(), Some("Example"));
+        assert_eq!(parsed.account_name.as_deref(), Some("alice"));
+        assert!(dict.get("_initialDate").is_some());
+        assert_eq!(
+            dict.get("originalURL").and_then(Value::as_string),
+            Some("otpauth://totp/Example:alice?secret=JBSWY3DPEHPK3PXP")
+        );
     }
 }

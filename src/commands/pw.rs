@@ -1,3 +1,5 @@
+use serde_json::json;
+
 use crate::commands::login_result;
 use crate::config::{Config, Paths};
 use crate::error::{Error, Result};
@@ -87,6 +89,55 @@ pub fn wifi(paths: &Paths, config: &mut Config, query: Option<&str>, style: Styl
         .collect::<Vec<_>>();
     output::print_table_opts(&["NETWORK"], &rows, style.no_header, style.wide);
     Ok(())
+}
+
+/// List notes: a name and a one-line preview of the body.
+pub fn notes(paths: &Paths, config: &mut Config, query: Option<&str>, style: Style) -> Result<()> {
+    let vault = vault::load(paths, config)?;
+    let mut entries: Vec<_> = vault
+        .entries
+        .iter()
+        .filter(|entry| entry.kind == EntryKind::Note)
+        .filter(|entry| query.is_none_or(|value| entry.matches(value)))
+        .collect();
+    entries.sort_by_key(|entry| entry.display_name().to_lowercase());
+
+    if style.json {
+        let data = entries
+            .iter()
+            .map(|entry| {
+                json!({
+                    "id": entry.id,
+                    "name": entry.display_name(),
+                    "title": entry.title.clone().unwrap_or_default(),
+                    "notes": entry.notes.clone().unwrap_or_default(),
+                    "url": entry.url.clone().unwrap_or_default(),
+                })
+            })
+            .collect::<Vec<_>>();
+        output::print_json(&output::success(data.into()));
+        return Ok(());
+    }
+
+    let rows = entries
+        .iter()
+        .map(|entry| vec![entry.display_name(), body_preview(entry.notes.as_deref())])
+        .collect::<Vec<_>>();
+    output::print_table_opts(&["NAME", "BODY"], &rows, style.no_header, style.wide);
+    Ok(())
+}
+
+/// The first line of a note body, shortened to fit a table row.
+fn body_preview(notes: Option<&str>) -> String {
+    let text = notes.unwrap_or("");
+    let line = text.lines().next().unwrap_or("").trim();
+    if line.chars().count() > 60 {
+        let mut preview: String = line.chars().take(57).collect();
+        preview.push_str("...");
+        preview
+    } else {
+        line.to_string()
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

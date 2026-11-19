@@ -95,6 +95,11 @@ pub enum Command {
         /// Filter by network name.
         query: Option<String>,
     },
+    /// List notes.
+    Notes {
+        /// Filter by name or body.
+        query: Option<String>,
+    },
     /// List one-time codes, or print the code for a query.
     Otp {
         /// Name, domain, or username. When given, prints just the code.
@@ -126,6 +131,12 @@ pub enum Command {
         /// Remove the notes.
         #[arg(long)]
         clear_notes: bool,
+        /// Set the one-time-code secret from an otpauth URI or bare base32.
+        #[arg(long)]
+        totp: Option<String>,
+        /// Remove the one-time code.
+        #[arg(long)]
+        clear_totp: bool,
         /// Read the new password from the first line of stdin.
         #[arg(long)]
         password_stdin: bool,
@@ -192,6 +203,18 @@ pub enum Command {
     /// Count snapshot records by kind.
     #[command(hide = true)]
     ProbeStats,
+    /// Print one CloudKit record's fields.
+    #[command(hide = true)]
+    ProbeRecord { zone: String, name: String },
+    /// Print the redacted key structure of stored item plists.
+    #[command(hide = true)]
+    ProbeStructure {
+        /// Limit to one kind: login, note, card, wifi, passkey.
+        kind: Option<String>,
+        /// How many entries to print (default 3).
+        #[arg(long, default_value_t = 3)]
+        limit: usize,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -209,12 +232,43 @@ pub enum AddItem {
         /// Notes for the entry.
         #[arg(long)]
         notes: Option<String>,
+        /// Set the one-time-code secret from an otpauth URI or bare base32.
+        #[arg(long)]
+        totp: Option<String>,
         /// Read the password from the first line of stdin.
         #[arg(long)]
         password_stdin: bool,
         /// Generate a 20-character password.
         #[arg(long)]
         generate: bool,
+        /// Show what would be added without saving.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Add a Wi-Fi network.
+    Wifi {
+        /// Network name (SSID).
+        ssid: String,
+        /// Read the password from the first line of stdin.
+        #[arg(long)]
+        password_stdin: bool,
+        /// Generate a 20-character password.
+        #[arg(long)]
+        generate: bool,
+        /// Show what would be added without saving.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Add a note.
+    Note {
+        /// Note title.
+        title: String,
+        /// Note body.
+        #[arg(long)]
+        body: Option<String>,
+        /// Read the body from stdin.
+        #[arg(long)]
+        body_stdin: bool,
         /// Show what would be added without saving.
         #[arg(long)]
         dry_run: bool,
@@ -274,6 +328,7 @@ fn execute(cli: Cli) -> Result<()> {
             | Command::ProbeZones
             | Command::ProbeGroup { .. }
             | Command::ProbeStats
+            | Command::ProbeStructure { .. }
     ) {
         Some(crate::config::lock_snapshot(&paths)?)
     } else {
@@ -285,6 +340,7 @@ fn execute(cli: Cli) -> Result<()> {
         Command::List { .. }
             | Command::Get { .. }
             | Command::Wifi { .. }
+            | Command::Notes { .. }
             | Command::Otp { .. }
             | Command::Pending
     );
@@ -352,6 +408,9 @@ fn execute(cli: Cli) -> Result<()> {
             )
         }
         Command::Wifi { query } => commands::pw::wifi(&paths, &mut config, query.as_deref(), style),
+        Command::Notes { query } => {
+            commands::pw::notes(&paths, &mut config, query.as_deref(), style)
+        }
         Command::Otp { query } => {
             let mut style = style;
             // `$(apw otp x)` must be a code, not JSON.
@@ -367,6 +426,7 @@ fn execute(cli: Cli) -> Result<()> {
                 username,
                 title,
                 notes,
+                totp,
                 password_stdin,
                 generate,
                 dry_run,
@@ -377,8 +437,37 @@ fn execute(cli: Cli) -> Result<()> {
                 username.as_deref(),
                 title.as_deref(),
                 notes.as_deref(),
+                totp.as_deref(),
                 password_stdin,
                 generate,
+                dry_run,
+                style,
+            ),
+            AddItem::Wifi {
+                ssid,
+                password_stdin,
+                generate,
+                dry_run,
+            } => commands::write::add_wifi(
+                &paths,
+                &mut config,
+                &ssid,
+                password_stdin,
+                generate,
+                dry_run,
+                style,
+            ),
+            AddItem::Note {
+                title,
+                body,
+                body_stdin,
+                dry_run,
+            } => commands::write::add_note(
+                &paths,
+                &mut config,
+                &title,
+                body.as_deref(),
+                body_stdin,
                 dry_run,
                 style,
             ),
@@ -389,6 +478,8 @@ fn execute(cli: Cli) -> Result<()> {
             title,
             notes,
             clear_notes,
+            totp,
+            clear_totp,
             password_stdin,
             generate,
             dry_run,
@@ -402,6 +493,8 @@ fn execute(cli: Cli) -> Result<()> {
             clear_notes,
             password_stdin,
             generate,
+            totp.as_deref(),
+            clear_totp,
             dry_run,
             style,
         ),
@@ -435,5 +528,11 @@ fn execute(cli: Cli) -> Result<()> {
             commands::probe::group(&paths, &mut config, &zone, style.json)
         }
         Command::ProbeStats => commands::probe::stats(&paths, &mut config, style.json),
+        Command::ProbeRecord { zone, name } => {
+            commands::probe::record(&paths, &mut config, &zone, &name, style.json)
+        }
+        Command::ProbeStructure { kind, limit } => {
+            commands::probe::structure(&paths, &mut config, kind.as_deref(), limit, style.json)
+        }
     }
 }

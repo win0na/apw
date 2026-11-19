@@ -441,3 +441,219 @@ pub fn refresh(paths: &Paths, config: &mut Config, json: bool) -> Result<()> {
     }
     Ok(())
 }
+
+/// Print the key structure of stored item plists without values. Notes and
+/// cards keep their text in `v_Data`, so only types and lengths are shown.
+pub fn structure(
+    paths: &Paths,
+    config: &mut Config,
+    kind: Option<&str>,
+    limit: usize,
+    json: bool,
+) -> Result<()> {
+    use base64::Engine;
+
+    let wanted = match kind.map(str::to_lowercase).as_deref() {
+        None => None,
+        Some("login") => Some(crate::model::EntryKind::Login),
+        Some("note") => Some(crate::model::EntryKind::Note),
+        Some("card") => Some(crate::model::EntryKind::Card),
+        Some("wifi") => Some(crate::model::EntryKind::Wifi),
+        Some("passkey") => Some(crate::model::EntryKind::Passkey),
+        Some(other) => {
+            return Err(Error::Invalid(format!(
+                "unknown kind {other}; use login, note, card, wifi or passkey"
+            )))
+        }
+    };
+
+    let snapshot = vault::load(paths, config)?;
+    let mut rows = Vec::new();
+    for entry in &snapshot.entries {
+        if wanted.is_some_and(|kind| entry.kind != kind) {
+            continue;
+        }
+        let Some(record) = &entry.record else {
+            continue;
+        };
+        let Some(plist) = record.plist.as_deref() else {
+            continue;
+        };
+        let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(plist) else {
+            continue;
+        };
+        let Ok(value) = plist::from_bytes::<plist::Value>(&bytes) else {
+            continue;
+        };
+        rows.push(serde_json::json!({
+            "id": entry.id,
+            "kind": format!("{:?}", entry.kind).to_lowercase(),
+            "record_type": record.item_type,
+            "entry_agrp": entry.agrp,
+            "entry_title": entry.title,
+            "entry_kind": format!("{:?}", entry.kind),
+            "notes_len": entry.notes.as_ref().map(String::len),
+            "metadata": record.metadata.as_deref().and_then(|encoded| {
+                let bytes = base64::engine::general_purpose::STANDARD.decode(encoded).ok()?;
+                let value = plist::from_bytes::<plist::Value>(&bytes).ok()?;
+                Some(describe_plist(&value))
+            }),
+            "keys": describe_plist(&value),
+        }));
+        if rows.len() >= limit {
+            break;
+        }
+    }
+
+    if output::use_json(json) {
+        output::print_json(&output::success(serde_json::Value::Array(rows)));
+    } else if rows.is_empty() {
+        println!("no stored {} records with a plist", kind.unwrap_or("item"));
+    } else {
+        for row in &rows {
+            println!(
+                "{} {} {}",
+                row["id"].as_str().unwrap_or(""),
+                row["kind"].as_str().unwrap_or(""),
+                row["record_type"].as_str().unwrap_or("")
+            );
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&row["keys"]).unwrap_or_default()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn describe_plist(value: &plist::Value) -> serde_json::Value {
+    use plist::Value;
+    match value {
+        Value::String(text) if text.len() <= 80 => {
+            serde_json::json!(format!("string[{}]={text}", text.len()))
+        }
+        Value::String(text) => serde_json::json!(format!("string[{}]", text.len())),
+        Value::Data(bytes) => serde_json::json!(format!("data[{}]", bytes.len())),
+        Value::Integer(number) => serde_json::json!(format!("int({number})")),
+        Value::Real(number) => serde_json::json!(format!("real({number})")),
+        Value::Boolean(flag) => serde_json::json!(format!("bool({flag})")),
+        Value::Date(date) => serde_json::json!(format!("date({})", date.to_xml_format())),
+        Value::Array(items) => serde_json::json!({
+            "array": items.len(),
+            "first": items.first().map(describe_plist),
+        }),
+        Value::Dictionary(dict) => {
+            let mut map = serde_json::Map::new();
+            for (key, value) in dict {
+                let described = match (key.as_str(), value) {
+                    ("sha1", plist::Value::Data(bytes)) => {
+                        serde_json::json!(format!("sha1[{}]", hex(bytes)))
+                    }
+                    _ => describe_plist(value),
+                };
+                map.insert(key.clone(), described);
+            }
+            serde_json::Value::Object(map)
+        }
+        _ => serde_json::json!("uid"),
+    }
+}
+
+/// Print one record's fields as stored on the server. Text is shown; bytes are
+/// shown as length only, which is enough to compare a written item with one
+/// Apple wrote.
+pub fn record(
+    paths: &Paths,
+    config: &mut Config,
+    zone: &str,
+    name: &str,
+    json: bool,
+) -> Result<()> {
+    let snapshot = vault::load(paths, config)?;
+    let session = snapshot
+        .session
+        .clone()
+        .ok_or_else(|| Error::Auth("run `apw login` first".into()))?;
+    let url = config
+        .anisette_url()
+        .ok_or_else(|| Error::Invalid("set an anisette URL in the config".into()))?;
+
+    let record = block_on(async {
+        let identity = Anisette::new(&url).identity().await?;
+        let mac = Anisette::new(&url)
+            .identity_for(Some("macos"))
+            .await
+            .unwrap_or_else(|_| identity.clone());
+        let gateway = crate::cloudkit::Gateway::bootstrap(
+            &session,
+            &mac,
+            crate::cloudkit::CONTAINER,
+            crate::cloudkit::Scope::Private,
+        )
+        .await?;
+        let (record, matched) = gateway.retrieve_record(zone, None, name, None).await?;
+        Ok::<_, Error>((record, matched))
+    })?;
+    let (record, matched) = record;
+
+    let fields: serde_json::Map<String, serde_json::Value> = record
+        .fields
+        .iter()
+        .map(|(key, value)| {
+            let described = match value {
+                crate::cloudkit::FieldValue::Text(text) if text.len() <= 60 => {
+                    serde_json::json!(format!("text={text}"))
+                }
+                crate::cloudkit::FieldValue::Text(text) => {
+                    serde_json::json!(format!("text[{}]", text.len()))
+                }
+                crate::cloudkit::FieldValue::Bytes(bytes) => {
+                    serde_json::json!(format!("bytes[{}]", bytes.len()))
+                }
+                crate::cloudkit::FieldValue::Int(number) => {
+                    serde_json::json!(format!("int={number}"))
+                }
+                crate::cloudkit::FieldValue::Double(number) => {
+                    serde_json::json!(format!("double={number}"))
+                }
+                crate::cloudkit::FieldValue::Date(date) => {
+                    serde_json::json!(format!("date={date:?}"))
+                }
+                crate::cloudkit::FieldValue::Reference(target) => {
+                    serde_json::json!(format!("ref={target}"))
+                }
+            };
+            (key.clone(), described)
+        })
+        .collect();
+
+    let body = serde_json::json!([{
+        "name": record.name,
+        "type": record.record_type,
+        "etag": record.etag,
+        "zone": record.zone,
+        "owner": record.owner,
+        "etag_match": matched,
+        "protection_info": record.protection_info.as_ref().map(Vec::len),
+        "pcs_key": record.pcs_key.as_ref().map(Vec::len),
+        "share_info": record.share_info.is_some(),
+        "fields": fields,
+    }]);
+    if output::use_json(json) {
+        output::print_json(&output::success(body));
+    } else {
+        println!(
+            "{} {} etag={:?}",
+            record.name, record.record_type, record.etag
+        );
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&body[0]["fields"]).unwrap_or_default()
+        );
+    }
+    Ok(())
+}
