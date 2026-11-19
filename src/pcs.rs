@@ -7,17 +7,18 @@
 
 use std::fmt::Write as _;
 
-use aes::cipher::{BlockDecrypt, KeyInit as BlockKeyInit};
+use aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit as BlockKeyInit};
 use aes::Aes128;
 use aes_gcm::aead::consts::U12;
 use aes_gcm::aead::{Aead, Payload};
 use aes_gcm::{AesGcm, Nonce};
 use hmac::{Hmac, Mac};
 use p256::ecdh::diffie_hellman;
-use p256::ecdsa::signature::hazmat::PrehashVerifier;
-use p256::ecdsa::{Signature as EcdsaSignature, VerifyingKey};
+use p256::ecdsa::signature::hazmat::{PrehashSigner, PrehashVerifier};
+use p256::ecdsa::{Signature as EcdsaSignature, SigningKey, VerifyingKey};
 use p256::elliptic_curve::sec1::ToEncodedPoint;
 use p256::{PublicKey, SecretKey};
+use rand::RngCore;
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
 
@@ -188,13 +189,19 @@ pub struct PcsSignature {
 
 impl PcsSignature {
     fn encode(&self) -> Vec<u8> {
+        der_context(3, &self.encode_sequence())
+    }
+
+    /// The bare `SEQUENCE { keyid, digest, signature }`, used inside the object
+    /// signature where the context tag is added by the caller or absent.
+    fn encode_sequence(&self) -> Vec<u8> {
         let mut parts = vec![
             der_octets(&self.keyid),
             der_integer(self.digest),
             der_octets(&self.signature),
         ];
         parts.extend(self.trailing.iter().cloned());
-        der_context(3, &der_sequence(parts))
+        der_sequence(parts)
     }
 }
 
@@ -331,6 +338,20 @@ impl Protection {
     /// `custom_signing` is accepted for parity with the macOS client; signature
     /// verification is skipped because this client never trusts a key it did
     /// not just unwrap.
+    /// Unwrap the keyset entry for one key without applying the share
+    /// variant. The object signature is made by the raw master, not by the
+    /// variant used for fields and HMAC on share protections.
+    pub fn unwrap_entry(&self, key: &SecretKey) -> Result<PcsKey> {
+        let x = key.public_key().to_encoded_point(true);
+        let entry = self
+            .keyset
+            .keys
+            .iter()
+            .find(|entry| entry.decryption_key.key.as_slice() == &x.as_bytes()[1..])
+            .ok_or_else(|| Error::Message("no PCS key matches this protection".into()))?;
+        PcsKey::unwrap(key, &entry.wrapped)
+    }
+
     pub fn decode(&self, keys: &[SecretKey], _custom_signing: bool) -> Result<Decoded> {
         let (secret, entry) = keys
             .iter()
@@ -478,6 +499,83 @@ impl Protection {
             .ok_or_else(|| Error::Message("PCS protection has no signature data".into()))?;
         parse_object_signature(data)
     }
+
+    /// Verify the primary object signature, which is made by the EC key
+    /// derived from the protection master.
+    pub fn verify_object(&self, master: &PcsKey) -> Result<()> {
+        let digest = self.digest()?;
+        let object = self.object_signature()?;
+        let key = master.master_ec_key()?;
+        let point = key.public_key().to_encoded_point(false);
+        let verifying = VerifyingKey::from_sec1_bytes(point.as_bytes())
+            .map_err(|_| Error::Message("invalid PCS master key".into()))?;
+        let signature = EcdsaSignature::from_der(&object.signature.signature)
+            .map_err(|_| Error::Message("PCS object signature is not DER".into()))?;
+        verifying
+            .verify_prehash(Sha256::digest(&digest).as_slice(), &signature)
+            .map_err(|_| Error::Message("PCS object signature check failed".into()))
+    }
+
+    /// The key id carried by the outer `[3]` signature, usually the
+    /// compressed public key of the signer.
+    pub fn outer_keyid(&self) -> Option<Vec<u8>> {
+        self.signature
+            .as_ref()
+            .map(|signature| signature.keyid.clone())
+    }
+
+    /// The EC public key the object signature claims, as stored in the
+    /// protection.
+    pub fn object_public(&self) -> Result<Vec<u8>> {
+        Ok(self.object_signature()?.public.key)
+    }
+
+    /// The EC public key derived from a master, for comparing with
+    /// `object_public`.
+    pub fn derived_object_public(&self, master: &PcsKey) -> Result<Vec<u8>> {
+        let key = master.master_ec_key()?;
+        Ok(key.public_key().to_encoded_point(false).as_bytes().to_vec())
+    }
+
+    /// Verify the outer `[3]` signature with the signing key.
+    pub fn verify_outer(&self, signer: &PublicKey) -> Result<()> {
+        let signature = self
+            .signature
+            .as_ref()
+            .ok_or_else(|| Error::Message("PCS protection has no outer signature".into()))?;
+        let _ = &signature.keyid;
+        let digest = self.digest()?;
+        let point = signer.to_encoded_point(false);
+        let verifying = VerifyingKey::from_sec1_bytes(point.as_bytes())
+            .map_err(|_| Error::Message("invalid PCS signing key".into()))?;
+        let parsed = EcdsaSignature::from_der(&signature.signature)
+            .map_err(|_| Error::Message("PCS outer signature is not DER".into()))?;
+        verifying
+            .verify_prehash(Sha256::digest(&digest).as_slice(), &parsed)
+            .map_err(|_| Error::Message("PCS outer signature check failed".into()))
+    }
+
+    /// Verify the HMAC that binds the keyset, meta and signature data.
+    pub fn verify_hmac(&self, master: &PcsKey) -> Result<()> {
+        let mut input = self.keyset.encode();
+        input.extend_from_slice(&self.meta);
+        if let Some(data) = &self.signature_data {
+            input.extend_from_slice(&data.signature);
+        }
+        if master.hmac(&input) == self.hmac {
+            Ok(())
+        } else {
+            Err(Error::Message("PCS HMAC check failed".into()))
+        }
+    }
+
+    /// The `[1]` countersignature carried by a rolled protection.
+    ///
+    /// It is a signature over the same digest as the object signature, made by
+    /// the **previous** master's derived EC key.
+    pub fn countersignature(&self) -> Result<Option<PcsSignature>> {
+        Ok(self.object_signature()?.signature_2)
+    }
 }
 
 /// Structural parse of a protection, with no service key involved.
@@ -499,6 +597,9 @@ struct ObjectSignature {
     outer_sign_key_type: u64,
     public: PcsKeyRef,
     signature: PcsSignature,
+    /// `[1]`, the countersignature of a roll: the previous master's key signs
+    /// the same digest as `signature`.
+    signature_2: Option<PcsSignature>,
     symm_key_count: Option<u64>,
     ec_key_list: Option<Vec<u8>>,
     attributes: Option<Vec<u8>>,
@@ -1034,6 +1135,7 @@ fn parse_object_signature(data: &[u8]) -> Result<ObjectSignature> {
     let signature = parse_signature_field(&parts[3])?;
 
     let mut symm_key_count = None;
+    let mut signature_2 = None;
     let mut ec_key_list = None;
     let mut attributes = None;
     for part in &parts[4..] {
@@ -1046,6 +1148,14 @@ fn parse_object_signature(data: &[u8]) -> Result<ObjectSignature> {
                     .ok_or_else(|| Error::Message("bad PCS signature key count".into()))?;
                 symm_key_count = Some(integer(value.value)?);
             }
+            0xa1 if signature_2.is_none() => {
+                let inner = children(part.value)?;
+                let value = inner
+                    .first()
+                    .filter(|item| item.tag == 0x30)
+                    .ok_or_else(|| Error::Message("bad PCS countersignature".into()))?;
+                signature_2 = Some(parse_signature_value(value.value)?);
+            }
             0xa2 if ec_key_list.is_none() => ec_key_list = Some(part.value.to_vec()),
             0xa3 if attributes.is_none() => attributes = Some(part.value.to_vec()),
             _ => {}
@@ -1057,6 +1167,7 @@ fn parse_object_signature(data: &[u8]) -> Result<ObjectSignature> {
         outer_sign_key_type,
         public,
         signature,
+        signature_2,
         symm_key_count,
         ec_key_list,
         attributes,
@@ -1233,6 +1344,13 @@ fn public_from_key_id(key: &[u8]) -> Result<PublicKey> {
 pub struct PcsKey(Vec<u8>);
 
 impl PcsKey {
+    /// 32 random bytes: the rm master of a new protection.
+    fn random() -> Self {
+        let mut bytes = [0u8; 32];
+        rand::rngs::OsRng.fill_bytes(&mut bytes);
+        Self(bytes.to_vec())
+    }
+
     fn unwrap(secret: &SecretKey, wrapped: &[u8]) -> Result<Self> {
         if wrapped.len() < 3 {
             return Err(Error::Message("PCS wrapped key is truncated".into()));
@@ -1283,6 +1401,113 @@ impl PcsKey {
     pub fn key_id(&self) -> Vec<u8> {
         let key = self.derive(b"master key id labell");
         hmac_sha256(&key, b"M key input data 2 u")
+    }
+
+    /// RFC 6637 ECIES-wrap these key bytes under `recipient`.
+    ///
+    /// The output is `BE16(256) || ephemeral X (32) || wrapped length (1) ||
+    /// AES key wrap`, the shape [`Self::unwrap`] reads. The KDF is the same
+    /// fixed P-256 parameter set the reader uses, so a wrap always round trips
+    /// through `unwrap`.
+    pub fn wrap_for(&self, recipient: &SecretKey) -> Result<Vec<u8>> {
+        if self.0.is_empty() {
+            return Err(Error::Message("cannot wrap an empty PCS key".into()));
+        }
+        let ephemeral = SecretKey::random(&mut rand::rngs::OsRng);
+        let shared = diffie_hellman(
+            ephemeral.to_nonzero_scalar(),
+            recipient.public_key().as_affine(),
+        );
+        let kek = rfc6637_kdf(shared.raw_secret_bytes().as_slice());
+
+        // `0x01 || key || BE16(sum) || padding`, padded to a whole AES block.
+        let mut message = vec![1u8];
+        message.extend_from_slice(&self.0);
+        let sum = self
+            .0
+            .iter()
+            .fold(0u16, |acc, byte| acc.wrapping_add(u16::from(*byte)));
+        message.extend_from_slice(&sum.to_be_bytes());
+        let padding = 8 - message.len() % 8;
+        message.resize(message.len() + padding, padding as u8);
+
+        let wrapped = aes_key_wrap(&kek, &message)?;
+        if wrapped.len() > usize::from(u8::MAX) {
+            return Err(Error::Message("PCS wrapped key is too long".into()));
+        }
+        let ephemeral_x = key_x(&ephemeral);
+        let mut out = Vec::with_capacity(3 + ephemeral_x.len() + wrapped.len());
+        out.extend_from_slice(&((ephemeral_x.len() as u16) * 8).to_be_bytes());
+        out.extend_from_slice(&ephemeral_x);
+        out.push(wrapped.len() as u8);
+        out.extend_from_slice(&wrapped);
+        Ok(out)
+    }
+
+    /// Seal `plaintext` as a v3 field ciphertext:
+    /// `header(6) || iv(12) || tag(12) || ciphertext`.
+    pub fn encrypt(&self, plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
+        let encryption_key = self.derive(b"encryption key key m");
+        let key_id = self.key_id();
+        if key_id.len() < 4 {
+            return Err(Error::Message("PCS key id is too short".into()));
+        }
+        let header = [0x03, key_id[0], key_id[1], 0x02, key_id[2], key_id[3]];
+        let cipher = AesGcm::<Aes128, U12, U12>::new_from_slice(&encryption_key[..16])
+            .map_err(|_| Error::Message("invalid PCS encryption key".into()))?;
+        let mut iv = [0u8; 12];
+        rand::rngs::OsRng.fill_bytes(&mut iv);
+
+        let mut authenticated = header.to_vec();
+        authenticated.extend_from_slice(aad);
+        let mut sealed = cipher
+            .encrypt(
+                Nonce::from_slice(&iv),
+                Payload {
+                    msg: plaintext,
+                    aad: &authenticated,
+                },
+            )
+            .map_err(|_| Error::Message("PCS field encryption failed".into()))?;
+        if sealed.len() < 12 {
+            return Err(Error::Message(
+                "PCS field encryption returned no tag".into(),
+            ));
+        }
+        let tag = sealed.split_off(sealed.len() - 12);
+
+        let mut out = Vec::with_capacity(header.len() + 12 + 12 + sealed.len());
+        out.extend_from_slice(&header);
+        out.extend_from_slice(&iv);
+        out.extend_from_slice(&tag);
+        out.extend_from_slice(&sealed);
+        Ok(out)
+    }
+
+    /// The EC key that signs a protection's object signature.
+    ///
+    /// Apple derives it from the rm master with PBKDF2, reads the first 32
+    /// output bytes little endian, keeps 256 bits, and folds the value into the
+    /// curve order with one subtraction. Inferred from the reference
+    /// implementation's behaviour; no fixture carries the derivation itself.
+    fn master_ec_key(&self) -> Result<SecretKey> {
+        let mut output = [0u8; 128];
+        pbkdf2::pbkdf2_hmac::<Sha256>(&self.0, b"full master key", 10, &mut output);
+
+        let mut scalar = [0u8; 32];
+        for (index, byte) in output[..32].iter().rev().enumerate() {
+            scalar[index] = *byte;
+        }
+        if scalar >= P256_ORDER {
+            let mut borrow = 0i16;
+            for index in (0..32).rev() {
+                let difference = i16::from(scalar[index]) - i16::from(P256_ORDER[index]) - borrow;
+                scalar[index] = (difference & 0xff) as u8;
+                borrow = if difference < 0 { 1 } else { 0 };
+            }
+        }
+        SecretKey::from_slice(&scalar)
+            .map_err(|_| Error::Message("PCS master EC key is not a valid scalar".into()))
     }
 
     fn share_variant(&self) -> Self {
@@ -1338,6 +1563,373 @@ impl PcsKey {
             )
             .map_err(|_| Error::Message("PCS field decryption failed".into()))
     }
+}
+
+/// The P-256 group order, used when folding the master EC scalar.
+const P256_ORDER: [u8; 32] = [
+    0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xbc, 0xe6, 0xfa, 0xad, 0xa7, 0x17, 0x9e, 0x84, 0xf3, 0xb9, 0xca, 0xc2, 0xfc, 0x63, 0x25, 0x51,
+];
+
+/// The inputs for [`create_protection`].
+///
+/// The role of each key follows Apple's table exactly: `me` receives the
+/// unwrapped rm master, `identities` sit inside the sealed identity bundle,
+/// `access` recipients get the share-variant master with `flags = 1`, and
+/// `sign_with` produces the outer `[3]` signature.
+#[derive(Clone)]
+pub struct ProtectionSpec<'a> {
+    /// The private key that owns the protection.
+    pub me: &'a SecretKey,
+    /// Private keys placed in the inner identity keyset, in this order.
+    pub identities: Vec<SecretKey>,
+    /// Recipients whose share-key entries are wrapped and carry `flags = 1`.
+    pub access: Vec<SecretKey>,
+    /// The key that signs the outer `[3]` signature; `None` leaves it absent.
+    pub sign_with: Option<&'a SecretKey>,
+    /// The previous master; its derived EC key countersigns `signature_2`.
+    pub last: Option<&'a PcsKey>,
+    /// The object signature's `roll_count`.
+    pub roll: u32,
+    /// Share protections use signature version 4 and the share-variant master.
+    pub is_share: bool,
+    /// Symmetric keys carried by the identity bundle.
+    pub extra_keys: Vec<PcsKey>,
+}
+
+/// Build a protection and return the keys the caller must keep.
+///
+/// The returned vector always ends with the **effective master** (the master
+/// the HMAC, truncated key id and field encryption use; for a share protection
+/// that is the share variant). Any identity keys come first, in `identities`
+/// order. A record protection has no identities, so it returns exactly one
+/// fresh record key, which is also its master.
+pub fn create_protection(spec: &ProtectionSpec<'_>) -> Result<(Protection, Vec<PcsKey>)> {
+    build_protection(
+        &PcsKey::random(),
+        spec.me,
+        &spec.identities,
+        &spec.access,
+        spec.sign_with,
+        spec.last,
+        spec.roll,
+        spec.is_share,
+        &spec.extra_keys,
+    )
+}
+
+/// Re-roll an existing protection.
+///
+/// `decoded` supplies the previous effective master (`keys[0]`, used as `last`)
+/// and the identity keys, which are re-used unchanged. `me` receives the new rm
+/// master, `access` gets `flags = 1` entries, and `sign_with` signs the outer
+/// signature. `roll` is the **final** roll count: the caller applies the table
+/// (zone `old + 1`, record and invited `old + 2`). `extra_keys` become the
+/// bundle's symmetric keys; pass the old default keys when rolling a record
+/// protection.
+///
+/// Returns `(protection, keys)` with the same convention as
+/// [`create_protection`]: identity keys first, the new effective master last.
+pub fn roll_protection(
+    decoded: &Decoded,
+    me: &SecretKey,
+    access: Vec<SecretKey>,
+    sign_with: &SecretKey,
+    roll: u32,
+    extra_keys: Vec<PcsKey>,
+    is_share: bool,
+) -> Result<(Protection, Vec<PcsKey>)> {
+    let last = decoded
+        .keys
+        .first()
+        .ok_or_else(|| Error::Message("decoded protection has no master key".into()))?;
+    build_protection(
+        &PcsKey::random(),
+        me,
+        &decoded.identities,
+        &access,
+        Some(sign_with),
+        Some(last),
+        roll,
+        is_share,
+        &extra_keys,
+    )
+}
+
+/// Encrypt a record field: `header(6) || iv(12) || tag(12) || ciphertext`.
+pub fn encrypt_field(key: &PcsKey, plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
+    key.encrypt(plaintext, aad)
+}
+
+/// Decrypt a field produced by [`encrypt_field`] or Apple's client.
+pub fn decrypt_field(key: &PcsKey, ciphertext: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
+    key.decrypt(ciphertext, aad)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_protection(
+    rm: &PcsKey,
+    me: &SecretKey,
+    identities: &[SecretKey],
+    access: &[SecretKey],
+    sign_with: Option<&SecretKey>,
+    last: Option<&PcsKey>,
+    roll: u32,
+    is_share: bool,
+    extra_keys: &[PcsKey],
+) -> Result<(Protection, Vec<PcsKey>)> {
+    let effective = if is_share {
+        rm.share_variant()
+    } else {
+        rm.clone()
+    };
+
+    // The sealed identity bundle holds the inner private keyset, if any.
+    let inner_keyset = if identities.is_empty() {
+        None
+    } else {
+        Some(
+            PcsPrivateKeySet {
+                unknown1_tag: 0x0c,
+                unknown1: Vec::new(),
+                keys: identities
+                    .iter()
+                    .map(|key| der_sequence(vec![der_octets(&compress_private(key))]))
+                    .collect(),
+                unknown2: Some(Vec::new()),
+                hash: Some(Vec::new()),
+                trailing: Vec::new(),
+                nested: true,
+            }
+            .encode(),
+        )
+    };
+    let bundle = PcsIdentities {
+        symm_keys: if extra_keys.is_empty() {
+            None
+        } else {
+            Some(extra_keys.iter().map(|key| key.0.clone()).collect())
+        },
+        tag1: Some(PcsIdentitiesTag1 {
+            unknown1: 0,
+            unknown2: Vec::new(),
+            trailing: Vec::new(),
+        }),
+        identities: inner_keyset.map(|keyset| {
+            vec![PcsIdentityData {
+                unknown1: 0,
+                keyset,
+                trailing: Vec::new(),
+            }]
+        }),
+        trailing: Vec::new(),
+    };
+    let meta = effective.encrypt(&bundle.encode(), &[])?;
+
+    let mut keys = vec![PcsShareKey {
+        decryption_key: PcsKeyRef {
+            keytype: 3,
+            key: key_x(me),
+            trailing: Vec::new(),
+        },
+        wrapped: rm.wrap_for(me)?,
+        flags: None,
+        trailing: Vec::new(),
+    }];
+    for recipient in access {
+        keys.push(PcsShareKey {
+            decryption_key: PcsKeyRef {
+                keytype: 3,
+                key: key_x(recipient),
+                trailing: Vec::new(),
+            },
+            wrapped: effective.wrap_for(recipient)?,
+            flags: if is_share { Some(1) } else { None },
+            trailing: Vec::new(),
+        });
+    }
+    let keyset = PcsKeySet {
+        unknown1: 0,
+        keys,
+        unparsed: Vec::new(),
+        attributes: None,
+        trailing: Vec::new(),
+    };
+
+    let outer_sign_key_type: u32 = if sign_with.is_some() { 3 } else { 0 };
+    let master_ec = rm.master_ec_key()?;
+    let master_public = master_ec
+        .public_key()
+        .to_encoded_point(false)
+        .as_bytes()
+        .to_vec();
+
+    let ec_key_list = if identities.is_empty() {
+        None
+    } else {
+        Some(der_sequence(
+            identities
+                .iter()
+                .map(|key| {
+                    PcsKeyRef {
+                        keytype: 3,
+                        key: key_x(key),
+                        trailing: Vec::new(),
+                    }
+                    .encode()
+                })
+                .collect(),
+        ))
+    };
+    let symm_key_count = if extra_keys.is_empty() {
+        None
+    } else {
+        Some(extra_keys.len() as u32)
+    };
+    let signature_attributes = if extra_keys.is_empty() {
+        None
+    } else {
+        let ids = extra_keys
+            .iter()
+            .map(|key| der_octets(&key.key_id()[..4]))
+            .collect();
+        Some(der_sequence(vec![PcsAttribute {
+            key: 5,
+            value: der_sequence(ids),
+            trailing: Vec::new(),
+        }
+        .encode()]))
+    };
+
+    // `keyset || meta || BE32(outer sign type) || BE32(roll) || BE32(symm
+    // count) || BE32(public keytype) || public X || [attributes] || [EC list]`.
+    let mut digest = keyset.encode();
+    digest.extend_from_slice(&meta);
+    digest.extend_from_slice(&outer_sign_key_type.to_be_bytes());
+    digest.extend_from_slice(&roll.to_be_bytes());
+    digest.extend_from_slice(&symm_key_count.unwrap_or(0).to_be_bytes());
+    digest.extend_from_slice(&1u32.to_be_bytes());
+    digest.extend_from_slice(&master_public);
+    if let Some(attributes) = &signature_attributes {
+        digest.extend_from_slice(attributes);
+    }
+    if let Some(list) = &ec_key_list {
+        digest.extend_from_slice(list);
+    }
+    let hash = Sha256::digest(&digest);
+
+    let primary = sign_digest(&master_ec, &hash, true)?;
+    let mut object_signature = vec![
+        der_integer(u64::from(roll)),
+        der_integer(u64::from(outer_sign_key_type)),
+        PcsKeyRef {
+            keytype: 1,
+            key: master_public,
+            trailing: Vec::new(),
+        }
+        .encode(),
+        primary.encode_sequence(),
+    ];
+    if let Some(count) = symm_key_count {
+        object_signature.push(der_context(0, &der_integer(u64::from(count))));
+    }
+    if let Some(last) = last {
+        let countersignature = sign_digest(&last.master_ec_key()?, &hash, true)?;
+        object_signature.push(der_context(1, &countersignature.encode_sequence()));
+    }
+    if let Some(list) = &ec_key_list {
+        object_signature.push(der_context(2, list));
+    }
+    if let Some(attributes) = &signature_attributes {
+        object_signature.push(der_context(3, attributes));
+    }
+
+    let mut protection = Protection {
+        keyset,
+        meta,
+        signature_data: Some(PcsSignatureData {
+            version: if is_share { 4 } else { 5 },
+            signature: der_sequence(object_signature),
+            trailing: Vec::new(),
+        }),
+        hmac: Vec::new(),
+        truncated_key_id: effective.key_id()[..4].to_vec(),
+        signature: match sign_with {
+            Some(key) => Some(sign_digest(key, &hash, false)?),
+            None => None,
+        },
+        attributes: None,
+        trailing: Vec::new(),
+    };
+
+    let mut hmac_input = protection.keyset.encode();
+    hmac_input.extend_from_slice(&protection.meta);
+    hmac_input.extend_from_slice(&protection.signature_data.as_ref().unwrap().signature);
+    protection.hmac = effective.hmac(&hmac_input);
+
+    let mut keys_out: Vec<PcsKey> = identities
+        .iter()
+        .map(|key| PcsKey(key.to_bytes().to_vec()))
+        .collect();
+    keys_out.push(effective);
+    Ok((protection, keys_out))
+}
+
+fn sign_digest(key: &SecretKey, hash: &[u8], self_signed: bool) -> Result<PcsSignature> {
+    let signing = SigningKey::from_slice(&key.to_bytes())
+        .map_err(|_| Error::Message("invalid PCS signing key".into()))?;
+    let signature: EcdsaSignature = signing
+        .sign_prehash(hash)
+        .map_err(|_| Error::Message("PCS signing failed".into()))?;
+    Ok(PcsSignature {
+        keyid: if self_signed { Vec::new() } else { key_x(key) },
+        digest: 1,
+        signature: signature.to_der().as_bytes().to_vec(),
+        trailing: Vec::new(),
+    })
+}
+
+fn key_x(key: &SecretKey) -> Vec<u8> {
+    let point = key.public_key().to_encoded_point(true);
+    point.as_bytes()[1..].to_vec()
+}
+
+/// `X || d`, the 64-byte private key body stored in an identity keyset.
+fn compress_private(key: &SecretKey) -> Vec<u8> {
+    let mut out = key_x(key);
+    out.extend_from_slice(&key.to_bytes());
+    out
+}
+
+/// RFC 3394 AES key wrap with a 128-bit KEK.
+fn aes_key_wrap(kek: &[u8; 16], plain: &[u8]) -> Result<Vec<u8>> {
+    if plain.len() < 16 || !plain.len().is_multiple_of(8) {
+        return Err(Error::Message("bad AES key wrap length".into()));
+    }
+    let cipher = Aes128::new_from_slice(kek).map_err(|_| Error::Message("bad KEK".into()))?;
+    let n = plain.len() / 8;
+    let mut a = [0xa6u8; 8];
+    let mut blocks: Vec<[u8; 8]> = plain.as_chunks::<8>().0.to_vec();
+
+    for round in 0..6u64 {
+        for (index, block) in blocks.iter_mut().enumerate() {
+            let mut buffer = [0u8; 16];
+            buffer[..8].copy_from_slice(&a);
+            buffer[8..].copy_from_slice(block);
+            let mut buffer = aes::Block::clone_from_slice(&buffer);
+            cipher.encrypt_block(&mut buffer);
+            let counter = (n as u64) * round + index as u64 + 1;
+            for (index, byte) in counter.to_be_bytes().iter().enumerate() {
+                a[index] = buffer[index] ^ byte;
+            }
+            block.copy_from_slice(&buffer[8..]);
+        }
+    }
+
+    let mut out = Vec::with_capacity(plain.len() + 8);
+    out.extend_from_slice(&a);
+    out.extend_from_slice(&blocks.concat());
+    Ok(out)
 }
 
 fn rfc6637_kdf(secret: &[u8]) -> [u8; 16] {
@@ -1863,6 +2455,331 @@ mod tests {
         tampered.meta[0] ^= 0xff;
         tampered.hmac = hmac_for(&tampered, &master);
         assert!(tampered.verify(&public, &master).is_err());
+    }
+
+    fn random_key() -> SecretKey {
+        SecretKey::random(&mut rand::rngs::OsRng)
+    }
+
+    /// Check the outer `[3]` signature over `Protection::digest()`.
+    fn verify_outer(protection: &Protection, signer: &SecretKey) {
+        let signature = protection.signature.as_ref().expect("outer signature");
+        assert_eq!(signature.digest, 1);
+        assert_eq!(signature.keyid, key_x(signer), "signature key id");
+
+        let hash = Sha256::digest(protection.digest().unwrap());
+        let point = signer.public_key().to_encoded_point(false);
+        let verifying = VerifyingKey::from_sec1_bytes(point.as_bytes()).unwrap();
+        let parsed = EcdsaSignature::from_der(&signature.signature).unwrap();
+        verifying
+            .verify_prehash(hash.as_slice(), &parsed)
+            .expect("[3] signature verifies with the signing key");
+    }
+
+    fn verify_countersignature(protection: &Protection, previous: &PcsKey) -> PcsSignature {
+        let signature = protection
+            .countersignature()
+            .unwrap()
+            .expect("countersignature");
+        let key = previous.master_ec_key().unwrap();
+        let hash = Sha256::digest(protection.digest().unwrap());
+        let point = key.public_key().to_encoded_point(false);
+        let verifying = VerifyingKey::from_sec1_bytes(point.as_bytes()).unwrap();
+        let parsed = EcdsaSignature::from_der(&signature.signature).unwrap();
+        verifying
+            .verify_prehash(hash.as_slice(), &parsed)
+            .expect("signature_2 verifies with the previous master");
+        signature
+    }
+
+    fn zone_spec<'a>(
+        service: &'a SecretKey,
+        signing: &'a SecretKey,
+        zone: &SecretKey,
+    ) -> ProtectionSpec<'a> {
+        ProtectionSpec {
+            me: service,
+            identities: vec![zone.clone()],
+            access: Vec::new(),
+            sign_with: Some(signing),
+            last: None,
+            roll: 1,
+            is_share: false,
+            extra_keys: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn wraps_and_unwraps_a_key() {
+        let master = PcsKey::random();
+        let recipient = random_key();
+        let wrapped = master.wrap_for(&recipient).unwrap();
+
+        assert_eq!(wrapped.len(), 2 + 32 + 1 + 48);
+        assert_eq!(&wrapped[..2], &[0x01, 0x00], "256-bit ephemeral");
+        assert_eq!(usize::from(wrapped[34]), 48, "AES-wrapped length");
+
+        let unwrapped = PcsKey::unwrap(&recipient, &wrapped).unwrap();
+        assert_eq!(unwrapped.0, master.0);
+    }
+
+    #[test]
+    fn creates_a_zone_protection() {
+        let service = random_key();
+        let signing = random_key();
+        let zone = random_key();
+
+        let (protection, keys) = create_protection(&zone_spec(&service, &signing, &zone)).unwrap();
+        let master = keys.last().expect("master").clone();
+        assert_eq!(keys.len(), 2, "zone key then the master");
+
+        let encoded = protection.encode().unwrap();
+        assert_eq!(encoded[0], 0x61, "[APPLICATION 1] outer tag");
+        assert_eq!(protection.keyset.keys.len(), 1, "one keyset entry");
+
+        let parsed = Protection::parse(&encoded).unwrap();
+        let data = parsed.signature_data.as_ref().expect("signature data");
+        assert_eq!(data.version, 5, "non-share version");
+        let object = parsed.object_signature().unwrap();
+        assert_eq!(object.roll_count, 1);
+        assert_eq!(object.outer_sign_key_type, 3);
+        assert_eq!(object.public.keytype, 1);
+        assert_eq!(object.public.key.len(), 65, "uncompressed master key");
+        assert!(object.ec_key_list.is_some(), "zone key list");
+        assert!(object.symm_key_count.is_none());
+
+        let decoded = parsed
+            .decode(std::slice::from_ref(&service), false)
+            .unwrap();
+        assert_eq!(decoded.identities.len(), 1);
+        assert_eq!(decoded.identities[0].to_bytes(), zone.to_bytes());
+        assert_eq!(decoded.keys.len(), 1);
+        assert_eq!(decoded.keys[0].0, master.0, "zone master is recovered");
+
+        let mut hmac_input = parsed.keyset.encode();
+        hmac_input.extend_from_slice(&parsed.meta);
+        hmac_input.extend_from_slice(&data.signature);
+        assert_eq!(master.hmac(&hmac_input), parsed.hmac, "HMAC recheck");
+
+        verify_outer(&parsed, &signing);
+        assert!(parsed.countersignature().unwrap().is_none());
+
+        // The object signature is signed by the master's derived EC key.
+        let master_ec = master.master_ec_key().unwrap();
+        parsed.verify(&master_ec.public_key(), &master).unwrap();
+    }
+
+    #[test]
+    fn creates_a_record_protection() {
+        let zone = random_key();
+
+        let (protection, keys) = create_protection(&ProtectionSpec {
+            me: &zone,
+            identities: Vec::new(),
+            access: Vec::new(),
+            sign_with: Some(&zone),
+            last: None,
+            roll: 1,
+            is_share: false,
+            extra_keys: Vec::new(),
+        })
+        .unwrap();
+        assert_eq!(keys.len(), 1, "a record protection has one record key");
+        let record = keys[0].clone();
+
+        let encoded = protection.encode().unwrap();
+        let parsed = Protection::parse(&encoded).unwrap();
+        let decoded = parsed.decode(std::slice::from_ref(&zone), false).unwrap();
+
+        assert_eq!(decoded.keys.len(), 1);
+        assert_eq!(decoded.keys[0].0, record.0, "record key round trips");
+        assert!(decoded.identities.is_empty(), "records carry no identities");
+        verify_outer(&parsed, &zone);
+
+        let sealed = encrypt_field(&record, b"payload", b"zone-item-payload").unwrap();
+        assert_eq!(
+            decrypt_field(&record, &sealed, b"zone-item-payload").unwrap(),
+            b"payload"
+        );
+    }
+
+    #[test]
+    fn rolls_a_zone_protection_with_share_access() {
+        let service = random_key();
+        let signing = random_key();
+        let zone = random_key();
+        let other = random_key();
+
+        let (protection, keys) = create_protection(&zone_spec(&service, &signing, &zone)).unwrap();
+        let previous = keys.last().expect("master").clone();
+        let first = Protection::parse(&protection.encode().unwrap()).unwrap();
+        let decoded = first.decode(std::slice::from_ref(&service), false).unwrap();
+
+        let (rolled, rolled_keys) = roll_protection(
+            &decoded,
+            &service,
+            vec![other.clone()],
+            &signing,
+            2,
+            Vec::new(),
+            true,
+        )
+        .unwrap();
+        let parsed = Protection::parse(&rolled.encode().unwrap()).unwrap();
+        let new_master = rolled_keys.last().expect("master").clone();
+
+        assert_eq!(
+            parsed.signature_data.as_ref().unwrap().version,
+            4,
+            "share version"
+        );
+        let object = parsed.object_signature().unwrap();
+        assert_eq!(object.roll_count, 2);
+        assert!(
+            object
+                .ec_key_list
+                .as_ref()
+                .is_some_and(|list| !list.is_empty()),
+            "the zone key list survives the roll"
+        );
+
+        assert_eq!(parsed.keyset.keys.len(), 2);
+        let access = parsed
+            .keyset
+            .keys
+            .iter()
+            .find(|entry| entry.decryption_key.key == key_x(&other))
+            .expect("access entry");
+        assert_eq!(access.flags, Some(1), "access entry is readonly");
+        let mine = parsed
+            .keyset
+            .keys
+            .iter()
+            .find(|entry| entry.decryption_key.key == key_x(&service))
+            .expect("master entry");
+        assert_eq!(mine.flags, None, "absent flags stay absent");
+
+        let service_decoded = parsed
+            .decode(std::slice::from_ref(&service), false)
+            .unwrap();
+        assert_eq!(service_decoded.keys[0].0, new_master.0);
+        assert_eq!(service_decoded.identities[0].to_bytes(), zone.to_bytes());
+        let access_decoded = parsed.decode(std::slice::from_ref(&other), false).unwrap();
+        assert_eq!(
+            access_decoded.keys[0].0, new_master.0,
+            "an access recipient derives the same master"
+        );
+
+        verify_outer(&parsed, &signing);
+        verify_countersignature(&parsed, &previous);
+        let mut hmac_input = parsed.keyset.encode();
+        hmac_input.extend_from_slice(&parsed.meta);
+        hmac_input.extend_from_slice(&parsed.signature_data.as_ref().unwrap().signature);
+        assert_eq!(new_master.hmac(&hmac_input), parsed.hmac);
+    }
+
+    #[test]
+    fn a_share_roll_keeps_the_zone_identity() {
+        let service = random_key();
+        let signing = random_key();
+        let zone = random_key();
+
+        let (protection, _) = create_protection(&zone_spec(&service, &signing, &zone)).unwrap();
+        let first = Protection::parse(&protection.encode().unwrap()).unwrap();
+        let decoded = first.decode(std::slice::from_ref(&service), false).unwrap();
+
+        let (rolled, keys) = roll_protection(
+            &decoded,
+            &service,
+            Vec::new(),
+            &signing,
+            2,
+            Vec::new(),
+            true,
+        )
+        .unwrap();
+        let second = Protection::parse(&rolled.encode().unwrap()).unwrap();
+        let second_decoded = second
+            .decode(std::slice::from_ref(&service), false)
+            .unwrap();
+
+        assert_eq!(second.object_signature().unwrap().roll_count, 2);
+        assert_eq!(
+            second_decoded.identities[0].to_bytes(),
+            zone.to_bytes(),
+            "the zone identity is unchanged"
+        );
+        assert_eq!(second_decoded.keys[0].0, keys.last().unwrap().0);
+        verify_outer(&second, &signing);
+    }
+
+    #[test]
+    fn a_record_roll_keeps_the_old_keys() {
+        let zone = random_key();
+        let (protection, keys) = create_protection(&ProtectionSpec {
+            me: &zone,
+            identities: Vec::new(),
+            access: Vec::new(),
+            sign_with: Some(&zone),
+            last: None,
+            roll: 1,
+            is_share: false,
+            extra_keys: Vec::new(),
+        })
+        .unwrap();
+        let old = keys[0].clone();
+        let first = Protection::parse(&protection.encode().unwrap()).unwrap();
+        let decoded = first.decode(std::slice::from_ref(&zone), false).unwrap();
+
+        let (rolled, rolled_keys) = roll_protection(
+            &decoded,
+            &zone,
+            Vec::new(),
+            &zone,
+            3,
+            vec![old.clone()],
+            false,
+        )
+        .unwrap();
+        let parsed = Protection::parse(&rolled.encode().unwrap()).unwrap();
+        let object = parsed.object_signature().unwrap();
+
+        assert_eq!(object.roll_count, 3, "record rolls advance by two");
+        assert_eq!(object.symm_key_count, Some(1));
+        assert!(
+            object.attributes.is_some(),
+            "key id list rides in the object signature"
+        );
+
+        let decoded = parsed.decode(std::slice::from_ref(&zone), false).unwrap();
+        assert_eq!(decoded.keys.len(), 2);
+        assert_eq!(decoded.keys[0].0, rolled_keys.last().unwrap().0);
+        assert_eq!(decoded.keys[1].0, old.0, "old record key is retained");
+        verify_outer(&parsed, &zone);
+        verify_countersignature(&parsed, &old);
+    }
+
+    #[test]
+    fn field_ciphertext_has_the_v3_header() {
+        let key = PcsKey::random();
+        let plaintext = b"zone-item-payload";
+        let aad = b"group-1-item-1-payload";
+
+        let sealed = encrypt_field(&key, plaintext, aad).unwrap();
+        assert_eq!(sealed.len(), 6 + 12 + 12 + plaintext.len());
+
+        let key_id = key.key_id();
+        assert_eq!(
+            &sealed[..6],
+            &[0x03, key_id[0], key_id[1], 0x02, key_id[2], key_id[3]]
+        );
+        assert_ne!(&sealed[30..], plaintext, "payload is enciphered");
+
+        assert_eq!(decrypt_field(&key, &sealed, aad).unwrap(), plaintext);
+        assert!(
+            decrypt_field(&key, &sealed, b"group-1-item-2-payload").is_err(),
+            "a different AAD fails"
+        );
     }
 
     /// Real Apple protections, gated on `APW_PCS_FIXTURES`.

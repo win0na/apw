@@ -336,6 +336,22 @@ fn open_zone(
             decoded.keys.len(),
             decoded.identities.len()
         );
+        let object_ok = service_keys
+            .iter()
+            .find_map(|service| zone_protection.unwrap_entry(&service.secret).ok())
+            .is_some_and(|raw| zone_protection.verify_object(&raw).is_ok());
+        let hmac_ok = decoded
+            .keys
+            .first()
+            .is_some_and(|master| zone_protection.verify_hmac(master).is_ok());
+        let outer_ok = service_keys.iter().any(|service| {
+            std::iter::once(&service.secret)
+                .chain(service.signing.as_ref())
+                .any(|key| zone_protection.verify_outer(&key.public_key()).is_ok())
+        });
+        eprintln!(
+            "groups: zone protection verified object={object_ok} hmac={hmac_ok} outer={outer_ok}"
+        );
     }
     let mut keys = decoded.keys;
     if let Some(record_protection) = zone.record_protection_info.as_deref() {
