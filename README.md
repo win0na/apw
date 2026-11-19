@@ -93,7 +93,7 @@ secret-tool clear service apw account snapshot-key
 | `login`, `join`, `sync` against iCloud | Works; 383 items, 370 logins, 33 passkeys, 47 codes |
 | Shared groups | Read path implemented; the test account has no shared items |
 | Passkeys, notes, cards | Read; passkeys are counted in `status` but not listed |
-| Packaging | Tarball, `.deb`, AUR `apw-cli`, Nix flake |
+| Packaging | Tarball, `.deb`, AUR recipe, Nix flake |
 
 There is no `save` or edit command. Apple's iCloud terms prohibit automated access; `apw` stays polite with paced syncs, no automatic retries, and one escrow attempt per user action. The contract risk is yours.
 
