@@ -26,14 +26,24 @@ pub const BUNDLE_CUTTLEFISH: &str = "com.apple.security.cuttlefish";
 const GATEWAY: &str = "https://gateway.icloud.com";
 const CK_APP_INIT: &str = "/setup/setup/ck/v1/ckAppInit";
 const RECORD_SYNC: &str = "/ckdatabase/api/client/record/sync";
+const RECORD_SAVE: &str = "/ckdatabase/api/client/record/save";
+const RECORD_DELETE: &str = "/ckdatabase/api/client/record/delete";
+const RECORD_RETRIEVE: &str = "/ckdatabase/api/client/record/retrieve";
 const ZONE_SYNC: &str = "/ckdatabase/api/client/zone/sync";
 const ZONE_RETRIEVE: &str = "/ckdatabase/api/client/zone/retrieve";
 const CODE_INVOKE: &str = "/ckcoderouter/api/client/code/invoke";
 
 const OP_RECORD_SYNC: u64 = 213;
+const OP_RECORD_SAVE: u64 = 210;
+const OP_RECORD_DELETE: u64 = 214;
+const OP_RECORD_RETRIEVE: u64 = 211;
 const OP_ZONE_SYNC: u64 = 203;
 const OP_ZONE_RETRIEVE: u64 = 201;
 const OP_FUNCTION_INVOKE: u64 = 1101;
+
+/// Save semantics understood by `RecordSaveRequest.saveSemantics`.
+pub const SAVE_CREATE: u32 = 2;
+pub const SAVE_UPDATE: u32 = 3;
 
 #[derive(Debug, Clone)]
 pub enum FieldValue {
@@ -48,11 +58,31 @@ pub enum FieldValue {
 #[derive(Debug, Clone)]
 pub struct Record {
     pub name: String,
+    /// The zone the record's identifier names, when the response carried it.
+    pub zone: Option<String>,
+    /// The zone owner, usually the iCloud user id.
+    pub owner: Option<String>,
+    pub etag: Option<String>,
     pub record_type: String,
     pub fields: BTreeMap<String, FieldValue>,
     pub protection_info: Option<Vec<u8>>,
     pub pcs_key: Option<Vec<u8>>,
     pub share_info: Option<ShareInfo>,
+}
+
+/// A record to write to CloudKit.
+///
+/// `etag` is only meaningful for updates, and `semantics` selects create or
+/// update ([`SAVE_CREATE`] / [`SAVE_UPDATE`]). Fields listed in `delete_fields`
+/// are removed from the stored record when the save merges.
+#[derive(Debug, Clone)]
+pub struct OutgoingRecord {
+    pub name: String,
+    pub record_type: String,
+    pub etag: Option<String>,
+    pub semantics: u32,
+    pub fields: Vec<(String, FieldValue)>,
+    pub delete_fields: Vec<String>,
 }
 
 /// The zone-wide share record (`cloudkit.zoneshare`).
@@ -150,17 +180,30 @@ pub struct Zone {
 #[derive(Debug, Clone, Default)]
 pub struct Changes {
     pub records: Vec<Record>,
+    /// The per-change etag, aligned with `records`. A record change without an
+    /// etag keeps its `None` slot.
+    pub change_etags: Vec<Option<String>>,
     pub token: Option<Vec<u8>>,
     pub status: i32,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct Outcome {
+    /// The operation result code (`SUCCESS` is 1).
     pub code: i32,
+    /// The error description sent with a failed result.
     pub description: Option<String>,
+    /// `result.error.clientError.type`, the specific client error code.
+    pub client_code: Option<i32>,
+    /// `result.error.serverError.type`, the specific server error code.
+    pub server_code: Option<i32>,
     pub changes: Option<Changes>,
     pub zone_changes: Option<ZoneChanges>,
     pub zone: Option<Zone>,
+    /// The record returned by a save (`serverFields`) or retrieve.
+    pub record: Option<Record>,
+    /// `recordRetrieveResponse.clientVersionETagMatch`.
+    pub etag_match: Option<bool>,
     pub result: Option<Vec<u8>>,
 }
 
@@ -173,10 +216,14 @@ impl Outcome {
         if self.ok() {
             return Ok(self);
         }
+        let code = self.client_code.or(self.server_code).unwrap_or(self.code);
         let description = self
             .description
-            .unwrap_or_else(|| format!("CloudKit operation failed with code {}", self.code));
-        Err(Error::Message(description))
+            .unwrap_or_else(|| format!("CloudKit operation failed with code {code}"));
+        Err(Error::CloudKit {
+            code,
+            description: Some(description),
+        })
     }
 }
 
@@ -295,6 +342,76 @@ impl Gateway {
         Ok(outcome.changes.unwrap_or_default())
     }
 
+    /// Save one record, returning the server etag when the response carries it.
+    pub async fn save_record(
+        &self,
+        zone: &str,
+        owner: Option<&str>,
+        record: &OutgoingRecord,
+    ) -> Result<Option<String>> {
+        let owner = owner.unwrap_or(&self.user_id);
+        let request = save_request(record, zone, owner);
+
+        let outcome = self
+            .call(RECORD_SAVE, BUNDLE_RECORDS, OP_RECORD_SAVE, &request, None)
+            .await?;
+        let outcome = outcome.check()?;
+        Ok(outcome.record.and_then(|record| record.etag))
+    }
+
+    /// Delete one record by name.
+    pub async fn delete_record(&self, zone: &str, owner: Option<&str>, name: &str) -> Result<()> {
+        let owner = owner.unwrap_or(&self.user_id);
+        let mut request = Writer::new();
+        request.message(1, &record_identifier(zone, owner, name));
+
+        self.call(
+            RECORD_DELETE,
+            BUNDLE_RECORDS,
+            OP_RECORD_DELETE,
+            &request,
+            None,
+        )
+        .await?
+        .check()?;
+        Ok(())
+    }
+
+    /// Retrieve one record, optionally conditional on a known etag.
+    ///
+    /// The boolean is `clientVersionETagMatch`; it is true when no etag was
+    /// supplied and the response omits the flag.
+    pub async fn retrieve_record(
+        &self,
+        zone: &str,
+        owner: Option<&str>,
+        name: &str,
+        etag: Option<&str>,
+    ) -> Result<(Record, bool)> {
+        let owner = owner.unwrap_or(&self.user_id);
+        let mut request = Writer::new();
+        request.message(1, &record_identifier(zone, owner, name));
+        if let Some(etag) = etag {
+            request.string(4, etag);
+        }
+
+        let outcome = self
+            .call(
+                RECORD_RETRIEVE,
+                BUNDLE_RECORDS,
+                OP_RECORD_RETRIEVE,
+                &request,
+                None,
+            )
+            .await?
+            .check()?;
+        let record = outcome
+            .record
+            .ok_or_else(|| Error::Message("record retrieve returned no record".into()))?;
+        let matched = outcome.etag_match.unwrap_or(etag.is_none());
+        Ok((record, matched))
+    }
+
     /// List changed zones in one database scope.
     pub async fn zone_changes(&self, token: Option<&[u8]>) -> Result<ZoneChanges> {
         let mut request = Writer::new();
@@ -356,18 +473,7 @@ impl Gateway {
     }
 
     fn zone_identifier(&self, zone: &str, owner_id: Option<&str>) -> Writer {
-        let mut identifier = Writer::new();
-        identifier.string(1, zone);
-        identifier.uint64(2, 6);
-
-        let mut owner = Writer::new();
-        owner.string(1, owner_id.unwrap_or(&self.user_id));
-        owner.uint64(2, 7);
-
-        let mut zone_id = Writer::new();
-        zone_id.message(1, &identifier);
-        zone_id.message(2, &owner);
-        zone_id
+        zone_identifier_writer(zone, owner_id.unwrap_or(&self.user_id))
     }
 
     async fn call(
@@ -484,6 +590,106 @@ impl Device {
     }
 }
 
+fn zone_identifier_writer(zone: &str, owner: &str) -> Writer {
+    let mut identifier = Writer::new();
+    identifier.string(1, zone);
+    identifier.uint64(2, 6);
+
+    let mut owner_identifier = Writer::new();
+    owner_identifier.string(1, owner);
+    owner_identifier.uint64(2, 7);
+
+    let mut zone_id = Writer::new();
+    zone_id.message(1, &identifier);
+    zone_id.message(2, &owner_identifier);
+    zone_id
+}
+
+/// `RecordIdentifier { value: Identifier { name, RECORD }, zoneIdentifier }`.
+fn record_identifier(zone: &str, owner: &str, name: &str) -> Writer {
+    let mut identifier = Writer::new();
+    identifier.string(1, name);
+    identifier.uint64(2, 1);
+
+    let mut record = Writer::new();
+    record.message(1, &identifier);
+    record.message(2, &zone_identifier_writer(zone, owner));
+    record
+}
+
+/// `Record.Field.Value` with an explicit type code. References carry only the
+/// target record name, so `zone` and `owner` complete the reference.
+fn value_message(value: &FieldValue, zone: &str, owner: &str) -> Writer {
+    let mut out = Writer::new();
+    match value {
+        FieldValue::Bytes(bytes) => {
+            out.uint64(1, 1);
+            out.bytes(2, bytes);
+        }
+        FieldValue::Date(seconds) => {
+            out.uint64(1, 2);
+            let mut date = Writer::new();
+            date.fixed64(1, (*seconds as f64).to_bits());
+            out.message(6, &date);
+        }
+        FieldValue::Text(text) => {
+            out.uint64(1, 3);
+            out.string(7, text);
+        }
+        FieldValue::Reference(name) => {
+            out.uint64(1, 5);
+            let mut reference = Writer::new();
+            reference.uint64(1, 3);
+            reference.message(2, &record_identifier(zone, owner, name));
+            out.message(9, &reference);
+        }
+        FieldValue::Int(number) => {
+            out.uint64(1, 7);
+            out.int64(4, *number);
+        }
+        FieldValue::Double(number) => {
+            out.uint64(1, 8);
+            out.fixed64(5, number.to_bits());
+        }
+    }
+    out
+}
+
+fn record_field_writer(name: &str, value: &FieldValue, zone: &str, owner: &str) -> Writer {
+    let mut identifier = Writer::new();
+    identifier.string(1, name);
+
+    let mut field = Writer::new();
+    field.message(1, &identifier);
+    field.message(2, &value_message(value, zone, owner));
+    field
+}
+
+fn save_request(record: &OutgoingRecord, zone: &str, owner: &str) -> Writer {
+    let mut record_message = Writer::new();
+    if let Some(etag) = &record.etag {
+        record_message.string(1, etag);
+    }
+    record_message.message(2, &record_identifier(zone, owner, &record.name));
+
+    let mut record_type = Writer::new();
+    record_type.string(1, &record.record_type);
+    record_message.message(3, &record_type);
+
+    for (name, value) in &record.fields {
+        record_message.message(7, &record_field_writer(name, value, zone, owner));
+    }
+
+    let mut request = Writer::new();
+    request.message(1, &record_message);
+    request.boolean(2, true);
+    for name in &record.delete_fields {
+        request.string(3, name);
+    }
+    request.uint64(6, u64::from(record.semantics));
+    request
+}
+
 fn parse_outcome(frame: &[u8]) -> Result<Outcome> {
     let mut reader = Reader::new(frame);
     let mut outcome = Outcome::default();
@@ -494,11 +700,24 @@ fn parse_outcome(frame: &[u8]) -> Result<Outcome> {
                 while let Some(item) = result.next()? {
                     match item.number {
                         1 => outcome.code = item.varint()? as i32,
-                        2 => outcome.description = parse_error(item.message()?)?,
+                        2 => {
+                            let (client, server, description) =
+                                parse_result_error(item.message()?)?;
+                            outcome.client_code = client;
+                            outcome.server_code = server;
+                            outcome.description = description;
+                        }
                         _ => {}
                     }
                 }
             }
+            210 => outcome.record = parse_save_response(field.bytes()?)?,
+            211 => {
+                let (record, etag_match) = parse_retrieve_response(field.bytes()?)?;
+                outcome.record = record;
+                outcome.etag_match = etag_match;
+            }
+            214 => {}
             203 => {
                 outcome.zone_changes = Some(parse_zone_changes(field.bytes()?)?);
             }
@@ -522,13 +741,55 @@ fn parse_outcome(frame: &[u8]) -> Result<Outcome> {
     Ok(outcome)
 }
 
-fn parse_error(mut reader: Reader<'_>) -> Result<Option<String>> {
+fn parse_result_error(
+    mut reader: Reader<'_>,
+) -> Result<(Option<i32>, Option<i32>, Option<String>)> {
+    let mut client = None;
+    let mut server = None;
+    let mut description = None;
     while let Some(field) = reader.next()? {
-        if field.number == 4 {
-            return Ok(Some(field.string()?.to_string()));
+        match field.number {
+            1 => client = parse_error_code(field.message()?)?,
+            2 => server = parse_error_code(field.message()?)?,
+            4 => description = Some(field.string()?.to_string()),
+            _ => {}
+        }
+    }
+    Ok((client, server, description))
+}
+
+/// Read the `type` enum out of a client or server error message.
+fn parse_error_code(mut reader: Reader<'_>) -> Result<Option<i32>> {
+    while let Some(field) = reader.next()? {
+        if field.number == 1 {
+            return Ok(Some(field.varint()? as i32));
         }
     }
     Ok(None)
+}
+
+fn parse_save_response(data: &[u8]) -> Result<Option<Record>> {
+    let mut reader = Reader::new(data);
+    while let Some(field) = reader.next()? {
+        if field.number == 4 {
+            return Ok(Some(parse_record(field.bytes()?)?));
+        }
+    }
+    Ok(None)
+}
+
+fn parse_retrieve_response(data: &[u8]) -> Result<(Option<Record>, Option<bool>)> {
+    let mut reader = Reader::new(data);
+    let mut record = None;
+    let mut etag_match = None;
+    while let Some(field) = reader.next()? {
+        match field.number {
+            1 => record = Some(parse_record(field.bytes()?)?),
+            2 => etag_match = Some(field.varint()? != 0),
+            _ => {}
+        }
+    }
+    Ok((record, etag_match))
 }
 
 fn parse_changes(data: &[u8]) -> Result<Changes> {
@@ -538,10 +799,18 @@ fn parse_changes(data: &[u8]) -> Result<Changes> {
         match field.number {
             1 => {
                 let mut change = field.message()?;
+                let mut record = None;
+                let mut etag = None;
                 while let Some(item) = change.next()? {
-                    if item.number == 5 {
-                        changes.records.push(parse_record(item.bytes()?)?);
+                    match item.number {
+                        2 => etag = Some(item.string()?.to_string()),
+                        5 => record = Some(parse_record(item.bytes()?)?),
+                        _ => {}
                     }
+                }
+                if let Some(record) = record {
+                    changes.records.push(record);
+                    changes.change_etags.push(etag);
                 }
             }
             2 => changes.token = Some(field.bytes()?.to_vec()),
@@ -662,6 +931,9 @@ pub fn parse_record(data: &[u8]) -> Result<Record> {
     let mut reader = Reader::new(data);
     let mut record = Record {
         name: String::new(),
+        zone: None,
+        owner: None,
+        etag: None,
         record_type: String::new(),
         fields: BTreeMap::new(),
         protection_info: None,
@@ -670,7 +942,13 @@ pub fn parse_record(data: &[u8]) -> Result<Record> {
     };
     while let Some(field) = reader.next()? {
         match field.number {
-            2 => record.name = parse_identifier(field.message()?)?,
+            1 => record.etag = Some(field.string()?.to_string()),
+            2 => {
+                let (name, zone, owner) = parse_record_identifier(field.message()?)?;
+                record.name = name;
+                record.zone = zone;
+                record.owner = owner;
+            }
             3 => record.record_type = parse_type(field.message()?)?,
             7 => {
                 let (name, value) = parse_record_field(field.message()?)?;
@@ -726,6 +1004,46 @@ fn parse_participant(mut reader: Reader<'_>) -> Result<Participant> {
         }
     }
     Ok(participant)
+}
+
+/// Parse a `RecordIdentifier`:
+/// `1: value { 1: name }, 2: zoneIdentifier { 1: { 1: zone }, 2: { 1: owner } }`.
+fn parse_record_identifier(
+    mut reader: Reader<'_>,
+) -> Result<(String, Option<String>, Option<String>)> {
+    let mut name = String::new();
+    let mut zone = None;
+    let mut owner = None;
+    while let Some(field) = reader.next()? {
+        match field.number {
+            1 => name = parse_identifier_name(field.message()?)?,
+            2 => {
+                let mut zone_identifier = field.message()?;
+                while let Some(item) = zone_identifier.next()? {
+                    match item.number {
+                        1 => {
+                            let value = parse_identifier_name(item.message()?)?;
+                            if !value.is_empty() {
+                                zone = Some(value);
+                            }
+                        }
+                        2 => {
+                            let value = parse_identifier_name(item.message()?)?;
+                            if !value.is_empty() {
+                                owner = Some(value);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    if name.is_empty() {
+        return Err(Error::Message("record has no identifier".into()));
+    }
+    Ok((name, zone, owner))
 }
 
 fn parse_identifier(mut reader: Reader<'_>) -> Result<String> {
@@ -790,7 +1108,7 @@ fn parse_value(mut reader: Reader<'_>) -> Result<FieldValue> {
                 let mut date = field.message()?;
                 while let Some(item) = date.next()? {
                     if item.number == 1 {
-                        return Ok(FieldValue::Date(item.varint()? as i64));
+                        return Ok(FieldValue::Date(f64::from_bits(item.varint()?) as i64));
                     }
                 }
             }
@@ -846,6 +1164,30 @@ mod tests {
         value.finish()
     }
 
+    fn fields_of(data: &[u8]) -> Vec<wire::Field<'_>> {
+        Reader::new(data).fields().unwrap()
+    }
+
+    fn field<'a>(fields: &[wire::Field<'a>], number: u32) -> wire::Field<'a> {
+        *fields.iter().find(|f| f.number == number).unwrap()
+    }
+
+    fn record_value<'a>(record_fields: &[wire::Field<'a>], name: &str) -> &'a [u8] {
+        record_fields
+            .iter()
+            .filter(|f| f.number == 7)
+            .find_map(|f| {
+                let parts = fields_of(f.bytes().ok()?);
+                let identifier = fields_of(field(&parts, 1).bytes().ok()?);
+                if field(&identifier, 1).string().ok()? == name {
+                    Some(field(&parts, 2).bytes().ok()?)
+                } else {
+                    None
+                }
+            })
+            .unwrap()
+    }
+
     #[test]
     fn parses_a_record_change() {
         let mut name = Writer::new();
@@ -868,6 +1210,7 @@ mod tests {
 
         let mut change = Writer::new();
         change.message(5, &record);
+        change.string(2, "etag-1");
         let mut response = Writer::new();
         response.message(1, &change);
         response.bytes(2, b"token");
@@ -880,7 +1223,209 @@ mod tests {
         assert_eq!(parsed.records[0].name, "item-1");
         assert_eq!(parsed.records[0].record_type, "item");
         assert_eq!(parsed.records[0].text("srvr"), Some("example.com"));
+        assert_eq!(parsed.change_etags, vec![Some("etag-1".to_string())]);
         assert_eq!(value_bytes("x").len(), 3);
+    }
+
+    #[test]
+    fn encodes_a_save_request() {
+        let record = OutgoingRecord {
+            name: "item-1".into(),
+            record_type: "item".into(),
+            etag: Some("etag-1".into()),
+            semantics: SAVE_UPDATE,
+            fields: vec![
+                ("data".into(), FieldValue::Bytes(vec![1, 2, 3])),
+                ("srvr".into(), FieldValue::Text("example.com".into())),
+                ("count".into(), FieldValue::Int(42)),
+                ("ratio".into(), FieldValue::Double(3.5)),
+                ("parent".into(), FieldValue::Reference("parent-1".into())),
+                ("when".into(), FieldValue::Date(1_700_000_000)),
+            ],
+            delete_fields: vec!["obsolete".into()],
+        };
+        let request = save_request(&record, "zone-1", "owner-1");
+        let top = fields_of(request.as_slice());
+
+        assert_eq!(field(&top, 6).varint().unwrap(), 3);
+        assert_eq!(field(&top, 2).varint().unwrap(), 1);
+        let deleted: Vec<&str> = top
+            .iter()
+            .filter(|f| f.number == 3)
+            .map(|f| f.string().unwrap())
+            .collect();
+        assert_eq!(deleted, vec!["obsolete"]);
+
+        let record_fields = fields_of(field(&top, 1).bytes().unwrap());
+        assert_eq!(
+            field(&record_fields, 1).string().unwrap(),
+            "etag-1",
+            "record etag"
+        );
+
+        let identifier = field(&record_fields, 2).message().unwrap();
+        assert_eq!(parse_identifier(identifier).unwrap(), "item-1");
+        let record_identifier_fields = fields_of(field(&record_fields, 2).bytes().unwrap());
+        assert_eq!(
+            parse_zone_identifier(field(&record_identifier_fields, 2).message().unwrap()).unwrap(),
+            ("zone-1".to_string(), "owner-1".to_string())
+        );
+
+        let record_type = fields_of(field(&record_fields, 3).bytes().unwrap());
+        assert_eq!(field(&record_type, 1).string().unwrap(), "item");
+
+        let data = fields_of(record_value(&record_fields, "data"));
+        assert_eq!(field(&data, 1).varint().unwrap(), 1, "bytes type");
+        assert_eq!(field(&data, 2).bytes().unwrap(), &[1, 2, 3]);
+
+        let text = fields_of(record_value(&record_fields, "srvr"));
+        assert_eq!(field(&text, 1).varint().unwrap(), 3, "string type");
+        assert_eq!(field(&text, 7).string().unwrap(), "example.com");
+
+        let count = fields_of(record_value(&record_fields, "count"));
+        assert_eq!(field(&count, 1).varint().unwrap(), 7, "int64 type");
+        assert_eq!(field(&count, 4).varint().unwrap(), 42);
+
+        let ratio = fields_of(record_value(&record_fields, "ratio"));
+        assert_eq!(field(&ratio, 1).varint().unwrap(), 8, "double type");
+        assert_eq!(field(&ratio, 5).varint().unwrap(), 3.5f64.to_bits());
+
+        let when = fields_of(record_value(&record_fields, "when"));
+        assert_eq!(field(&when, 1).varint().unwrap(), 2, "date type");
+        let date = fields_of(field(&when, 6).bytes().unwrap());
+        assert_eq!(
+            field(&date, 1).varint().unwrap(),
+            (1_700_000_000f64).to_bits()
+        );
+
+        let reference = fields_of(record_value(&record_fields, "parent"));
+        assert_eq!(field(&reference, 1).varint().unwrap(), 5, "reference type");
+        let reference = fields_of(field(&reference, 9).bytes().unwrap());
+        assert_eq!(
+            field(&reference, 1).varint().unwrap(),
+            3,
+            "validating reference"
+        );
+        let target = field(&reference, 2).message().unwrap();
+        assert_eq!(parse_identifier(target).unwrap(), "parent-1");
+        let target_fields = fields_of(field(&reference, 2).bytes().unwrap());
+        assert_eq!(
+            parse_zone_identifier(field(&target_fields, 2).message().unwrap()).unwrap(),
+            ("zone-1".to_string(), "owner-1".to_string())
+        );
+    }
+
+    #[test]
+    fn encodes_a_date_as_a_double() {
+        let record = OutgoingRecord {
+            name: "item-1".into(),
+            record_type: "item".into(),
+            etag: None,
+            semantics: SAVE_CREATE,
+            fields: vec![("when".into(), FieldValue::Date(1_700_000_000))],
+            delete_fields: Vec::new(),
+        };
+        let request = save_request(&record, "zone-1", "owner-1");
+        let top = fields_of(request.as_slice());
+        let record_fields = fields_of(field(&top, 1).bytes().unwrap());
+
+        let when = fields_of(record_value(&record_fields, "when"));
+        let date_value = field(&when, 6);
+        let date = fields_of(date_value.bytes().unwrap());
+        let time = field(&date, 1);
+        assert!(
+            matches!(time.value, wire::Value::Fixed64(_)),
+            "date time must be a fixed64 double, got {:?}",
+            time.value
+        );
+        assert_eq!(time.varint().unwrap(), (1_700_000_000f64).to_bits());
+
+        let parsed = parse_record(field(&top, 1).bytes().unwrap()).unwrap();
+        assert_eq!(parsed.int("when"), Some(1_700_000_000));
+    }
+
+    #[test]
+    fn parses_a_save_response_etag() {
+        let mut server_fields = Writer::new();
+        server_fields.string(1, "etag-server");
+        let mut save_response = Writer::new();
+        save_response.message(4, &server_fields);
+
+        let mut result = Writer::new();
+        result.uint64(1, 1);
+        let mut response = Writer::new();
+        response.message(3, &result);
+        response.message(210, &save_response);
+
+        let outcome = parse_outcome(response.as_slice()).unwrap().check().unwrap();
+        assert_eq!(outcome.record.unwrap().etag.as_deref(), Some("etag-server"));
+    }
+
+    #[test]
+    fn parses_a_delete_result() {
+        let mut result = Writer::new();
+        result.uint64(1, 1);
+        let mut response = Writer::new();
+        response.message(3, &result);
+        response.message(214, &Writer::new());
+
+        let outcome = parse_outcome(response.as_slice()).unwrap().check().unwrap();
+        assert!(outcome.record.is_none());
+        assert!(outcome.etag_match.is_none());
+    }
+
+    #[test]
+    fn surfaces_a_client_error() {
+        let mut client = Writer::new();
+        client.uint64(1, 60);
+        let mut error = Writer::new();
+        error.message(1, &client);
+        error.string(4, "stale record update");
+
+        let mut result = Writer::new();
+        result.uint64(1, 3);
+        result.message(2, &error);
+        let mut response = Writer::new();
+        response.message(3, &result);
+
+        let outcome = parse_outcome(response.as_slice()).unwrap();
+        assert_eq!(outcome.client_code, Some(60));
+        let error = outcome.check().unwrap_err();
+        match &error {
+            Error::CloudKit { code, description } => {
+                assert_eq!(*code, 60);
+                assert!(description
+                    .as_deref()
+                    .unwrap()
+                    .contains("stale record update"));
+            }
+            other => panic!("expected a CloudKit error, got {other:?}"),
+        }
+        let text = error.to_string();
+        assert!(text.contains("stale record update"));
+        assert!(text.contains("60"));
+    }
+
+    #[test]
+    fn parses_a_retrieve_response_with_etag_mismatch() {
+        let mut type_name = Writer::new();
+        type_name.string(1, "item");
+        let mut record = Writer::new();
+        record.message(3, &type_name);
+
+        let mut retrieve = Writer::new();
+        retrieve.message(1, &record);
+        retrieve.boolean(2, false);
+
+        let mut result = Writer::new();
+        result.uint64(1, 1);
+        let mut response = Writer::new();
+        response.message(3, &result);
+        response.message(211, &retrieve);
+
+        let outcome = parse_outcome(response.as_slice()).unwrap().check().unwrap();
+        assert_eq!(outcome.etag_match, Some(false));
+        assert_eq!(outcome.record.unwrap().record_type, "item");
     }
 
     #[test]

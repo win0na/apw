@@ -6,6 +6,7 @@
 //! metadata in key order.
 
 use std::collections::BTreeMap;
+use std::time::SystemTime;
 
 use aes_gcm::aead::{Aead, Payload};
 use aes_gcm::KeyInit as AeadKeyInit;
@@ -14,6 +15,7 @@ use base64::Engine;
 use p384::ecdh::diffie_hellman;
 use p384::{PublicKey, SecretKey};
 use plist::{Dictionary, Value};
+use rand::RngCore;
 use sha2::{Digest, Sha256};
 
 use crate::cloudkit::{FieldValue, Record};
@@ -122,9 +124,41 @@ pub fn unwrap_class_keys(
     out
 }
 
+/// Everything a later push needs to address and re-seal one decrypted item.
+pub struct RecordInfo {
+    pub record_type: String,
+    pub etag: Option<String>,
+    pub parent: Option<String>,
+    pub zone: Option<String>,
+    pub owner: Option<String>,
+    pub bplist: Vec<u8>,
+}
+
+/// Decrypt one item record into its padded-stripped plaintext and parsed plist.
+///
+/// Returns `None` when the record is structurally incomplete or its key or
+/// plaintext does not decrypt.
+pub fn decrypt_one(
+    record: &Record,
+    class_keys: &BTreeMap<String, Vec<u8>>,
+) -> Option<(Vec<u8>, plist::Value)> {
+    let parent = record.reference("parentkeyref")?;
+    let class_key = class_keys.get(parent)?;
+    let data = record.bytes("data")?;
+    let wrapped = base64_decode(record.text("wrappedkey")?).ok()?;
+    let item_key = siv_unwrap(class_key, &wrapped).ok()?;
+    let headers = item_headers(record);
+    let plaintext = decrypt_item(&item_key, data, &headers).ok()?;
+    let value = plist::from_bytes::<Value>(&plaintext).ok()?;
+    Some((plaintext, value))
+}
+
 /// Decrypted items plus the number that could not be decrypted.
 pub struct Decrypted {
     pub values: Vec<(String, Value)>,
+    /// Per-record information, keyed by CloudKit record name, for every item
+    /// that decrypted.
+    pub records: BTreeMap<String, RecordInfo>,
     /// Items whose class key was missing or whose key/plaintext failed to
     /// decrypt. Structural skips (`no_parent`, `no_data`, `no_wrapped`) are not
     /// counted as loss.
@@ -134,6 +168,7 @@ pub struct Decrypted {
 /// Decrypt every item whose class key is known.
 pub fn decrypt_items(records: &[Record], class_keys: &BTreeMap<String, Vec<u8>>) -> Decrypted {
     let mut out = Vec::new();
+    let mut records_out = BTreeMap::new();
     let (mut no_parent, mut no_key, mut no_data, mut no_wrapped, mut bad_key, mut bad_plain) =
         (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
     for record in records {
@@ -145,30 +180,40 @@ pub fn decrypt_items(records: &[Record], class_keys: &BTreeMap<String, Vec<u8>>)
             no_key += 1;
             continue;
         };
-        let Some(data) = record.bytes("data") else {
+        if record.bytes("data").is_none() {
             no_data += 1;
             continue;
-        };
+        }
         let Some(wrapped) = record.text("wrappedkey") else {
             no_wrapped += 1;
             continue;
         };
-        let Ok(wrapped) = base64_decode(wrapped) else {
-            bad_key += 1;
+        let Some((_, value)) = decrypt_one(record, class_keys) else {
+            // Classify the failure for the counters: a key that does not
+            // unwrap is `bad_key`; anything else that got this far is
+            // `bad_plain`.
+            let bad_key_record = base64_decode(wrapped)
+                .ok()
+                .is_none_or(|wrapped| siv_unwrap(class_key, &wrapped).is_err());
+            if bad_key_record {
+                bad_key += 1;
+            } else {
+                bad_plain += 1;
+            }
             continue;
         };
-        let Ok(item_key) = siv_unwrap(class_key, &wrapped) else {
-            bad_key += 1;
-            continue;
-        };
-        let headers = item_headers(record);
-        match decrypt_item(&item_key, data, &headers)
-            .ok()
-            .and_then(|plaintext| plist::from_bytes::<Value>(&plaintext).ok())
-        {
-            Some(value) => out.push((record.name.clone(), value)),
-            None => bad_plain += 1,
-        }
+        records_out.insert(
+            record.name.clone(),
+            RecordInfo {
+                record_type: record.record_type.clone(),
+                etag: record.etag.clone(),
+                parent: Some(parent.to_string()),
+                zone: record.zone.clone(),
+                owner: record.owner.clone(),
+                bplist: plist_bytes(&value).unwrap_or_default(),
+            },
+        );
+        out.push((record.name.clone(), value));
     }
     if std::env::var_os("APW_DEBUG").is_some() {
         eprintln!(
@@ -179,6 +224,7 @@ pub fn decrypt_items(records: &[Record], class_keys: &BTreeMap<String, Vec<u8>>)
     }
     Decrypted {
         values: out,
+        records: records_out,
         lost: no_key + bad_key + bad_plain,
     }
 }
@@ -348,6 +394,7 @@ pub fn entry_from_plist_kind(
         passkey,
         group: None,
         updated_at: None,
+        record: None,
     })
 }
 
@@ -380,29 +427,38 @@ fn totp_from_dict(dict: &Dictionary) -> Option<Totp> {
 }
 
 fn item_headers(record: &Record) -> Vec<Vec<u8>> {
+    aad_values(&record.name, &record.fields)
+}
+
+/// Build the ordered AAD values for an item record.
+///
+/// All names are collected into one `BTreeMap` and emitted in sorted key
+/// order. `wrappedkey` carries the parent class key record name, not the
+/// base64-wrapped item key.
+pub(crate) fn aad_values(record_name: &str, fields: &BTreeMap<String, FieldValue>) -> Vec<Vec<u8>> {
     let mut aad = BTreeMap::new();
-    aad.insert("UUID".to_string(), record.name.as_bytes().to_vec());
+    aad.insert("UUID".to_string(), record_name.as_bytes().to_vec());
     aad.insert(
         "encver".to_string(),
-        le8(record.int("encver").unwrap_or(2) as u64),
+        le8(field_int(fields, "encver").unwrap_or(2) as u64),
     );
     aad.insert(
         "gen".to_string(),
-        le8(record.int("gen").unwrap_or(0) as u64),
+        le8(field_int(fields, "gen").unwrap_or(0) as u64),
     );
-    if let Some(parent) = record.reference("parentkeyref") {
+    if let Some(FieldValue::Reference(parent)) = fields.get("parentkeyref") {
         aad.insert("wrappedkey".to_string(), parent.as_bytes().to_vec());
     }
-    if let Some(service) = record.int("pcsservice") {
+    if let Some(service) = field_int(fields, "pcsservice") {
         aad.insert("pcsservice".to_string(), le8(service as u64));
     }
     for name in ["pcspublickey", "pcspublicidentity"] {
-        if let Some(bytes) = record.bytes(name) {
-            aad.insert(name.to_string(), bytes.to_vec());
+        if let Some(FieldValue::Bytes(bytes)) = fields.get(name) {
+            aad.insert(name.to_string(), bytes.clone());
         }
     }
 
-    for (name, value) in &record.fields {
+    for (name, value) in fields {
         if AAD_EXCLUDED.contains(&name.as_str()) || name.starts_with("server_") {
             continue;
         }
@@ -423,6 +479,13 @@ fn item_headers(record: &Record) -> Vec<Vec<u8>> {
     }
 
     aad.into_values().collect()
+}
+
+fn field_int(fields: &BTreeMap<String, FieldValue>, name: &str) -> Option<i64> {
+    match fields.get(name) {
+        Some(FieldValue::Int(value) | FieldValue::Date(value)) => Some(*value),
+        _ => None,
+    }
 }
 
 fn decrypt_item(item_key: &[u8], data: &[u8], headers: &[Vec<u8>]) -> Result<Vec<u8>> {
@@ -451,8 +514,235 @@ fn strip_padding(data: &[u8]) -> Vec<u8> {
     data.to_vec()
 }
 
+/// A sealed keychain item: the record `data` blob (`iv || ciphertext`) and the
+/// base64 class-key-wrapped item key.
+pub struct SealedItem {
+    pub data: Vec<u8>,
+    pub wrappedkey: String,
+}
+
+/// Generate a fresh 64-byte item key.
+pub fn random_item_key() -> [u8; 64] {
+    random_bytes::<64>()
+}
+
+/// Seal a binary plist as a keychain item.
+///
+/// `aad` is the ordered AAD value list from [`aad_values`]. The IV is generated
+/// here and becomes the first AAD value. The plaintext is padded with `0x80`
+/// followed by zeros to a whole number of 20-byte blocks (at least two).
+pub fn seal_item(
+    item_key: &[u8],
+    class_key: &[u8],
+    aad: &[Vec<u8>],
+    bplist: &[u8],
+) -> Result<SealedItem> {
+    if item_key.len() != 64 {
+        return Err(Error::Message(format!(
+            "item key must be 64 bytes, got {}",
+            item_key.len()
+        )));
+    }
+    if class_key.len() != 64 {
+        return Err(Error::Message(format!(
+            "class key must be 64 bytes, got {}",
+            class_key.len()
+        )));
+    }
+
+    let wrappedkey =
+        base64::engine::general_purpose::STANDARD.encode(siv_wrap(class_key, item_key)?);
+
+    let mut iv = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut iv);
+
+    let mut plaintext = bplist.to_vec();
+    plaintext.push(0x80);
+    let blocks = plaintext.len().div_ceil(20).max(2);
+    plaintext.resize(blocks * 20, 0);
+
+    let mut headers: Vec<&[u8]> = Vec::with_capacity(aad.len() + 1);
+    headers.push(&iv);
+    headers.extend(aad.iter().map(Vec::as_slice));
+    let ciphertext = siv_wrap_with(item_key, &plaintext, &headers)?;
+
+    let mut data = Vec::with_capacity(16 + ciphertext.len());
+    data.extend_from_slice(&iv);
+    data.extend_from_slice(&ciphertext);
+
+    Ok(SealedItem { data, wrappedkey })
+}
+
+/// Serialize a plist value to binary plist bytes.
+pub fn plist_bytes(value: &plist::Value) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    plist::to_writer_binary(&mut bytes, value)?;
+    Ok(bytes)
+}
+
+/// The decrypted password-manager metadata dictionary carried in `v_Data`, as
+/// binary plist bytes. Returns `None` for anything that is not a
+/// `com.apple.password-manager` metadata item with a bplist `v_Data`.
+pub fn metadata_bytes(value: &plist::Value) -> Option<Vec<u8>> {
+    let dict = value.as_dictionary()?;
+    if dict.get("agrp").and_then(Value::as_string) != Some("com.apple.password-manager") {
+        return None;
+    }
+    let data = dict.get("v_Data").and_then(Value::as_data)?;
+    if !data.starts_with(b"bplist00") {
+        return None;
+    }
+    let parsed = plist::from_bytes::<Value>(data).ok()?;
+    parsed.as_dictionary()?;
+    plist_bytes(&parsed).ok()
+}
+
+/// Build a create-only personal login item plist.
+pub fn new_login_plist(site: &str, username: &str, password: &[u8]) -> plist::Value {
+    let mut dict = Dictionary::new();
+    dict.insert("labl".into(), Value::String(format!("{site} ({username})")));
+    dict.insert("acct".into(), Value::String(username.into()));
+    dict.insert("srvr".into(), Value::String(site.into()));
+    dict.insert("ptcl".into(), Value::String("htps".into()));
+    dict.insert("atyp".into(), Value::String("form".into()));
+    dict.insert("v_Data".into(), Value::Data(password.to_vec()));
+    dict.insert("cdat".into(), now_date());
+    dict.insert("mdat".into(), now_date());
+    dict.insert("agrp".into(), Value::String("com.apple.cfnetwork".into()));
+    dict.insert("pdmn".into(), Value::String("ak".into()));
+    dict.insert("path".into(), Value::String(String::new()));
+    dict.insert("desc".into(), Value::String("Web form password".into()));
+    dict.insert("sdmn".into(), Value::String(String::new()));
+    dict.insert("port".into(), Value::from(0i64));
+    dict.insert("tomb".into(), Value::from(0i64));
+    dict.insert("sha1".into(), Value::Data(random_bytes::<20>().to_vec()));
+    dict.insert("musr".into(), Value::Data(Vec::new()));
+    dict.insert("class".into(), Value::String("inet".into()));
+    Value::Dictionary(dict)
+}
+
+/// A fresh, empty password-manager metadata dictionary.
+pub fn new_metadata_dict() -> Dictionary {
+    Dictionary::new()
+}
+
+/// Build a create-only password-manager metadata item plist. `metadata` is
+/// serialized as binary plist into `v_Data`.
+pub fn new_metadata_plist(site: &str, username: &str, metadata: &Dictionary) -> plist::Value {
+    let mut dict = Dictionary::new();
+    dict.insert(
+        "labl".into(),
+        Value::String(format!("Password Manager Metadata: {site} ({username})")),
+    );
+    dict.insert("acct".into(), Value::String(username.into()));
+    dict.insert("srvr".into(), Value::String(site.into()));
+    let data = plist_bytes(&Value::Dictionary(metadata.clone())).unwrap_or_default();
+    dict.insert("v_Data".into(), Value::Data(data));
+    dict.insert("atyp".into(), Value::String("form".into()));
+    dict.insert("path".into(), Value::String(String::new()));
+    dict.insert("type".into(), Value::from(1_835_626_085i64));
+    dict.insert(
+        "desc".into(),
+        Value::String("Password Manager Metadata".into()),
+    );
+    dict.insert("sdmn".into(), Value::String(String::new()));
+    dict.insert("cdat".into(), now_date());
+    dict.insert("mdat".into(), now_date());
+    dict.insert("pdmn".into(), Value::String("ak".into()));
+    dict.insert("ptcl".into(), Value::String("htps".into()));
+    dict.insert(
+        "agrp".into(),
+        Value::String("com.apple.password-manager".into()),
+    );
+    dict.insert("port".into(), Value::from(0i64));
+    dict.insert("tomb".into(), Value::from(0i64));
+    dict.insert("sha1".into(), Value::Data(random_bytes::<20>().to_vec()));
+    dict.insert("musr".into(), Value::Data(Vec::new()));
+    dict.insert("class".into(), Value::String("inet".into()));
+    Value::Dictionary(dict)
+}
+
+/// Metadata text fields (`title`, `notes`) are plist data holding UTF-8 bytes.
+pub fn set_metadata_text(metadata: &mut Dictionary, key: &str, value: &str) {
+    metadata.insert(key.into(), Value::Data(value.as_bytes().to_vec()));
+}
+
+/// Append a password-change history entry to `s_hi`, keeping existing entries.
+pub fn append_password_change(
+    metadata: &mut Dictionary,
+    new_password: &str,
+    old_password: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) {
+    let mut change = Dictionary::new();
+    change.insert("d".into(), date_value(now));
+    change.insert("p".into(), Value::String(new_password.into()));
+    change.insert("op".into(), Value::String(old_password.into()));
+    change.insert("id".into(), Value::String(uuid_v4()));
+    change.insert("t".into(), Value::String("pwch".into()));
+
+    let mut history = match metadata.remove("s_hi") {
+        Some(Value::Array(entries)) => entries,
+        _ => Vec::new(),
+    };
+    history.push(Value::Dictionary(change));
+    metadata.insert("s_hi".into(), Value::Array(history));
+}
+
+fn random_bytes<const N: usize>() -> [u8; N] {
+    let mut bytes = [0u8; N];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    bytes
+}
+
+fn now_date() -> Value {
+    Value::Date(plist::Date::from(SystemTime::now()))
+}
+
+fn date_value(now: chrono::DateTime<chrono::Utc>) -> Value {
+    Value::Date(plist::Date::from(SystemTime::from(now)))
+}
+
+fn uuid_v4() -> String {
+    let mut bytes = random_bytes::<16>();
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        bytes[0],
+        bytes[1],
+        bytes[2],
+        bytes[3],
+        bytes[4],
+        bytes[5],
+        bytes[6],
+        bytes[7],
+        bytes[8],
+        bytes[9],
+        bytes[10],
+        bytes[11],
+        bytes[12],
+        bytes[13],
+        bytes[14],
+        bytes[15],
+    )
+    .to_uppercase()
+}
+
 fn siv_unwrap(key: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>> {
     siv_unwrap_with(key, ciphertext, &[])
+}
+
+fn siv_wrap(key: &[u8], plaintext: &[u8]) -> Result<Vec<u8>> {
+    siv_wrap_with(key, plaintext, &[])
+}
+
+fn siv_wrap_with(key: &[u8], plaintext: &[u8], headers: &[&[u8]]) -> Result<Vec<u8>> {
+    let mut cipher =
+        Aes256Siv::new_from_slice(key).map_err(|_| Error::Message("invalid AES-SIV key".into()))?;
+    cipher
+        .encrypt(headers.iter().copied(), plaintext)
+        .map_err(|_| Error::Message("AES-SIV encrypt failed".into()))
 }
 
 fn siv_unwrap_with(key: &[u8], ciphertext: &[u8], headers: &[&[u8]]) -> Result<Vec<u8>> {
@@ -716,5 +1006,222 @@ mod tests {
         plist::to_writer_binary(&mut bytes, &Value::Dictionary(archive)).unwrap();
         let expanded = expand_archive(&bytes).unwrap();
         assert_eq!(expanded.get("SFCiphertext"), Some(&vec![1, 2, 3]));
+    }
+
+    fn item_record(name: &str, fields: BTreeMap<String, FieldValue>) -> Record {
+        Record {
+            name: name.into(),
+            zone: None,
+            owner: None,
+            etag: None,
+            record_type: "item".into(),
+            fields,
+            protection_info: None,
+            pcs_key: None,
+            share_info: None,
+        }
+    }
+
+    fn sealed_record(
+        record_name: &str,
+        parent: &str,
+        value: &plist::Value,
+    ) -> (Record, [u8; 64], [u8; 64]) {
+        let item_key = random_item_key();
+        let class_key = [9u8; 64];
+        let mut fields: BTreeMap<String, FieldValue> = [
+            ("gen".to_string(), FieldValue::Int(0)),
+            ("encver".to_string(), FieldValue::Int(2)),
+            (
+                "parentkeyref".to_string(),
+                FieldValue::Reference(parent.into()),
+            ),
+            (
+                "uploadver".to_string(),
+                FieldValue::Text("iphone 21.6.0 (19H384)".into()),
+            ),
+            (
+                "acct".to_string(),
+                FieldValue::Text("me@example.com".into()),
+            ),
+        ]
+        .into_iter()
+        .collect();
+
+        let aad = aad_values(record_name, &fields);
+        let bplist = plist_bytes(value).unwrap();
+        let sealed = seal_item(&item_key, &class_key, &aad, &bplist).unwrap();
+        fields.insert("wrappedkey".into(), FieldValue::Text(sealed.wrappedkey));
+        fields.insert("data".into(), FieldValue::Bytes(sealed.data));
+
+        (item_record(record_name, fields), item_key, class_key)
+    }
+
+    fn open(record: &Record, item_key: &[u8]) -> Result<plist::Value> {
+        let headers = item_headers(record);
+        let data = record.bytes("data").expect("data field");
+        let plaintext = decrypt_item(item_key, data, &headers)?;
+        Ok(plist::from_bytes(&plaintext)?)
+    }
+
+    #[test]
+    fn aad_values_follow_sorted_field_order() {
+        let fields: BTreeMap<String, FieldValue> = [
+            (
+                "acct".to_string(),
+                FieldValue::Text("me@example.com".into()),
+            ),
+            ("cdat".to_string(), FieldValue::Date(1_700_000_000)),
+            ("encver".to_string(), FieldValue::Int(2)),
+            ("gen".to_string(), FieldValue::Int(3)),
+            (
+                "parentkeyref".to_string(),
+                FieldValue::Reference("class-key".into()),
+            ),
+            ("labl".to_string(), FieldValue::Text("Example".into())),
+            ("pcsservice".to_string(), FieldValue::Int(7)),
+        ]
+        .into_iter()
+        .collect();
+
+        let expected = vec![
+            b"item-1".to_vec(),
+            b"me@example.com".to_vec(),
+            b"2023-11-14T22:13:20Z".to_vec(),
+            2u64.to_le_bytes().to_vec(),
+            3u64.to_le_bytes().to_vec(),
+            b"Example".to_vec(),
+            7u64.to_le_bytes().to_vec(),
+            b"class-key".to_vec(),
+        ];
+        assert_eq!(aad_values("item-1", &fields), expected);
+
+        // Insertion order must not matter: the output is key-sorted.
+        let shuffled: BTreeMap<String, FieldValue> = fields
+            .iter()
+            .rev()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+        assert_eq!(aad_values("item-1", &shuffled), expected);
+    }
+
+    #[test]
+    fn seals_and_decrypts_plists() {
+        let values = [
+            plist::Value::Dictionary(Dictionary::new()),
+            plist::Value::String("x".repeat(56)),
+        ];
+        for value in values {
+            let (record, item_key, class_key) = sealed_record("item-1", "class-key", &value);
+            assert_eq!(open(&record, &item_key).unwrap(), value);
+
+            let wrapped = base64_decode(record.text("wrappedkey").unwrap()).unwrap();
+            assert_eq!(siv_unwrap(&class_key, &wrapped).unwrap(), item_key);
+        }
+    }
+
+    #[test]
+    fn padding_adds_a_block() {
+        let value = plist::Value::String("x".repeat(56));
+        let bplist = plist_bytes(&value).unwrap();
+        assert!(
+            (90..=110).contains(&bplist.len()),
+            "expected a ~100-byte plist, got {}",
+            bplist.len()
+        );
+        assert_ne!((bplist.len() + 1) % 20, 0);
+
+        let (record, item_key, _) = sealed_record("item-1", "class-key", &value);
+        let data = record.bytes("data").unwrap();
+        let padded = data.len() - 16 - 16;
+        assert_eq!(padded % 20, 0);
+        assert!(padded > bplist.len() + 1);
+        assert_eq!(open(&record, &item_key).unwrap(), value);
+    }
+
+    #[test]
+    fn tampering_breaks_decryption() {
+        let value = plist::Value::String("secret".into());
+        let (record, item_key, _) = sealed_record("item-1", "class-key", &value);
+
+        let mut flipped = record.clone();
+        if let Some(FieldValue::Bytes(data)) = flipped.fields.get_mut("data") {
+            data[20] ^= 0x01;
+        }
+        assert!(open(&flipped, &item_key).is_err());
+
+        let mut reparented = record.clone();
+        reparented
+            .fields
+            .insert("parentkeyref".into(), FieldValue::Reference("other".into()));
+        assert!(open(&reparented, &item_key).is_err());
+
+        assert_eq!(open(&record, &item_key).unwrap(), value);
+    }
+
+    #[test]
+    fn appends_password_change_history() {
+        let mut metadata = new_metadata_dict();
+        let mut existing = Dictionary::new();
+        existing.insert("p".into(), Value::String("old".into()));
+        existing.insert("t".into(), Value::String("pwcr".into()));
+        metadata.insert(
+            "s_hi".into(),
+            Value::Array(vec![Value::Dictionary(existing.clone())]),
+        );
+
+        let now = chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+        append_password_change(&mut metadata, "new", "old", now);
+
+        let history = metadata.get("s_hi").and_then(Value::as_array).unwrap();
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0], Value::Dictionary(existing));
+
+        let change = history[1].as_dictionary().unwrap();
+        assert_eq!(change.get("p").and_then(Value::as_string), Some("new"));
+        assert_eq!(change.get("op").and_then(Value::as_string), Some("old"));
+        assert_eq!(change.get("t").and_then(Value::as_string), Some("pwch"));
+        assert_eq!(change.get("d"), Some(&date_value(now)));
+        let id = change.get("id").and_then(Value::as_string).unwrap();
+        assert_eq!(id.len(), 36);
+        assert_eq!(id, id.to_uppercase());
+
+        let mut fresh = new_metadata_dict();
+        append_password_change(&mut fresh, "first", "", now);
+        assert_eq!(
+            fresh.get("s_hi").and_then(Value::as_array).unwrap().len(),
+            1
+        );
+    }
+
+    fn key_set(value: &plist::Value) -> std::collections::BTreeSet<String> {
+        value.as_dictionary().unwrap().keys().cloned().collect()
+    }
+
+    #[test]
+    fn login_plist_has_the_expected_keys() {
+        let value = new_login_plist("example.com", "me", b"hunter2");
+        let expected: std::collections::BTreeSet<String> = [
+            "labl", "acct", "srvr", "ptcl", "atyp", "v_Data", "cdat", "mdat", "agrp", "pdmn",
+            "path", "desc", "sdmn", "port", "tomb", "sha1", "musr", "class",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+        assert_eq!(key_set(&value), expected);
+    }
+
+    #[test]
+    fn metadata_plist_has_the_expected_keys() {
+        let metadata = new_metadata_dict();
+        let value = new_metadata_plist("example.com", "me", &metadata);
+        let expected: std::collections::BTreeSet<String> = [
+            "labl", "acct", "srvr", "v_Data", "atyp", "path", "type", "desc", "sdmn", "cdat",
+            "mdat", "pdmn", "ptcl", "agrp", "port", "tomb", "sha1", "musr", "class",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+        assert_eq!(key_set(&value), expected);
     }
 }

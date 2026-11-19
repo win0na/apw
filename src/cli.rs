@@ -100,6 +100,72 @@ pub enum Command {
         /// Name, domain, or username. When given, prints just the code.
         query: Option<String>,
     },
+    /// Add a new item to the local snapshot.
+    Add {
+        #[command(subcommand)]
+        item: AddItem,
+    },
+    /// Edit a login in the local snapshot.
+    ///
+    /// Pass a query, or select the entry with `--id`:
+    /// `apw edit --id <uuid> --title x`.
+    /// A stored site or username cannot be changed here; delete the entry and
+    /// add it again instead.
+    Edit {
+        /// Name, domain, or username. Optional when --id is given.
+        query: Option<String>,
+        /// Select the entry by record id.
+        #[arg(long)]
+        id: Option<String>,
+        /// Set the name. An empty value clears it.
+        #[arg(long)]
+        title: Option<String>,
+        /// Set the notes.
+        #[arg(long)]
+        notes: Option<String>,
+        /// Remove the notes.
+        #[arg(long)]
+        clear_notes: bool,
+        /// Read the new password from the first line of stdin.
+        #[arg(long)]
+        password_stdin: bool,
+        /// Replace the password with a generated one.
+        #[arg(long)]
+        generate: bool,
+        /// Show what would change without saving.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Delete a login from the local snapshot.
+    ///
+    /// Pass a query, or select the entry with `--id`:
+    /// `apw rm --id <uuid> --yes`.
+    Rm {
+        /// Name, domain, or username. Optional when --id is given.
+        query: Option<String>,
+        /// Select the entry by record id.
+        #[arg(long)]
+        id: Option<String>,
+        /// Confirm the permanent deletion.
+        #[arg(long)]
+        yes: bool,
+        /// Show what would change without saving.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// List changes that have not been pushed yet.
+    Pending,
+    /// Keep or drop a pending change.
+    Resolve {
+        /// Pending op id, as shown by `apw pending`.
+        id: String,
+        /// Keep the op and try it again even if it was blocked.
+        #[arg(long)]
+        local: bool,
+        /// Drop the op without pushing it.
+        #[arg(long)]
+        remote: bool,
+    },
     /// Install the systemd user service and timer.
     InstallUnits,
     /// Probe escrow authentication without spending an attempt.
@@ -126,6 +192,33 @@ pub enum Command {
     /// Count snapshot records by kind.
     #[command(hide = true)]
     ProbeStats,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum AddItem {
+    /// Add a login.
+    Login {
+        /// Site host or URL.
+        url: String,
+        /// Account username.
+        #[arg(long)]
+        username: Option<String>,
+        /// Name shown in `apw list`.
+        #[arg(long)]
+        title: Option<String>,
+        /// Notes for the entry.
+        #[arg(long)]
+        notes: Option<String>,
+        /// Read the password from the first line of stdin.
+        #[arg(long)]
+        password_stdin: bool,
+        /// Generate a 20-character password.
+        #[arg(long)]
+        generate: bool,
+        /// Show what would be added without saving.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 pub fn run() -> i32 {
@@ -169,6 +262,10 @@ fn execute(cli: Cli) -> Result<()> {
         Command::Login { .. }
             | Command::Join
             | Command::Sync { .. }
+            | Command::Add { .. }
+            | Command::Edit { .. }
+            | Command::Rm { .. }
+            | Command::Resolve { .. }
             | Command::ProbeEscrow
             | Command::ProbeSettings
             | Command::ProbeZone { .. }
@@ -185,7 +282,11 @@ fn execute(cli: Cli) -> Result<()> {
     let mut config = Config::load(&paths)?;
     let table_command = matches!(
         &cli.command,
-        Command::List { .. } | Command::Get { .. } | Command::Wifi { .. } | Command::Otp { .. }
+        Command::List { .. }
+            | Command::Get { .. }
+            | Command::Wifi { .. }
+            | Command::Otp { .. }
+            | Command::Pending
     );
     let mut style = Style::new(cli.json, cli.wide, cli.no_header);
     if table_command && !style.explicit_json && (cli.wide || cli.no_header) {
@@ -260,6 +361,68 @@ fn execute(cli: Cli) -> Result<()> {
             commands::otp::run(&paths, &mut config, query.as_deref(), style)
         }
         Command::InstallUnits => commands::units::run(&paths, &config, style.json),
+        Command::Add { item } => match item {
+            AddItem::Login {
+                url,
+                username,
+                title,
+                notes,
+                password_stdin,
+                generate,
+                dry_run,
+            } => commands::write::add_login(
+                &paths,
+                &mut config,
+                &url,
+                username.as_deref(),
+                title.as_deref(),
+                notes.as_deref(),
+                password_stdin,
+                generate,
+                dry_run,
+                style,
+            ),
+        },
+        Command::Edit {
+            query,
+            id,
+            title,
+            notes,
+            clear_notes,
+            password_stdin,
+            generate,
+            dry_run,
+        } => commands::write::edit(
+            &paths,
+            &mut config,
+            query.as_deref(),
+            id.as_deref(),
+            title.as_deref(),
+            notes.as_deref(),
+            clear_notes,
+            password_stdin,
+            generate,
+            dry_run,
+            style,
+        ),
+        Command::Rm {
+            query,
+            id,
+            yes,
+            dry_run,
+        } => commands::write::rm(
+            &paths,
+            &mut config,
+            query.as_deref(),
+            id.as_deref(),
+            yes,
+            dry_run,
+            style,
+        ),
+        Command::Pending => commands::write::pending(&paths, &mut config, style),
+        Command::Resolve { id, local, remote } => {
+            commands::write::resolve(&paths, &mut config, &id, local, remote, style)
+        }
         Command::ProbeEscrow => commands::probe::escrow(&paths, &mut config, style.json),
         Command::ProbeSettings => commands::probe::settings(&paths, &mut config, style.json),
         Command::ProbeZone { zone } => {

@@ -1,4 +1,32 @@
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
+
+/// A fresh dashed uppercase UUID v4, matching the record names CloudKit uses.
+pub fn record_name() -> String {
+    let mut bytes = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    format!(
+        "{:02X}{:02X}{:02X}{:02X}-{:02X}{:02X}-{:02X}{:02X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}",
+        bytes[0],
+        bytes[1],
+        bytes[2],
+        bytes[3],
+        bytes[4],
+        bytes[5],
+        bytes[6],
+        bytes[7],
+        bytes[8],
+        bytes[9],
+        bytes[10],
+        bytes[11],
+        bytes[12],
+        bytes[13],
+        bytes[14],
+        bytes[15],
+    )
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(i32)]
@@ -31,6 +59,13 @@ pub struct Vault {
     pub session: Option<Session>,
     #[serde(default)]
     pub peer: Option<PeerState>,
+    /// Edits made locally that have not been pushed yet.
+    #[serde(default)]
+    pub pending: Vec<PendingOp>,
+    /// Synckey record names keyed by `"<zone>:<class>"`. Names only, never key
+    /// material.
+    #[serde(default)]
+    pub synckeys: std::collections::BTreeMap<String, String>,
 }
 
 impl Default for Vault {
@@ -44,6 +79,8 @@ impl Default for Vault {
             groups: Vec::new(),
             session: None,
             peer: None,
+            pending: Vec::new(),
+            synckeys: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -150,6 +187,91 @@ pub struct Entry {
     pub group: Option<String>,
     #[serde(default)]
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// CloudKit addressing and payloads for a later push.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record: Option<RecordMeta>,
+}
+
+/// What a later push needs to address and re-seal one keychain record.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
+pub struct RecordMeta {
+    pub zone: String,
+    pub item_type: String,
+    #[serde(default)]
+    pub item_etag: Option<String>,
+    #[serde(default)]
+    pub parent: Option<String>,
+    #[serde(default)]
+    pub owner: Option<String>,
+    /// Base64 of the decrypted login/item plist.
+    #[serde(default)]
+    pub plist: Option<String>,
+    #[serde(default)]
+    pub sidecar_name: Option<String>,
+    #[serde(default)]
+    pub sidecar_type: Option<String>,
+    #[serde(default)]
+    pub sidecar_etag: Option<String>,
+    /// Base64 of the decrypted password-manager metadata dictionary (`v_Data`).
+    #[serde(default)]
+    pub metadata: Option<String>,
+    /// Base64 of the decrypted outer sidecar item plist the metadata came from.
+    #[serde(default)]
+    pub sidecar_plist: Option<String>,
+}
+
+/// The kind of change a pending op records.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OpKind {
+    Create,
+    Edit,
+    Delete,
+}
+
+/// A local change that has not been pushed to CloudKit.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct PendingOp {
+    /// Uppercase uuid, as shown by `apw pending` and taken by `resolve`.
+    pub id: String,
+    pub kind: OpKind,
+    pub zone: String,
+    #[serde(default)]
+    pub owner: Option<String>,
+    pub item_name: String,
+    pub item_type: String,
+    #[serde(default)]
+    pub item_base: Option<String>,
+    #[serde(default)]
+    pub item_new: Option<String>,
+    #[serde(default)]
+    pub item_etag: Option<String>,
+    pub item_dirty: bool,
+    #[serde(default)]
+    pub sidecar_name: Option<String>,
+    #[serde(default)]
+    pub sidecar_type: Option<String>,
+    #[serde(default)]
+    pub sidecar_base: Option<String>,
+    #[serde(default)]
+    pub sidecar_new: Option<String>,
+    /// Base64 of the exact outer sidecar plist to send. Distinct from
+    /// `sidecar_new`, which is the metadata dictionary carried in `v_Data`.
+    #[serde(default)]
+    pub sidecar_write: Option<String>,
+    #[serde(default)]
+    pub sidecar_etag: Option<String>,
+    pub sidecar_dirty: bool,
+    #[serde(default)]
+    pub blocked: Option<String>,
+    #[serde(default)]
+    pub attempts: u32,
+    /// Set by `resolve --local` to push a blocked op even if it was refused.
+    #[serde(default)]
+    pub force: bool,
+    /// Display label captured when the op was queued, e.g.
+    /// `"Scratch Login (tester)"`.
+    #[serde(default)]
+    pub label: String,
 }
 
 impl Entry {
@@ -356,6 +478,47 @@ pub fn merge_sidecars(logins: &mut [Entry], sidecars: Vec<Entry>) -> Vec<Entry> 
         if login.username.is_none() {
             login.username = sidecar.username;
         }
+        // The sidecar's CloudKit identity travels with it so a later push can
+        // rewrite the metadata record the merged view came from.
+        if let Some(sidecar_record) = sidecar.record {
+            let sidecar_name = sidecar.id;
+            let sidecar_type = sidecar_record
+                .sidecar_type
+                .clone()
+                .or_else(|| Some(sidecar_record.item_type.clone()))
+                .filter(|value| !value.is_empty());
+            let sidecar_etag = sidecar_record
+                .sidecar_etag
+                .clone()
+                .or_else(|| sidecar_record.item_etag.clone());
+            let metadata = sidecar_record.metadata.clone();
+            let sidecar_plist = sidecar_record.sidecar_plist.clone();
+            match &mut login.record {
+                Some(record) => {
+                    record.sidecar_name = Some(sidecar_name);
+                    record.sidecar_type = sidecar_type;
+                    record.sidecar_etag = sidecar_etag;
+                    if metadata.is_some() {
+                        record.metadata = metadata;
+                    }
+                    if sidecar_plist.is_some() {
+                        record.sidecar_plist = sidecar_plist;
+                    }
+                }
+                None => {
+                    login.record = Some(RecordMeta {
+                        zone: sidecar_record.zone,
+                        item_type: String::new(),
+                        sidecar_name: Some(sidecar_name),
+                        sidecar_type,
+                        sidecar_etag,
+                        metadata,
+                        sidecar_plist,
+                        ..RecordMeta::default()
+                    });
+                }
+            }
+        }
     }
     unmatched
 }
@@ -538,5 +701,118 @@ mod tests {
         assert_eq!(bob.title.as_deref(), Some("id-bob metadata"));
         assert_eq!(bob.notes.as_deref(), Some("from sidecar"));
         assert!(bob.totp.is_some());
+    }
+
+    #[test]
+    fn merge_moves_the_sidecar_record_onto_the_login() {
+        let mut logins = vec![login("id-solo", "example.com", "solo@example.com")];
+        logins[0].record = Some(RecordMeta {
+            zone: "Passwords".to_string(),
+            item_type: "item".to_string(),
+            item_etag: Some("login-etag".to_string()),
+            parent: Some("class-key".to_string()),
+            ..RecordMeta::default()
+        });
+        let mut metadata = sidecar("sidecar-id", "example.com", None);
+        metadata.record = Some(RecordMeta {
+            zone: "Passwords".to_string(),
+            item_type: "item".to_string(),
+            sidecar_name: Some("sidecar-id".to_string()),
+            sidecar_type: Some("item".to_string()),
+            sidecar_etag: Some("sidecar-etag".to_string()),
+            metadata: Some("bWV0YQ==".to_string()),
+            ..RecordMeta::default()
+        });
+
+        merge_sidecars(&mut logins, vec![metadata]);
+
+        let record = logins[0].record.as_ref().expect("login keeps its record");
+        assert_eq!(record.zone, "Passwords");
+        assert_eq!(record.item_type, "item");
+        assert_eq!(record.item_etag.as_deref(), Some("login-etag"));
+        assert_eq!(record.parent.as_deref(), Some("class-key"));
+        assert_eq!(record.sidecar_name.as_deref(), Some("sidecar-id"));
+        assert_eq!(record.sidecar_type.as_deref(), Some("item"));
+        assert_eq!(record.sidecar_etag.as_deref(), Some("sidecar-etag"));
+        assert_eq!(record.metadata.as_deref(), Some("bWV0YQ=="));
+    }
+
+    #[test]
+    fn merge_creates_a_login_record_from_the_sidecar() {
+        let mut logins = vec![login("id-solo", "example.com", "solo@example.com")];
+        let mut metadata = sidecar("sidecar-id", "example.com", None);
+        metadata.record = Some(RecordMeta {
+            zone: "Passwords".to_string(),
+            item_type: "item".to_string(),
+            sidecar_etag: Some("sidecar-etag".to_string()),
+            ..RecordMeta::default()
+        });
+
+        merge_sidecars(&mut logins, vec![metadata]);
+
+        let record = logins[0].record.as_ref().expect("login gains a record");
+        assert_eq!(record.zone, "Passwords");
+        assert_eq!(record.item_type, "");
+        assert_eq!(record.sidecar_name.as_deref(), Some("sidecar-id"));
+        assert_eq!(record.sidecar_type.as_deref(), Some("item"));
+        assert_eq!(record.sidecar_etag.as_deref(), Some("sidecar-etag"));
+    }
+
+    #[test]
+    fn vault_round_trips_pending_ops_and_synckeys() {
+        let mut vault = Vault::default();
+        vault.pending.push(PendingOp {
+            id: "9E107D9D-372B-4C81-8D21-A9C61E8F5D41".to_string(),
+            kind: OpKind::Edit,
+            zone: "Passwords".to_string(),
+            owner: None,
+            item_name: "item-1".to_string(),
+            item_type: "item".to_string(),
+            item_base: Some("YmFzZQ==".to_string()),
+            item_new: Some("bmV3".to_string()),
+            item_etag: Some("etag-1".to_string()),
+            item_dirty: true,
+            sidecar_name: Some("sidecar-1".to_string()),
+            sidecar_type: Some("item".to_string()),
+            sidecar_base: Some("bWV0YQ==".to_string()),
+            sidecar_new: Some("bmV3bWV0YQ==".to_string()),
+            sidecar_write: Some("d3JpdGU=".to_string()),
+            sidecar_etag: Some("etag-2".to_string()),
+            sidecar_dirty: true,
+            blocked: None,
+            attempts: 1,
+            force: false,
+            label: String::new(),
+        });
+        vault
+            .synckeys
+            .insert("Passwords:inet".to_string(), "synckey-1".to_string());
+
+        let json = serde_json::to_string(&vault).expect("serialize");
+        let back: Vault = serde_json::from_str(&json).expect("deserialize");
+
+        assert_eq!(back.version, 1);
+        assert_eq!(back.pending, vault.pending);
+        assert_eq!(back.synckeys, vault.synckeys);
+        assert_eq!(back.pending[0].kind, OpKind::Edit);
+    }
+
+    #[test]
+    fn old_vault_json_loads_with_defaults() {
+        let json = r#"{
+            "version": 1,
+            "account": "me@example.com",
+            "entries": [{"id": "id-1", "title": "Example"}],
+            "groups": [],
+            "session": null,
+            "peer": null
+        }"#;
+
+        let vault: Vault = serde_json::from_str(json).expect("old vault loads");
+
+        assert!(vault.pending.is_empty());
+        assert!(vault.synckeys.is_empty());
+        assert!(vault.entries[0].record.is_none());
+        assert_eq!(vault.entries[0].id, "id-1");
     }
 }

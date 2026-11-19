@@ -10,6 +10,7 @@ pub mod pw;
 pub mod status;
 pub mod sync;
 pub mod units;
+pub mod write;
 
 pub fn login_result(entry: &Entry, include_password: bool) -> Value {
     let mut result = json!({

@@ -11,6 +11,7 @@ pub mod model;
 pub mod octagon;
 pub mod output;
 pub mod pcs;
+pub mod push;
 pub mod store;
 pub mod totp;
 pub mod vault;

@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use base64::Engine;
@@ -8,10 +9,11 @@ use crate::cloudkit::Gateway;
 use crate::commands::join::block_on;
 use crate::config::{self, Config, Paths, State};
 use crate::error::{Error, Result};
-use crate::model::{Entry, EntryKind, Source};
+use crate::model::{Entry, EntryKind, OpKind, RecordMeta, Source};
 use crate::octagon::{self, keys::PeerKeys};
 use crate::output;
 use crate::pcs::ServiceKey;
+use crate::push;
 use crate::vault;
 
 pub fn run(
@@ -26,10 +28,17 @@ pub fn run(
         if let Some(last) = state.last_sync {
             let elapsed = chrono::Utc::now().signed_duration_since(last).num_seconds();
             if elapsed >= 0 && (elapsed as u64) < config.sync.min_interval_seconds {
-                return Err(Error::Message(format!(
-                    "last sync was {elapsed}s ago; the floor is {}s (use --force)",
-                    config.sync.min_interval_seconds
-                )));
+                // A pending queue is work the floor must not starve: allow the
+                // run so a queued write can be pushed.
+                let has_pending = vault::load(paths, config)
+                    .map(|vault| !vault.pending.is_empty())
+                    .unwrap_or(false);
+                if !has_pending {
+                    return Err(Error::Message(format!(
+                        "last sync was {elapsed}s ago; the floor is {}s (use --force)",
+                        config.sync.min_interval_seconds
+                    )));
+                }
             }
         }
     }
@@ -49,7 +58,8 @@ pub fn run(
 fn sync_fixture(paths: &Paths, config: &mut Config, fixture: &Path, json: bool) -> Result<()> {
     let mut snapshot = vault::fixture::read(fixture)?;
     // A fixture has no session or peer. Keep the ones a live snapshot already
-    // holds so testing does not orphan the trust peer.
+    // holds so testing does not orphan the trust peer. Pending edits and the
+    // synckey names are live state that only a zone read replaces.
     if paths.snapshot_file.exists() {
         let existing = vault::load(paths, config)?;
         if snapshot.session.is_none() {
@@ -58,6 +68,8 @@ fn sync_fixture(paths: &Paths, config: &mut Config, fixture: &Path, json: bool) 
         if snapshot.peer.is_none() {
             snapshot.peer = existing.peer;
         }
+        snapshot.pending = existing.pending;
+        snapshot.synckeys = existing.synckeys;
     }
     snapshot.account = config.account.clone().or(snapshot.account);
     snapshot.generated_at = Some(chrono::Utc::now());
@@ -106,7 +118,17 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Resu
         &decode(&peer_state.encryption_key)?,
     )?;
 
-    let (tlkshares, synckeys, items, wifi_records, session) = block_on(async {
+    let (
+        tlkshares,
+        synckeys,
+        items,
+        zone_of,
+        wifi_records,
+        sync_keys,
+        zones_read,
+        session,
+        gateway,
+    ) = block_on(async {
         let mut session = session;
         let identity = Anisette::new(&anisette_url).identity().await?;
         let mac = Anisette::new(&anisette_url)
@@ -147,6 +169,9 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Resu
         let mut tlkshares = Vec::new();
         let mut synckeys = Vec::new();
         let mut items = Vec::new();
+        let mut zone_of: BTreeMap<String, String> = BTreeMap::new();
+        let mut sync_keys: BTreeMap<String, String> = BTreeMap::new();
+        let mut zones_read = false;
 
         let mut peers = vec![peer_state.id.clone()];
         if let Some(sponsor) = &peer_state.sponsor_id {
@@ -196,12 +221,24 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Resu
                 for record in page.records {
                     match record.record_type.as_str() {
                         "tlkshare" => tlkshares.push(record),
-                        "synckey" => synckeys.push(record),
-                        "item" if zone == "WiFi" => wifi_records.push(record),
-                        "item" => items.push(record),
+                        "synckey" => {
+                            if let Some(class) = record.text("class") {
+                                sync_keys.insert(format!("{zone}:{class}"), record.name.clone());
+                            }
+                            synckeys.push(record);
+                        }
+                        "item" if zone == "WiFi" => {
+                            zone_of.insert(record.name.clone(), zone.to_string());
+                            wifi_records.push(record);
+                        }
+                        "item" => {
+                            zone_of.insert(record.name.clone(), zone.to_string());
+                            items.push(record);
+                        }
                         _ => {}
                     }
                 }
+                zones_read = true;
                 if page.status == 1 {
                     match page.token {
                         Some(next) if Some(&next) != token.as_ref() => token = Some(next),
@@ -212,9 +249,23 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Resu
                 }
             }
         }
-        Ok::<_, Error>((tlkshares, synckeys, items, wifi_records, session))
+        Ok::<_, Error>((
+            tlkshares,
+            synckeys,
+            items,
+            zone_of,
+            wifi_records,
+            sync_keys,
+            zones_read,
+            session,
+            gateway,
+        ))
     })?;
     snapshot.session = Some(session.clone());
+    // Only a zone read replaces the synckey names; an early failure keeps them.
+    if zones_read {
+        snapshot.synckeys = sync_keys;
+    }
 
     if std::env::var_os("APW_DEBUG").is_some() {
         let receivers: Vec<&str> = tlkshares
@@ -390,9 +441,13 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Resu
     let mut passkeys: Vec<Entry> = Vec::new();
 
     for (id, value) in &decrypted.values {
-        let Some(entry) = ckks::entry_from_plist(id, value) else {
+        let Some(mut entry) = ckks::entry_from_plist(id, value) else {
             continue;
         };
+        if let Some(info) = decrypted.records.get(id) {
+            let zone = zone_of.get(id).map(String::as_str).unwrap_or_default();
+            attach_record(&mut entry, info, zone, value);
+        }
         let agrp = entry.agrp.clone().unwrap_or_default();
         // Tombstones and key material are not user items.
         if agrp.ends_with("-recently-deleted")
@@ -516,18 +571,24 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Resu
         }
     }
 
-    let mut wifi: Vec<Entry> = wifi_decrypted
-        .values
-        .iter()
-        .filter(|(_, value)| {
-            value
-                .as_dictionary()
-                .and_then(|dict| dict.get("acct"))
-                .and_then(|value| value.as_string())
-                .is_some_and(|acct| !acct.is_empty())
-        })
-        .filter_map(|(id, value)| ckks::entry_from_plist_kind(id, value, Some(EntryKind::Wifi)))
-        .collect();
+    let mut wifi: Vec<Entry> = Vec::new();
+    for (id, value) in &wifi_decrypted.values {
+        let named = value
+            .as_dictionary()
+            .and_then(|dict| dict.get("acct"))
+            .and_then(|value| value.as_string())
+            .is_some_and(|acct| !acct.is_empty());
+        if !named {
+            continue;
+        }
+        let Some(mut entry) = ckks::entry_from_plist_kind(id, value, Some(EntryKind::Wifi)) else {
+            continue;
+        };
+        if let Some(info) = wifi_decrypted.records.get(id) {
+            attach_record(&mut entry, info, "WiFi", value);
+        }
+        wifi.push(entry);
+    }
     if std::env::var_os("APW_DEBUG").is_some() {
         eprintln!(
             "sync: {} wifi records, {} wifi entries",
@@ -536,9 +597,50 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Resu
         );
     }
 
+    // A pending local write must win over the stale server copy the merge just
+    // fetched. Overlay the pre-sync entries for queued Create/Edit ids and drop
+    // the entries a queued Delete names.
+    let deletes: std::collections::HashSet<&str> = snapshot
+        .pending
+        .iter()
+        .filter(|op| op.kind == OpKind::Delete)
+        .map(|op| op.item_name.as_str())
+        .collect();
+    let writes: std::collections::HashSet<&str> = snapshot
+        .pending
+        .iter()
+        .filter(|op| matches!(op.kind, OpKind::Create | OpKind::Edit))
+        .map(|op| op.item_name.as_str())
+        .collect();
+    let local_by_id: BTreeMap<&str, &Entry> = snapshot
+        .entries
+        .iter()
+        .filter(|entry| writes.contains(entry.id.as_str()))
+        .map(|entry| (entry.id.as_str(), entry))
+        .collect();
+    logins.retain(|entry| !deletes.contains(entry.id.as_str()));
+    for (id, local) in &local_by_id {
+        match logins.iter_mut().find(|entry| entry.id.as_str() == *id) {
+            Some(slot) => *slot = (*local).clone(),
+            None => logins.push((*local).clone()),
+        }
+    }
+
     logins.sort_by(|left, right| left.id.cmp(&right.id));
     passkeys.sort_by(|left, right| left.id.cmp(&right.id));
     wifi.sort_by(|left, right| left.id.cmp(&right.id));
+    if std::env::var_os("APW_DEBUG").is_some() {
+        let with_record = logins
+            .iter()
+            .chain(passkeys.iter())
+            .chain(wifi.iter())
+            .filter(|entry| entry.record.is_some())
+            .count();
+        eprintln!(
+            "sync: {with_record} entries carry record metadata, {} pending ops",
+            snapshot.pending.len()
+        );
+    }
     logins.append(&mut passkeys);
     logins.append(&mut wifi);
 
@@ -562,6 +664,27 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Resu
     }
     snapshot.source = Source::Icloud;
     snapshot.generated_at = Some(chrono::Utc::now());
+
+    // Push local writes after the merge, so the vault that is saved holds both
+    // the fetched view and the new server etags.
+    if !snapshot.pending.is_empty() {
+        let synckeys = snapshot.synckeys.clone();
+        let env = push::PushEnv {
+            gateway: &gateway,
+            class_keys: &class_keys,
+            synckeys: &synckeys,
+        };
+        let crate::model::Vault {
+            ref mut entries,
+            ref mut pending,
+            ..
+        } = snapshot;
+        block_on(async {
+            push::push_pending(entries, pending, &env).await;
+            Ok::<(), Error>(())
+        })?;
+    }
+
     vault::save(paths, config, &snapshot)?;
 
     let note = format!(
@@ -570,6 +693,33 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Resu
         class_keys.len()
     );
     finish(paths, &snapshot, json, &note, incomplete || lost > 0, emit)
+}
+
+/// Copy the record addressing and payloads onto an entry so a later push can
+/// re-seal and address the item. `zone` is the zone the record was read from.
+fn attach_record(entry: &mut Entry, info: &ckks::RecordInfo, zone: &str, value: &plist::Value) {
+    let mut record = RecordMeta {
+        zone: info.zone.clone().unwrap_or_else(|| zone.to_string()),
+        owner: info.owner.clone(),
+        item_type: info.record_type.clone(),
+        item_etag: info.etag.clone(),
+        parent: info.parent.clone(),
+        plist: Some(base64::engine::general_purpose::STANDARD.encode(&info.bplist)),
+        ..RecordMeta::default()
+    };
+    // A password-manager metadata item is the sidecar for a login. Its own
+    // record name and etag let a later edit rewrite the metadata, and the
+    // decrypted metadata dictionary is what a push has to re-seal. The outer
+    // sidecar plist is kept so an edit can preserve the keys Apple wrote.
+    if entry.agrp.as_deref() == Some("com.apple.password-manager") {
+        record.sidecar_name = Some(entry.id.clone());
+        record.sidecar_type = Some(info.record_type.clone());
+        record.sidecar_etag = info.etag.clone();
+        record.metadata = ckks::metadata_bytes(value)
+            .map(|bytes| base64::engine::general_purpose::STANDARD.encode(bytes));
+        record.sidecar_plist = Some(base64::engine::general_purpose::STANDARD.encode(&info.bplist));
+    }
+    entry.record = Some(record);
 }
 
 fn is_uuid(value: &str) -> bool {
