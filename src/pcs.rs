@@ -325,6 +325,14 @@ impl Protection {
             .and_then(|signature| public_from_key_id(&signature.keyid).ok())
     }
 
+    /// The object signature's `roll_count`.
+    ///
+    /// A roll writes the final count, so a caller resuming an interrupted
+    /// operation takes the count from the decoded protection and adds to it.
+    pub fn roll_count(&self) -> Result<u32> {
+        Ok(self.object_signature()?.roll_count as u32)
+    }
+
     pub fn public_x(&self) -> Result<&[u8]> {
         self.keyset
             .keys
@@ -342,12 +350,11 @@ impl Protection {
     /// variant. The object signature is made by the raw master, not by the
     /// variant used for fields and HMAC on share protections.
     pub fn unwrap_entry(&self, key: &SecretKey) -> Result<PcsKey> {
-        let x = key.public_key().to_encoded_point(true);
         let entry = self
             .keyset
             .keys
             .iter()
-            .find(|entry| entry.decryption_key.key.as_slice() == &x.as_bytes()[1..])
+            .find(|entry| key_ref_matches(&entry.decryption_key.key, key))
             .ok_or_else(|| Error::Message("no PCS key matches this protection".into()))?;
         PcsKey::unwrap(key, &entry.wrapped)
     }
@@ -356,12 +363,10 @@ impl Protection {
         let (secret, entry) = keys
             .iter()
             .find_map(|key| {
-                let public = key.public_key().to_encoded_point(true);
-                let x = &public.as_bytes()[1..];
                 self.keyset
                     .keys
                     .iter()
-                    .find(|entry| entry.decryption_key.key.as_slice() == x)
+                    .find(|entry| key_ref_matches(&entry.decryption_key.key, key))
                     .map(|entry| (key, entry))
             })
             .ok_or_else(|| Error::Message("no PCS key matches this protection".into()))?;
@@ -1345,7 +1350,7 @@ pub struct PcsKey(Vec<u8>);
 
 impl PcsKey {
     /// 32 random bytes: the rm master of a new protection.
-    fn random() -> Self {
+    pub(crate) fn random() -> Self {
         let mut bytes = [0u8; 32];
         rand::rngs::OsRng.fill_bytes(&mut bytes);
         Self(bytes.to_vec())
@@ -1595,6 +1600,22 @@ pub struct ProtectionSpec<'a> {
     pub is_share: bool,
     /// Symmetric keys carried by the identity bundle.
     pub extra_keys: Vec<PcsKey>,
+    /// Share-participant metadata, written for a group's participant
+    /// protection and absent everywhere else.
+    pub participant: Option<ParticipantSpec<'a>>,
+}
+
+/// The keyset attributes Apple writes on a share participant protection.
+///
+/// Attribute 8 names the invitation's signer and attribute 9 the public
+/// sharing key; when `sign_with` is given its signature is attribute 7.
+#[derive(Clone)]
+pub struct ParticipantSpec<'a> {
+    /// The sharing key (attribute 9), a compressed P-256 public key.
+    pub share_key: Vec<u8>,
+    /// Signs attribute 7. Its compressed public key becomes attribute 8; when
+    /// absent, `me`'s public key is written instead and attribute 7 is omitted.
+    pub sign_with: Option<&'a SecretKey>,
 }
 
 /// Build a protection and return the keys the caller must keep.
@@ -1615,6 +1636,7 @@ pub fn create_protection(spec: &ProtectionSpec<'_>) -> Result<(Protection, Vec<P
         spec.roll,
         spec.is_share,
         &spec.extra_keys,
+        spec.participant.as_ref(),
     )
 }
 
@@ -1653,6 +1675,7 @@ pub fn roll_protection(
         roll,
         is_share,
         &extra_keys,
+        None,
     )
 }
 
@@ -1677,6 +1700,7 @@ fn build_protection(
     roll: u32,
     is_share: bool,
     extra_keys: &[PcsKey],
+    participant: Option<&ParticipantSpec<'_>>,
 ) -> Result<(Protection, Vec<PcsKey>)> {
     let effective = if is_share {
         rm.share_variant()
@@ -1729,7 +1753,7 @@ fn build_protection(
     let mut keys = vec![PcsShareKey {
         decryption_key: PcsKeyRef {
             keytype: 3,
-            key: key_x(me),
+            key: key_ref(me),
             trailing: Vec::new(),
         },
         wrapped: rm.wrap_for(me)?,
@@ -1740,7 +1764,7 @@ fn build_protection(
         keys.push(PcsShareKey {
             decryption_key: PcsKeyRef {
                 keytype: 3,
-                key: key_x(recipient),
+                key: key_ref(recipient),
                 trailing: Vec::new(),
             },
             wrapped: effective.wrap_for(recipient)?,
@@ -1752,7 +1776,7 @@ fn build_protection(
         unknown1: 0,
         keys,
         unparsed: Vec::new(),
-        attributes: None,
+        attributes: participant.map(participant_attributes),
         trailing: Vec::new(),
     };
 
@@ -1773,7 +1797,7 @@ fn build_protection(
                 .map(|key| {
                     PcsKeyRef {
                         keytype: 3,
-                        key: key_x(key),
+                        key: key_ref(key),
                         trailing: Vec::new(),
                     }
                     .encode()
@@ -1844,6 +1868,15 @@ fn build_protection(
         object_signature.push(der_context(3, attributes));
     }
 
+    let outer_attributes = match participant.and_then(|spec| spec.sign_with) {
+        Some(key) => Some(vec![PcsAttribute {
+            key: 7,
+            value: sign_digest(key, &hash, false)?.encode_sequence(),
+            trailing: Vec::new(),
+        }]),
+        None => None,
+    };
+
     let mut protection = Protection {
         keyset,
         meta,
@@ -1858,7 +1891,7 @@ fn build_protection(
             Some(key) => Some(sign_digest(key, &hash, false)?),
             None => None,
         },
-        attributes: None,
+        attributes: outer_attributes,
         trailing: Vec::new(),
     };
 
@@ -1875,6 +1908,39 @@ fn build_protection(
     Ok((protection, keys_out))
 }
 
+/// The `[0]` keyset attributes of a share participant protection: attribute 8
+/// names the invitation's signer, attribute 9 the public sharing key.
+fn participant_attributes(spec: &ParticipantSpec<'_>) -> Vec<PcsAttribute> {
+    let signer = spec
+        .sign_with
+        .map(|key| key.public_key().to_encoded_point(true).as_bytes().to_vec());
+    // Apple's participant protection can name a public key with no private
+    // half; this crate only ever writes a signer it owns.
+    let public_key = signer.unwrap_or_else(|| spec.share_key.clone());
+    vec![
+        PcsAttribute {
+            key: 8,
+            value: PcsKeyRef {
+                keytype: 3,
+                key: public_key,
+                trailing: Vec::new(),
+            }
+            .encode(),
+            trailing: Vec::new(),
+        },
+        PcsAttribute {
+            key: 9,
+            value: PcsKeyRef {
+                keytype: 3,
+                key: spec.share_key.clone(),
+                trailing: Vec::new(),
+            }
+            .encode(),
+            trailing: Vec::new(),
+        },
+    ]
+}
+
 fn sign_digest(key: &SecretKey, hash: &[u8], self_signed: bool) -> Result<PcsSignature> {
     let signing = SigningKey::from_slice(&key.to_bytes())
         .map_err(|_| Error::Message("invalid PCS signing key".into()))?;
@@ -1882,7 +1948,11 @@ fn sign_digest(key: &SecretKey, hash: &[u8], self_signed: bool) -> Result<PcsSig
         .sign_prehash(hash)
         .map_err(|_| Error::Message("PCS signing failed".into()))?;
     Ok(PcsSignature {
-        keyid: if self_signed { Vec::new() } else { key_x(key) },
+        keyid: if self_signed {
+            Vec::new()
+        } else {
+            key_ref(key)
+        },
         digest: 1,
         signature: signature.to_der().as_bytes().to_vec(),
         trailing: Vec::new(),
@@ -1892,6 +1962,20 @@ fn sign_digest(key: &SecretKey, hash: &[u8], self_signed: bool) -> Result<PcsSig
 fn key_x(key: &SecretKey) -> Vec<u8> {
     let point = key.public_key().to_encoded_point(true);
     point.as_bytes()[1..].to_vec()
+}
+
+/// The raw X coordinate, the form Apple's keychain writes in key references.
+/// CloudKit compares a participant's `publicKey` against these bytes exactly,
+/// so this and that field must use the same 32-byte form.
+fn key_ref(key: &SecretKey) -> Vec<u8> {
+    key.public_key().to_encoded_point(true).as_bytes()[1..].to_vec()
+}
+
+/// Key references appear both as the 32-byte X coordinate and as the SEC1
+/// compressed point; Apple's keysets use the compressed form.
+fn key_ref_matches(reference: &[u8], key: &SecretKey) -> bool {
+    let point = key.public_key().to_encoded_point(true);
+    reference == point.as_bytes() || reference == &point.as_bytes()[1..]
 }
 
 /// `X || d`, the 64-byte private key body stored in an identity keyset.
@@ -2465,7 +2549,7 @@ mod tests {
     fn verify_outer(protection: &Protection, signer: &SecretKey) {
         let signature = protection.signature.as_ref().expect("outer signature");
         assert_eq!(signature.digest, 1);
-        assert_eq!(signature.keyid, key_x(signer), "signature key id");
+        assert_eq!(signature.keyid, key_ref(signer), "signature key id");
 
         let hash = Sha256::digest(protection.digest().unwrap());
         let point = signer.public_key().to_encoded_point(false);
@@ -2506,6 +2590,7 @@ mod tests {
             roll: 1,
             is_share: false,
             extra_keys: Vec::new(),
+            participant: None,
         }
     }
 
@@ -2582,6 +2667,7 @@ mod tests {
             roll: 1,
             is_share: false,
             extra_keys: Vec::new(),
+            participant: None,
         })
         .unwrap();
         assert_eq!(keys.len(), 1, "a record protection has one record key");
@@ -2648,14 +2734,14 @@ mod tests {
             .keyset
             .keys
             .iter()
-            .find(|entry| entry.decryption_key.key == key_x(&other))
+            .find(|entry| key_ref_matches(&entry.decryption_key.key, &other))
             .expect("access entry");
         assert_eq!(access.flags, Some(1), "access entry is readonly");
         let mine = parsed
             .keyset
             .keys
             .iter()
-            .find(|entry| entry.decryption_key.key == key_x(&service))
+            .find(|entry| key_ref_matches(&entry.decryption_key.key, &service))
             .expect("master entry");
         assert_eq!(mine.flags, None, "absent flags stay absent");
 
@@ -2725,6 +2811,7 @@ mod tests {
             roll: 1,
             is_share: false,
             extra_keys: Vec::new(),
+            participant: None,
         })
         .unwrap();
         let old = keys[0].clone();
@@ -2757,6 +2844,204 @@ mod tests {
         assert_eq!(decoded.keys[1].0, old.0, "old record key is retained");
         verify_outer(&parsed, &zone);
         verify_countersignature(&parsed, &old);
+    }
+
+    /// The four protections a group's first share needs, each verified with the
+    /// key Apple's reader unwraps it with.
+    ///
+    /// The outer `[3]` signature is always made by the encryption key the
+    /// caller owns, never by a separate signing key: Apple's zone check uses
+    /// the encryption key's public half.
+    #[test]
+    fn creates_the_group_protections_with_the_expected_signers() {
+        let service = random_key();
+        let zone_key = random_key();
+
+        // Zone: the service key owns the master, holds the zone EC key, and
+        // signs the outer signature.
+        let (zone_protection, zone_keys) = create_protection(&ProtectionSpec {
+            me: &service,
+            identities: vec![zone_key.clone()],
+            access: Vec::new(),
+            sign_with: Some(&service),
+            last: None,
+            roll: 1,
+            is_share: false,
+            extra_keys: Vec::new(),
+            participant: None,
+        })
+        .unwrap();
+        let zone_master = zone_keys.last().unwrap().clone();
+        let parsed = Protection::parse(&zone_protection.encode().unwrap()).unwrap();
+        let decoded = parsed
+            .decode(std::slice::from_ref(&service), false)
+            .unwrap();
+        assert_eq!(decoded.identities[0].to_bytes(), zone_key.to_bytes());
+        assert_eq!(decoded.keys[0].0, zone_master.0);
+        verify_outer(&parsed, &service);
+        assert_eq!(parsed.roll_count().unwrap(), 1);
+
+        // Record: the zone key owns the master and signs it.
+        let (record_protection, record_keys) = create_protection(&ProtectionSpec {
+            me: &zone_key,
+            identities: Vec::new(),
+            access: Vec::new(),
+            sign_with: Some(&zone_key),
+            last: None,
+            roll: 1,
+            is_share: false,
+            extra_keys: Vec::new(),
+            participant: None,
+        })
+        .unwrap();
+        let record_master = record_keys.last().unwrap().clone();
+        let parsed = Protection::parse(&record_protection.encode().unwrap()).unwrap();
+        let decoded = parsed
+            .decode(std::slice::from_ref(&zone_key), false)
+            .unwrap();
+        assert_eq!(decoded.keys[0].0, record_master.0);
+        assert!(decoded.identities.is_empty());
+        verify_outer(&parsed, &zone_key);
+
+        // Invited: the participant key owns the master, the service key signs.
+        let participant_key = random_key();
+        let invited_key = random_key();
+        let (invited_protection, invited_keys) = create_protection(&ProtectionSpec {
+            me: &participant_key,
+            identities: vec![invited_key.clone()],
+            access: Vec::new(),
+            sign_with: Some(&service),
+            last: None,
+            roll: 1,
+            is_share: true,
+            extra_keys: Vec::new(),
+            participant: None,
+        })
+        .unwrap();
+        let parsed = Protection::parse(&invited_protection.encode().unwrap()).unwrap();
+        let decoded = parsed
+            .decode(std::slice::from_ref(&participant_key), false)
+            .unwrap();
+        assert_eq!(decoded.identities[0].to_bytes(), invited_key.to_bytes());
+        assert_eq!(decoded.keys[0].0, invited_keys.last().unwrap().0);
+        verify_outer(&parsed, &service);
+        assert_eq!(
+            parsed.signature_data.as_ref().unwrap().version,
+            4,
+            "invited protections are share protections"
+        );
+        assert_eq!(parsed.keyset.keys[0].flags, None, "owns the rm master");
+
+        // Self-added: the invited key owns it, the self EC key is both an
+        // identity and an access recipient, and nothing signs.
+        let self_ec = random_key();
+        let (self_added, self_keys) = create_protection(&ProtectionSpec {
+            me: &invited_key,
+            identities: vec![self_ec.clone()],
+            access: vec![self_ec.clone()],
+            sign_with: None,
+            last: None,
+            roll: 1,
+            is_share: false,
+            extra_keys: Vec::new(),
+            participant: None,
+        })
+        .unwrap();
+        let parsed = Protection::parse(&self_added.encode().unwrap()).unwrap();
+        assert!(parsed.signature.is_none(), "no outer signature");
+        let decoded = parsed
+            .decode(std::slice::from_ref(&invited_key), false)
+            .unwrap();
+        assert_eq!(decoded.identities[0].to_bytes(), self_ec.to_bytes());
+        assert_eq!(decoded.keys[0].0, self_keys.last().unwrap().0);
+        let access = parsed
+            .keyset
+            .keys
+            .iter()
+            .find(|entry| key_ref_matches(&entry.decryption_key.key, &self_ec))
+            .expect("self EC access entry");
+        assert_eq!(
+            access.flags, None,
+            "non-share access entries are not readonly"
+        );
+        let by_self = parsed
+            .decode(std::slice::from_ref(&self_ec), false)
+            .unwrap();
+        assert_eq!(by_self.keys[0].0, self_keys.last().unwrap().0);
+    }
+
+    #[test]
+    fn a_participant_protection_carries_attributes_7_8_and_9() {
+        let service = random_key();
+        let participant_key = random_key();
+        let (protection, _) = create_protection(&ProtectionSpec {
+            me: &service,
+            identities: vec![participant_key.clone()],
+            access: Vec::new(),
+            sign_with: None,
+            last: None,
+            roll: 1,
+            is_share: true,
+            extra_keys: Vec::new(),
+            participant: Some(ParticipantSpec {
+                share_key: key_x(&service),
+                sign_with: Some(&service),
+            }),
+        })
+        .unwrap();
+        let parsed = Protection::parse(&protection.encode().unwrap()).unwrap();
+
+        let attributes = parsed.keyset.attributes.as_ref().expect("keyset attrs");
+        let keys: Vec<u64> = attributes.iter().map(|attribute| attribute.key).collect();
+        assert_eq!(keys, vec![8, 9]);
+        assert_eq!(
+            attributes[0].value,
+            PcsKeyRef {
+                keytype: 3,
+                key: service
+                    .public_key()
+                    .to_encoded_point(true)
+                    .as_bytes()
+                    .to_vec(),
+                trailing: Vec::new(),
+            }
+            .encode(),
+            "attribute 8 names the signer"
+        );
+        assert_eq!(
+            attributes[1].value,
+            PcsKeyRef {
+                keytype: 3,
+                key: key_x(&service),
+                trailing: Vec::new(),
+            }
+            .encode(),
+            "attribute 9 is the sharing key"
+        );
+
+        let outer = parsed.attributes.as_ref().expect("outer attrs");
+        assert_eq!(outer.len(), 1);
+        assert_eq!(outer[0].key, 7);
+        let signature = parse_signature(&outer[0].value).expect("attribute 7 signature");
+        assert_eq!(
+            signature.keyid,
+            key_ref(&service),
+            "signed by the service key"
+        );
+        assert_eq!(signature.digest, 1);
+        let hash = Sha256::digest(parsed.digest().unwrap());
+        let point = service.public_key().to_encoded_point(false);
+        let verifying = VerifyingKey::from_sec1_bytes(point.as_bytes()).unwrap();
+        let der = EcdsaSignature::from_der(&signature.signature).unwrap();
+        verifying
+            .verify_prehash(hash.as_slice(), &der)
+            .expect("attribute 7 verifies with the signer");
+
+        // The protection still opens with the service key it was wrapped for.
+        let decoded = parsed
+            .decode(std::slice::from_ref(&service), false)
+            .unwrap();
+        assert_eq!(decoded.identities[0].to_bytes(), participant_key.to_bytes());
     }
 
     #[test]

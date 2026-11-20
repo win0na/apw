@@ -177,6 +177,11 @@ pub enum Command {
         #[arg(long)]
         remote: bool,
     },
+    /// Create, delete, or list password groups.
+    Group {
+        #[command(subcommand)]
+        action: GroupAction,
+    },
     /// Install the systemd user service and timer.
     InstallUnits,
     /// Probe escrow authentication without spending an attempt.
@@ -218,6 +223,31 @@ pub enum Command {
         #[arg(long, default_value_t = 3)]
         limit: usize,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum GroupAction {
+    /// Create an owner-only group.
+    Create {
+        /// Name shown in Apple Passwords.
+        name: String,
+        /// Print the zone and name without changing anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Delete a group this tool created.
+    Delete {
+        /// Zone (`group-<UUID>`), bare UUID, or the group's name.
+        target: String,
+        /// Confirm the permanent deletion.
+        #[arg(long)]
+        yes: bool,
+        /// Show what would be deleted without changing anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// List the groups this account owns.
+    List,
 }
 
 #[derive(Debug, Subcommand)]
@@ -323,6 +353,7 @@ fn execute(cli: Cli) -> Result<()> {
             | Command::Edit { .. }
             | Command::Rm { .. }
             | Command::Resolve { .. }
+            | Command::Group { .. }
             | Command::ProbeEscrow
             | Command::ProbeSettings
             | Command::ProbeZone { .. }
@@ -347,6 +378,9 @@ fn execute(cli: Cli) -> Result<()> {
             | Command::Notes { .. }
             | Command::Otp { .. }
             | Command::Pending
+            | Command::Group {
+                action: GroupAction::List,
+            }
     );
     let mut style = Style::new(cli.json, cli.wide, cli.no_header);
     if table_command && !style.explicit_json && (cli.wide || cli.no_header) {
@@ -520,6 +554,17 @@ fn execute(cli: Cli) -> Result<()> {
         Command::Resolve { id, local, remote } => {
             commands::write::resolve(&paths, &mut config, &id, local, remote, style)
         }
+        Command::Group { action } => match action {
+            GroupAction::Create { name, dry_run } => {
+                commands::group::create(&paths, &mut config, &name, dry_run, style)
+            }
+            GroupAction::Delete {
+                target,
+                yes,
+                dry_run,
+            } => commands::group::delete(&paths, &mut config, &target, yes, dry_run, style),
+            GroupAction::List => commands::group::list(&paths, &mut config, style),
+        },
         Command::ProbeEscrow => commands::probe::escrow(&paths, &mut config, style.json),
         Command::ProbeSettings => commands::probe::settings(&paths, &mut config, style.json),
         Command::ProbeZone { zone } => {

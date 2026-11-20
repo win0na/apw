@@ -435,6 +435,7 @@ async fn save(
                 name,
                 value,
                 encrypted: false,
+                encrypted_string: false,
             })
             .collect(),
         plugin_fields: Vec::new(),
@@ -442,6 +443,8 @@ async fn save(
         share_info: None,
         stable_url: None,
         pcs_key: None,
+        zone_protection_tag: None,
+        record_protection_tag: None,
     };
     env.gateway
         .save_record(step.zone, step.owner, &record)

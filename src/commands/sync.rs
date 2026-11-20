@@ -96,6 +96,169 @@ pub fn run_silent(paths: &Paths, config: &mut Config) -> Result<()> {
     sync_live(paths, config, false, false)
 }
 
+/// The live material the `group` commands need.
+pub struct GroupSession {
+    /// The session after any token refresh.
+    pub session: crate::model::Session,
+    /// A gateway for the shared container in the private scope, where the
+    /// groups this account owns live.
+    pub gateway: Gateway,
+    /// The decrypted Manatee PCS service keys. May be empty when the account
+    /// has none; callers that must decrypt a zone check for that.
+    pub service_keys: Vec<ServiceKey>,
+}
+
+/// Open the shared-group container and decrypt the Manatee PCS service keys.
+///
+/// `group create`, `delete`, and `list` all start here instead of repeating the
+/// TLK and class-key fetch that `sync` already performs.
+pub fn group_session(paths: &Paths, config: &mut Config) -> Result<GroupSession> {
+    let snapshot = vault::load(paths, config)?;
+    let session = snapshot
+        .session
+        .clone()
+        .ok_or_else(|| Error::Auth("run `apw login` first".into()))?;
+    let peer_state = snapshot
+        .peer
+        .clone()
+        .ok_or_else(|| Error::Auth("run `apw join` first".into()))?;
+    let anisette_url = config
+        .anisette_url()
+        .ok_or_else(|| Error::Invalid("set an anisette URL in the config".into()))?;
+    let encryption = PeerKeys::from_x963(
+        &decode(&peer_state.signing_key)?,
+        &decode(&peer_state.encryption_key)?,
+    )?;
+
+    block_on(async move {
+        let identity = Anisette::new(&anisette_url).identity().await?;
+        let mac = Anisette::new(&anisette_url)
+            .identity_for(Some("macos"))
+            .await
+            .unwrap_or_else(|_| identity.clone());
+
+        let mut session = session;
+        let gateway = match Gateway::bootstrap(
+            &session,
+            &mac,
+            crate::cloudkit::CONTAINER,
+            crate::cloudkit::Scope::Private,
+        )
+        .await
+        {
+            Ok(gateway) => gateway,
+            Err(error) if crate::auth::is_auth_error(&error) => {
+                session = crate::auth::refresh_services_async(config, &session)
+                    .await
+                    .map_err(|refresh| {
+                        Error::Message(format!(
+                            "{error}; refresh failed: {refresh}; run `apw login`"
+                        ))
+                    })?;
+                Gateway::bootstrap(
+                    &session,
+                    &mac,
+                    crate::cloudkit::CONTAINER,
+                    crate::cloudkit::Scope::Private,
+                )
+                .await?
+            }
+            Err(error) => return Err(error),
+        };
+
+        let mut peers = vec![peer_state.id.clone()];
+        if let Some(sponsor) = &peer_state.sponsor_id {
+            peers.push(sponsor.clone());
+        }
+        let mut tlkshares = Vec::new();
+        for peer in &peers {
+            let response = octagon::tlk_shares(&gateway, peer)
+                .await
+                .map_err(|error| Error::Message(format!("TLK shares for {peer}: {error}")))?;
+            let (mut shares, _) = ckks::shares_from_response(&response)?;
+            tlkshares.append(&mut shares);
+        }
+        if tlkshares.is_empty() {
+            return Err(Error::Message(
+                "no TLK shares; cannot read the Manatee PCS service keys".into(),
+            ));
+        }
+
+        // Only the Manatee zone holds PCS keys; its synckeys unwrap the item
+        // class keys that seal them.
+        let mut synckey_records = Vec::new();
+        let mut item_records = Vec::new();
+        let mut token: Option<Vec<u8>> = None;
+        let mut pages = 0usize;
+        loop {
+            pages += 1;
+            if pages > 100 {
+                return Err(Error::Message("Manatee zone did not finish paging".into()));
+            }
+            let page = gateway
+                .record_sync("Manatee", None, token.as_deref())
+                .await?;
+            for record in page.records {
+                match record.record_type.as_str() {
+                    "synckey" => synckey_records.push(record),
+                    "item" => item_records.push(record),
+                    _ => {}
+                }
+            }
+            if page.status == 1 {
+                match page.token {
+                    Some(next) if Some(&next) != token.as_ref() => token = Some(next),
+                    _ => break,
+                }
+            } else {
+                break;
+            }
+        }
+
+        let mut tlks = ckks::unwrap_tlkshares(&tlkshares, &peer_state.id, &encryption.encryption);
+        if let (Some(sponsor_id), Some(sponsor_key)) =
+            (&peer_state.sponsor_id, &peer_state.sponsor_encryption_key)
+        {
+            if let Ok(sponsor) =
+                PeerKeys::from_x963(&decode(&peer_state.signing_key)?, &decode(sponsor_key)?)
+            {
+                tlks.extend(ckks::unwrap_tlkshares(
+                    &tlkshares,
+                    sponsor_id,
+                    &sponsor.encryption,
+                ));
+            }
+        }
+        let class_keys = ckks::unwrap_class_keys(&synckey_records, &tlks);
+        let decrypted = ckks::decrypt_items(&item_records, &class_keys);
+        let service_keys = service_keys(&decrypted.values);
+        if std::env::var_os("APW_DEBUG").is_some() {
+            eprintln!(
+                "group: {} tlks, {} class keys, {} Manatee items, {} service keys",
+                tlks.len(),
+                class_keys.len(),
+                item_records.len(),
+                service_keys.len()
+            );
+        }
+
+        let gateway = Gateway::bootstrap_with_bundle(
+            &session,
+            &mac,
+            crate::cloudkit::SHARED_CONTAINER,
+            crate::cloudkit::Scope::Private,
+            crate::cloudkit::BUNDLE_SHARING,
+        )
+        .await?;
+
+        Ok(GroupSession {
+            session,
+            gateway,
+            service_keys,
+        })
+    })
+}
+
 fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Result<()> {
     if !paths.snapshot_file.exists() {
         return Err(Error::Auth("run `apw login` first".into()));
@@ -790,7 +953,11 @@ fn finish(
 /// The PCS service keys are ordinary Manatee items; collect every candidate and
 /// let the protection match the right one.
 fn service_keys(decrypted: &[(String, plist::Value)]) -> Vec<ServiceKey> {
-    let mut out = Vec::new();
+    // Groups use the shared-keychain PCS service, not whichever service key
+    // happens to come first. Everything is kept so `resume` can still open a
+    // zone with an older key, but the sharing key leads the list.
+    let mut shared = Vec::new();
+    let mut others = Vec::new();
     for (_, value) in decrypted {
         let Some(dict) = value.as_dictionary() else {
             continue;
@@ -803,14 +970,27 @@ fn service_keys(decrypted: &[(String, plist::Value)]) -> Vec<ServiceKey> {
         if vwht != Some("Manatee") {
             continue;
         }
+        let label = ["svce", "labl", "acct"]
+            .iter()
+            .find_map(|key| dict.get(key).and_then(|value| value.as_string()))
+            .unwrap_or_default();
+        let is_shared = label.contains("com.apple.security.keychain.shared");
+        if std::env::var_os("APW_DEBUG").is_some() {
+            eprintln!("group: PCS item {label:?} shared={is_shared}");
+        }
         let Some(body) = dict.get("v_Data").and_then(|value| value.as_data()) else {
             continue;
         };
         if let Ok(key) = ServiceKey::parse_der(body) {
-            out.push(key);
+            if is_shared {
+                shared.push(key);
+            } else {
+                others.push(key);
+            }
         }
     }
-    out
+    shared.extend(others);
+    shared
 }
 
 fn decode(value: &str) -> Result<Vec<u8>> {

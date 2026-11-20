@@ -47,7 +47,61 @@ pub async fn read_all(gateway: &Gateway, service_keys: &[ServiceKey]) -> Result<
     Ok(out)
 }
 
-async fn zones(gateway: &Gateway) -> Result<Vec<crate::cloudkit::ZoneInfo>> {
+/// One group zone as `group list` shows it.
+#[derive(Debug, Clone)]
+pub struct ZoneSummary {
+    pub zone: String,
+    pub owner: String,
+    /// The decrypted `displayName`, when the zone opens with our keys.
+    pub name: Option<String>,
+    pub participants: usize,
+}
+
+/// Summarize every group zone this gateway can see without reading items.
+///
+/// This is the read path `group list` uses: the zone list, then per zone the
+/// zoneshare record for its name and member count. A zone that does not open
+/// with our service keys is still listed, with no name.
+pub async fn summaries(gateway: &Gateway, service_keys: &[ServiceKey]) -> Result<Vec<ZoneSummary>> {
+    let mut out = Vec::new();
+    for info in zones(gateway).await? {
+        if !info.name.starts_with("group-") || info.change_type == 2 {
+            continue;
+        }
+        let records = records(gateway, &info.name, &info.owner)
+            .await
+            .unwrap_or_default();
+        let share = records.iter().find(|record| {
+            record.name == "cloudkit.zoneshare" || record.record_type == "cloudkit.share"
+        });
+        let participants = share
+            .and_then(|record| record.share_info.as_ref())
+            .map(|share| share.participants.len())
+            .unwrap_or(0);
+        let name = match gateway.zone_retrieve(&info.name, &info.owner).await {
+            Ok(zone) => {
+                let keys = open_zone(
+                    &zone,
+                    share.and_then(|record| record.share_info.as_ref()),
+                    gateway,
+                    service_keys,
+                )
+                .unwrap_or_default();
+                display_name(&records, &keys, &info.name)
+            }
+            Err(_) => None,
+        };
+        out.push(ZoneSummary {
+            zone: info.name,
+            owner: info.owner,
+            name,
+            participants,
+        });
+    }
+    Ok(out)
+}
+
+pub(crate) async fn zones(gateway: &Gateway) -> Result<Vec<crate::cloudkit::ZoneInfo>> {
     let mut out = Vec::new();
     let mut token: Option<Vec<u8>> = None;
     let mut pages = 0;
@@ -69,7 +123,7 @@ async fn zones(gateway: &Gateway) -> Result<Vec<crate::cloudkit::ZoneInfo>> {
     Ok(out)
 }
 
-async fn records(gateway: &Gateway, zone: &str, owner: &str) -> Result<Vec<Record>> {
+pub(crate) async fn records(gateway: &Gateway, zone: &str, owner: &str) -> Result<Vec<Record>> {
     let mut out = Vec::new();
     let mut token: Option<Vec<u8>> = None;
     let mut pages = 0;
@@ -209,7 +263,28 @@ async fn read_zone(
 
     let _ = crate::model::merge_sidecars(&mut entries, sidecars);
 
-    let name = records
+    let name = display_name(&records, &keys, zone_name);
+
+    if std::env::var_os("APW_DEBUG").is_some() {
+        eprintln!("group {zone_name}: name={name:?}");
+    }
+    Ok(Some(GroupData {
+        group: Group {
+            id,
+            name,
+            shared: gateway.scope() == Scope::Shared,
+        },
+        entries,
+        skipped,
+    }))
+}
+
+/// Decrypt the zoneshare `displayName` with one of `keys`.
+///
+/// The plaintext is Apple's `Record.Field.EncryptedValue` message carrying the
+/// name as field 6 (`0x32`, a length-delimited string).
+fn display_name(records: &[Record], keys: &[PcsKey], zone_name: &str) -> Option<String> {
+    records
         .iter()
         .find(|record| record.name == "cloudkit.zoneshare")
         .and_then(|record| record.bytes("displayName"))
@@ -222,7 +297,7 @@ async fn read_zone(
                     keys.len()
                 );
             }
-            decrypt_any(&keys, value, &aad).ok()
+            decrypt_any(keys, value, &aad).ok()
         })
         .and_then(|plain| {
             if std::env::var_os("APW_DEBUG").is_some() {
@@ -243,20 +318,7 @@ async fn read_zone(
                 _ => &plain[..],
             };
             String::from_utf8(text.to_vec()).ok()
-        });
-
-    if std::env::var_os("APW_DEBUG").is_some() {
-        eprintln!("group {zone_name}: name={name:?}");
-    }
-    Ok(Some(GroupData {
-        group: Group {
-            id,
-            name,
-            shared: gateway.scope() == Scope::Shared,
-        },
-        entries,
-        skipped,
-    }))
+        })
 }
 
 fn password_entry(record_name: &str, group: &str, password: kcsharing::SharedPassword) -> Entry {

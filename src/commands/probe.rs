@@ -456,6 +456,7 @@ pub fn group(paths: &Paths, config: &mut Config, zone: &str, json: bool) -> Resu
         let zone_info = gateway.zone_retrieve(zone, &owner).await?;
 
         let mut records = Vec::new();
+        let mut shares = Vec::new();
         let mut token: Option<Vec<u8>> = None;
         let mut status = 0;
         let mut pages = 0;
@@ -470,6 +471,46 @@ pub fn group(paths: &Paths, config: &mut Config, zone: &str, json: bool) -> Resu
                     .iter()
                     .map(|record| format!("{}/{}", record.name, record.record_type)),
             );
+            for record in &page.records {
+                let Some(info) = &record.share_info else {
+                    continue;
+                };
+                shares.push(serde_json::json!({
+                    "record": record.name,
+                    "participants": info.participants.iter().map(|p| serde_json::json!({
+                        "user": p.user_id,
+                        "state": p.state,
+                        "type": p.participant_type,
+                        "permission": p.permission,
+                        "public_key_len": p.public_key.as_ref().map(Vec::len),
+                        "info_len": p.protection_info.as_ref().map(|i| i.der.len()),
+                        "info_tag": p.protection_info.as_ref().and_then(|i| i.tag.clone()),
+                    })).collect::<Vec<_>>(),
+                    "public_access": info.public_access,
+                    "invited_pcs_len": info.invited_pcs.as_ref().map(|p| p.der.len()),
+                    "self_added_pcs_len": info.self_added_pcs.as_ref().map(|p| p.der.len()),
+                    "routing_key": info.short_token_routing_key,
+                    "token_hash": info.short_token_hash.as_ref().map(Vec::len),
+                    "hostname": info.displayed_hostname,
+                    "deny": info.deny_access_requests,
+                    "stable_url": record.stable_url.as_ref().map(|u| serde_json::json!({
+                        "routing": u.routing_key,
+                        "token_hash_len": u.short_token_hash.as_ref().map(Vec::len),
+                        "protected_len": u.protected_full_token.as_ref().map(Vec::len),
+                    })),
+                    "pcs_key_len": record.pcs_key.as_ref().map(Vec::len),
+                    "permission": record.permission,
+                    "plugins": record.plugin_fields.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>(),
+                    "fields": record.fields.iter().map(|(n, v)| {
+                        let size = match v {
+                            crate::cloudkit::FieldValue::Bytes(b) => b.len(),
+                            crate::cloudkit::FieldValue::Text(t) => t.len(),
+                            _ => 0,
+                        };
+                        (n.clone(), size)
+                    }).collect::<Vec<_>>(),
+                }));
+            }
             if std::env::var_os("APW_DUMP_PROTECTIONS").is_some() {
                 let dir = std::path::Path::new("/tmp/opencode/apw-p1");
                 std::fs::create_dir_all(dir)?;
@@ -527,6 +568,7 @@ pub fn group(paths: &Paths, config: &mut Config, zone: &str, json: bool) -> Resu
             "pages": pages,
             "status": status,
             "records": records,
+            "shares": shares,
         }))
     })?;
 

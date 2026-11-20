@@ -66,6 +66,10 @@ pub struct Vault {
     /// material.
     #[serde(default)]
     pub synckeys: std::collections::BTreeMap<String, String>,
+    /// Group zones this tool created, so a retry resumes and a delete only
+    /// touches zones we own.
+    #[serde(default)]
+    pub group_ops: Vec<GroupOp>,
 }
 
 impl Default for Vault {
@@ -81,6 +85,7 @@ impl Default for Vault {
             peer: None,
             pending: Vec::new(),
             synckeys: std::collections::BTreeMap::new(),
+            group_ops: Vec::new(),
         }
     }
 }
@@ -536,6 +541,30 @@ pub struct Group {
     pub shared: bool,
 }
 
+/// How far an owner-side group operation got.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GroupPhase {
+    /// The zone was created (or is about to be); the zoneshare is not saved.
+    Created,
+    /// The zoneshare record was saved, so the group is usable.
+    Shared,
+}
+
+/// One group zone this tool created.
+///
+/// The journal is written before the first network call of `group create`, so
+/// a failed share save leaves `Created` behind and the next run resumes the
+/// same zone instead of leaking a second one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupOp {
+    /// The zone name, `group-<UPPER UUID>`.
+    pub zone: String,
+    /// The name the user gave the group.
+    pub name: String,
+    pub phase: GroupPhase,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
     pub adsid: String,
@@ -835,7 +864,29 @@ mod tests {
 
         assert!(vault.pending.is_empty());
         assert!(vault.synckeys.is_empty());
+        assert!(vault.group_ops.is_empty());
         assert!(vault.entries[0].record.is_none());
         assert_eq!(vault.entries[0].id, "id-1");
+    }
+
+    #[test]
+    fn the_group_journal_round_trips_through_json() {
+        let mut vault = Vault::default();
+        vault.group_ops.push(GroupOp {
+            zone: "group-6F1C2A4E-0B7D-4C3A-9E55-1234567890AB".into(),
+            name: "Family".into(),
+            phase: GroupPhase::Created,
+        });
+        vault.group_ops.push(GroupOp {
+            zone: "group-1111".into(),
+            name: "Work".into(),
+            phase: GroupPhase::Shared,
+        });
+
+        let json = serde_json::to_string(&vault).unwrap();
+        assert!(json.contains("\"phase\":\"created\""));
+        assert!(json.contains("\"phase\":\"shared\""));
+        let parsed: Vault = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.group_ops, vault.group_ops);
     }
 }

@@ -2,6 +2,7 @@ use serde_json::{json, Value};
 
 use crate::model::Entry;
 
+pub mod group;
 pub mod join;
 pub mod login;
 pub mod otp;

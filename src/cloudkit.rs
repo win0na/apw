@@ -32,6 +32,8 @@ const RECORD_DELETE: &str = "/ckdatabase/api/client/record/delete";
 const RECORD_RETRIEVE: &str = "/ckdatabase/api/client/record/retrieve";
 const ZONE_SYNC: &str = "/ckdatabase/api/client/zone/sync";
 const ZONE_RETRIEVE: &str = "/ckdatabase/api/client/zone/retrieve";
+const ZONE_SAVE: &str = "/ckdatabase/api/client/zone/save";
+const ZONE_DELETE: &str = "/ckdatabase/api/client/zone/delete";
 const CODE_INVOKE: &str = "/ckcoderouter/api/client/code/invoke";
 
 const OP_RECORD_SYNC: u64 = 213;
@@ -40,12 +42,16 @@ const OP_RECORD_DELETE: u64 = 214;
 const OP_RECORD_RETRIEVE: u64 = 211;
 const OP_ZONE_SYNC: u64 = 203;
 const OP_ZONE_RETRIEVE: u64 = 201;
+const OP_ZONE_SAVE: u64 = 200;
+const OP_ZONE_DELETE: u64 = 202;
 const OP_FUNCTION_INVOKE: u64 = 1101;
 
 /// Save semantics understood by `RecordSaveRequest.saveSemantics`.
 pub const SAVE_CREATE: u32 = 2;
 pub const SAVE_UPDATE: u32 = 3;
 
+/// `Record.Field.Value.type` for a string field.
+pub const STRING_TYPE: u64 = 3;
 /// `Record.Field.Value.type` for an encrypted bytes field.
 pub const ENCRYPTED_BYTES_TYPE: u64 = 20;
 
@@ -102,6 +108,24 @@ pub struct OutgoingRecord {
     pub stable_url: Option<Vec<u8>>,
     /// `pcsKey` (record field 24).
     pub pcs_key: Option<Vec<u8>>,
+    /// `zoneProtectionInfoTag` (save request field 7): the tag of the zone
+    /// protection the server must still hold.
+    pub zone_protection_tag: Option<String>,
+    /// `recordProtectionInfoTag` (save request field 8).
+    pub record_protection_tag: Option<String>,
+}
+
+/// A zone to create or update with `zone/save`.
+///
+/// `protection_info` and `record_protection_info` are whole `ProtectionInfo`
+/// messages (`1: der`, `2: tag`), because the zone protection carries a tag
+/// and the record protection is saved untagged.
+#[derive(Debug, Clone, Default)]
+pub struct OutgoingZone {
+    pub name: String,
+    pub etag: Option<String>,
+    pub protection_info: Option<Vec<u8>>,
+    pub record_protection_info: Option<Vec<u8>>,
 }
 
 /// One `Record.Field`.
@@ -109,9 +133,12 @@ pub struct OutgoingRecord {
 pub struct OutgoingField {
     pub name: String,
     pub value: FieldValue,
-    /// Encrypted fields are written as bytes with `type = 20` and
-    /// `isEncrypted = true`, which CloudKit wraps in the zone key.
+    /// Encrypted bytes are written with `type = 20` and `isEncrypted = true`,
+    /// which CloudKit wraps in the zone key.
     pub encrypted: bool,
+    /// An encrypted string is `type = 3` (STRING) with the ciphertext in
+    /// `bytesValue`, not `type = 20`. CloudKit rejects the wrong one.
+    pub encrypted_string: bool,
 }
 
 /// A `ProtectionInfo` message: a DER encoded key plus its tag.
@@ -131,6 +158,33 @@ impl std::ops::Deref for ProtectionInfoBytes {
 
     fn deref(&self) -> &[u8] {
         &self.der
+    }
+}
+
+impl ProtectionInfoBytes {
+    /// A protection info carrying the uppercase hex SHA-1 tag CloudKit uses to
+    /// pin a zone protection.
+    pub fn tagged(der: Vec<u8>) -> Self {
+        let tag = data_encoding::HEXUPPER.encode(&Sha1::digest(&der));
+        Self {
+            der,
+            tag: Some(tag),
+        }
+    }
+
+    /// A protection info without a tag, the shape record protections use.
+    pub fn untagged(der: Vec<u8>) -> Self {
+        Self { der, tag: None }
+    }
+
+    /// The `ProtectionInfo` message: `1: der`, `2: tag` when present.
+    pub fn message(&self) -> Vec<u8> {
+        let mut writer = Writer::new();
+        writer.bytes(1, &self.der);
+        if let Some(tag) = &self.tag {
+            writer.string(2, tag);
+        }
+        writer.finish()
     }
 }
 
@@ -578,6 +632,25 @@ impl Gateway {
             .ok_or_else(|| Error::Message("zone retrieve returned no zone".into()))
     }
 
+    /// Create or update one zone. The server answers with an empty result, so
+    /// success means the zone now carries the protections that were sent.
+    pub async fn save_zone(&self, zone: &OutgoingZone) -> Result<()> {
+        let request = zone_save_request(zone, &self.user_id);
+        self.call(ZONE_SAVE, &self.bundle, OP_ZONE_SAVE, &request, None)
+            .await?
+            .check()?;
+        Ok(())
+    }
+
+    /// Delete one zone the user owns.
+    pub async fn delete_zone(&self, zone: &str) -> Result<()> {
+        let request = zone_delete_request(zone, &self.user_id);
+        self.call(ZONE_DELETE, &self.bundle, OP_ZONE_DELETE, &request, None)
+            .await?
+            .check()?;
+        Ok(())
+    }
+
     /// Invoke a Cuttlefish function and return its serialized result.
     pub async fn invoke(&self, name: &str, parameters: &[u8]) -> Result<Vec<u8>> {
         let mut request = Writer::new();
@@ -719,7 +792,9 @@ impl Device {
     }
 }
 
-fn zone_identifier_writer(zone: &str, owner: &str) -> Writer {
+/// `RecordZoneIdentifier { 1: { 1: zone, 2: RECORD_ZONE }, 2: { 1: owner,
+/// 2: USER } }`.
+pub(crate) fn zone_identifier_writer(zone: &str, owner: &str) -> Writer {
     let mut identifier = Writer::new();
     identifier.string(1, zone);
     identifier.uint64(2, 6);
@@ -732,6 +807,37 @@ fn zone_identifier_writer(zone: &str, owner: &str) -> Writer {
     zone_id.message(1, &identifier);
     zone_id.message(2, &owner_identifier);
     zone_id
+}
+
+/// `ZoneSaveRequest { 1: Zone { 1: identifier, 2: etag, 3: protectionInfo,
+/// 6: recordProtectionInfo } }`.
+pub(crate) fn zone_message(zone: &OutgoingZone, owner: &str) -> Writer {
+    let mut message = Writer::new();
+    message.message(1, &zone_identifier_writer(&zone.name, owner));
+    if let Some(etag) = &zone.etag {
+        message.string(2, etag);
+    }
+    if let Some(info) = &zone.protection_info {
+        message.bytes(3, info);
+    }
+    if let Some(info) = &zone.record_protection_info {
+        message.bytes(6, info);
+    }
+    message
+}
+
+pub(crate) fn zone_save_request(zone: &OutgoingZone, owner: &str) -> Writer {
+    let mut request = Writer::new();
+    request.message(1, &zone_message(zone, owner));
+    request
+}
+
+/// `ZoneDeleteRequest { 1: identifier, 2: 0 }`.
+fn zone_delete_request(zone: &str, owner: &str) -> Writer {
+    let mut request = Writer::new();
+    request.message(1, &zone_identifier_writer(zone, owner));
+    request.uint64(2, 0);
+    request
 }
 
 /// `RecordIdentifier { value: Identifier { name, RECORD }, zoneIdentifier }`.
@@ -748,10 +854,18 @@ fn record_identifier(zone: &str, owner: &str, name: &str) -> Writer {
 
 /// `Record.Field.Value` with an explicit type code. References carry only the
 /// target record name, so `zone` and `owner` complete the reference.
-fn value_message(value: &FieldValue, encrypted: bool, zone: &str, owner: &str) -> Writer {
+fn value_message(
+    value: &FieldValue,
+    encrypted: bool,
+    encrypted_string: bool,
+    zone: &str,
+    owner: &str,
+) -> Writer {
     let mut out = Writer::new();
     let field_type = |code: u64| {
-        if encrypted {
+        if encrypted_string {
+            STRING_TYPE
+        } else if encrypted {
             ENCRYPTED_BYTES_TYPE
         } else {
             code
@@ -802,12 +916,18 @@ fn record_field_writer(field: &OutgoingField, zone: &str, owner: &str) -> Writer
     out.message(1, &identifier);
     out.message(
         2,
-        &value_message(&field.value, field.encrypted, zone, owner),
+        &value_message(
+            &field.value,
+            field.encrypted,
+            field.encrypted_string,
+            zone,
+            owner,
+        ),
     );
     out
 }
 
-fn save_request(record: &OutgoingRecord, zone: &str, owner: &str) -> Writer {
+pub(crate) fn save_request(record: &OutgoingRecord, zone: &str, owner: &str) -> Writer {
     let mut record_message = Writer::new();
     if let Some(etag) = &record.etag {
         record_message.string(1, etag);
@@ -841,6 +961,12 @@ fn save_request(record: &OutgoingRecord, zone: &str, owner: &str) -> Writer {
         request.string(3, name);
     }
     request.uint64(6, u64::from(record.semantics));
+    if let Some(tag) = &record.zone_protection_tag {
+        request.string(7, tag);
+    }
+    if let Some(tag) = &record.record_protection_tag {
+        request.string(8, tag);
+    }
     request
 }
 
@@ -872,6 +998,7 @@ fn parse_outcome(frame: &[u8]) -> Result<Outcome> {
                 outcome.etag_match = etag_match;
             }
             214 => {}
+            200 | 202 => {}
             203 => {
                 outcome.zone_changes = Some(parse_zone_changes(field.bytes()?)?);
             }
@@ -1412,7 +1539,8 @@ fn hex16() -> String {
     data_encoding::HEXUPPER.encode(&bytes)
 }
 
-fn uppercase_uuid() -> String {
+/// A fresh dashed uppercase UUID v4, as CloudKit names records and participants.
+pub(crate) fn uppercase_uuid() -> String {
     let mut bytes = [0u8; 16];
     rand::rngs::OsRng.fill_bytes(&mut bytes);
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
@@ -1480,6 +1608,7 @@ mod tests {
             name: name.into(),
             value,
             encrypted: false,
+            encrypted_string: false,
         }
     }
 
@@ -1542,6 +1671,8 @@ mod tests {
             share_info: None,
             stable_url: None,
             pcs_key: None,
+            zone_protection_tag: None,
+            record_protection_tag: None,
         };
         let request = save_request(&record, "zone-1", "owner-1");
         let top = fields_of(request.as_slice());
@@ -1627,6 +1758,8 @@ mod tests {
             share_info: None,
             stable_url: None,
             pcs_key: None,
+            zone_protection_tag: None,
+            record_protection_tag: None,
         };
         let request = save_request(&record, "zone-1", "owner-1");
         let top = fields_of(request.as_slice());
@@ -1652,6 +1785,98 @@ mod tests {
         info.bytes(1, der);
         info.string(2, tag);
         info
+    }
+
+    #[test]
+    fn encodes_a_zone_save_and_delete_request() {
+        let zone_der = vec![0x61, 0x03, 0x30, 0x01, 0x00];
+        let record_der = vec![0x61, 0x03, 0x30, 0x01, 0x01];
+        let zone_protection = ProtectionInfoBytes::tagged(zone_der.clone());
+        assert_eq!(zone_protection.tag.as_deref().map(str::len), Some(40));
+        let zone = OutgoingZone {
+            name: "group-1234".into(),
+            etag: Some("zone-etag".into()),
+            protection_info: Some(zone_protection.message()),
+            record_protection_info: Some(
+                ProtectionInfoBytes::untagged(record_der.clone()).message(),
+            ),
+        };
+
+        let request = zone_save_request(&zone, "owner-1");
+        let top = fields_of(request.as_slice());
+        let message = fields_of(field(&top, 1).bytes().unwrap());
+        assert_eq!(
+            parse_zone_identifier(field(&message, 1).message().unwrap()).unwrap(),
+            ("group-1234".to_string(), "owner-1".to_string())
+        );
+        assert_eq!(field(&message, 2).string().unwrap(), "zone-etag");
+
+        let protection = fields_of(field(&message, 3).bytes().unwrap());
+        assert_eq!(field(&protection, 1).bytes().unwrap(), zone_der);
+        assert_eq!(
+            field(&protection, 2).string().unwrap(),
+            zone_protection.tag.clone().unwrap()
+        );
+
+        let record_protection = fields_of(field(&message, 6).bytes().unwrap());
+        assert_eq!(field(&record_protection, 1).bytes().unwrap(), record_der);
+        assert!(
+            record_protection.iter().all(|item| item.number != 2),
+            "record protections are saved untagged"
+        );
+
+        let delete = zone_delete_request("group-1234", "owner-1");
+        let top = fields_of(delete.as_slice());
+        assert_eq!(
+            parse_zone_identifier(field(&top, 1).message().unwrap()).unwrap(),
+            ("group-1234".to_string(), "owner-1".to_string())
+        );
+        assert_eq!(field(&top, 2).varint().unwrap(), 0);
+
+        let mut frame = Writer::new();
+        frame.message(200, &Writer::new());
+        let mut result = Writer::new();
+        result.uint64(1, 1);
+        frame.message(3, &result);
+        assert!(
+            parse_outcome(frame.as_slice()).unwrap().ok(),
+            "zone save code 1"
+        );
+
+        let mut frame = Writer::new();
+        frame.message(202, &Writer::new());
+        frame.message(3, &result);
+        assert!(
+            parse_outcome(frame.as_slice()).unwrap().ok(),
+            "zone delete code 1"
+        );
+    }
+
+    #[test]
+    fn a_save_request_carries_the_zone_protection_tag() {
+        let record = OutgoingRecord {
+            name: "cloudkit.zoneshare".into(),
+            record_type: "cloudkit.share".into(),
+            etag: None,
+            semantics: SAVE_UPDATE,
+            fields: Vec::new(),
+            plugin_fields: Vec::new(),
+            delete_fields: Vec::new(),
+            share_info: None,
+            stable_url: None,
+            pcs_key: Some(vec![1, 2, 3, 4]),
+            zone_protection_tag: Some("ABCDEF".into()),
+            record_protection_tag: Some("123456".into()),
+        };
+        let request = save_request(&record, "group-1", "owner-1");
+        let top = fields_of(request.as_slice());
+
+        assert_eq!(field(&top, 7).string().unwrap(), "ABCDEF");
+        assert_eq!(field(&top, 8).string().unwrap(), "123456");
+        let record_fields = fields_of(field(&top, 1).bytes().unwrap());
+        assert_eq!(field(&record_fields, 24).bytes().unwrap(), &[1, 2, 3, 4]);
+        assert_eq!(OP_ZONE_SAVE, 200);
+        assert_eq!(OP_ZONE_DELETE, 202);
     }
 
     fn participant(name: &str, id: &[u8], public_key: &[u8]) -> Writer {
@@ -1733,6 +1958,8 @@ mod tests {
             share_info: Some(share_bytes.clone()),
             stable_url: Some(stable_bytes.clone()),
             pcs_key: Some(vec![0xaa, 0xbb]),
+            zone_protection_tag: None,
+            record_protection_tag: None,
         };
         let request = save_request(&record, "group-1", "owner-1");
         let top = fields_of(request.as_slice());
@@ -1911,12 +2138,15 @@ mod tests {
                 name: "payload".into(),
                 value: FieldValue::Bytes(vec![1, 2, 3]),
                 encrypted: true,
+                encrypted_string: false,
             }],
             plugin_fields: Vec::new(),
             delete_fields: Vec::new(),
             share_info: None,
             stable_url: None,
             pcs_key: None,
+            zone_protection_tag: None,
+            record_protection_tag: None,
         };
         let request = save_request(&record, "zone-1", "owner-1");
         let top = fields_of(request.as_slice());

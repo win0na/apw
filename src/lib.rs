@@ -5,6 +5,7 @@ pub mod cloudkit;
 pub mod commands;
 pub mod config;
 pub mod error;
+pub mod group_write;
 pub mod groups;
 pub mod kcsharing;
 pub mod model;
