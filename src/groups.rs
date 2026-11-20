@@ -101,6 +101,49 @@ pub async fn summaries(gateway: &Gateway, service_keys: &[ServiceKey]) -> Result
     Ok(out)
 }
 
+/// The keys a writer needs for one owner-side zone.
+#[derive(Clone)]
+pub struct ZoneKeys {
+    /// Every key that can decrypt the zone, newest first.
+    pub keys: Vec<PcsKey>,
+    /// The record key a new item is sealed with.
+    pub record_key: PcsKey,
+    /// The record protection tag the server sent, when it sent one. A save
+    /// quotes it so the server knows which protection the write trusts.
+    pub record_tag: Option<String>,
+}
+
+/// Open one group zone for writing: its record key and protection tag.
+///
+/// A zone that does not open with this account's service keys is refused, so a
+/// write never lands in somebody else's group.
+pub async fn zone_keys(
+    gateway: &Gateway,
+    zone_name: &str,
+    owner: &str,
+    service_keys: &[ServiceKey],
+) -> Result<ZoneKeys> {
+    let zone = gateway.zone_retrieve(zone_name, owner).await?;
+    let records = records(gateway, zone_name, owner).await?;
+    let share = records
+        .iter()
+        .find(|record| {
+            record.name == "cloudkit.zoneshare" || record.record_type == "cloudkit.share"
+        })
+        .and_then(|record| record.share_info.as_ref());
+    let parts = open_zone_parts(&zone, share, gateway, service_keys)?;
+    let record_key = parts.record.first().cloned().ok_or_else(|| {
+        Error::Message(format!(
+            "zone {zone_name} has no record key; refusing to write"
+        ))
+    })?;
+    Ok(ZoneKeys {
+        keys: parts.keys,
+        record_key,
+        record_tag: zone.record_protection_info_tag.clone(),
+    })
+}
+
 pub(crate) async fn zones(gateway: &Gateway) -> Result<Vec<crate::cloudkit::ZoneInfo>> {
     let mut out = Vec::new();
     let mut token: Option<Vec<u8>> = None;
@@ -353,6 +396,14 @@ fn password_entry(record_name: &str, group: &str, password: kcsharing::SharedPas
     }
 }
 
+/// The working keys of an opened zone.
+struct ZoneParts {
+    /// Zone keys followed by record keys, as the read path wants them.
+    keys: Vec<PcsKey>,
+    /// The record protection's keys, master first.
+    record: Vec<PcsKey>,
+}
+
 /// Open the zone keyset. Shared zones chain through the participant protection
 /// and the owner's invited protection; private zones use the service key
 /// directly.
@@ -362,6 +413,15 @@ fn open_zone(
     gateway: &Gateway,
     service_keys: &[ServiceKey],
 ) -> Result<Vec<PcsKey>> {
+    Ok(open_zone_parts(zone, share, gateway, service_keys)?.keys)
+}
+
+fn open_zone_parts(
+    zone: &Zone,
+    share: Option<&ShareInfo>,
+    gateway: &Gateway,
+    service_keys: &[ServiceKey],
+) -> Result<ZoneParts> {
     let service: Vec<_> = service_keys.iter().map(|key| key.secret.clone()).collect();
     let protection = zone
         .protection_info
@@ -416,10 +476,14 @@ fn open_zone(
         );
     }
     let mut keys = decoded.keys;
+    let mut record = Vec::new();
     if let Some(record_protection) = zone.record_protection_info.as_deref() {
         let record_protection = Protection::parse(record_protection)?;
         match record_protection.decode(&decoded.identities, false) {
-            Ok(record) => keys.extend(record.keys),
+            Ok(decoded_record) => {
+                record = decoded_record.keys.clone();
+                keys.extend(decoded_record.keys);
+            }
             Err(error) => {
                 if std::env::var_os("APW_DEBUG").is_some() {
                     eprintln!("groups: record protection: {error}");
@@ -427,7 +491,7 @@ fn open_zone(
             }
         }
     }
-    Ok(keys)
+    Ok(ZoneParts { keys, record })
 }
 
 fn find_participant<'a>(

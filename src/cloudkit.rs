@@ -52,6 +52,8 @@ pub const SAVE_UPDATE: u32 = 3;
 
 /// `Record.Field.Value.type` for a string field.
 pub const STRING_TYPE: u64 = 3;
+/// `Record.Field.Value.type` for an int64 field.
+pub const INT_TYPE: u64 = 7;
 /// `Record.Field.Value.type` for an encrypted bytes field.
 pub const ENCRYPTED_BYTES_TYPE: u64 = 20;
 
@@ -139,6 +141,9 @@ pub struct OutgoingField {
     /// An encrypted string is `type = 3` (STRING) with the ciphertext in
     /// `bytesValue`, not `type = 20`. CloudKit rejects the wrong one.
     pub encrypted_string: bool,
+    /// An encrypted integer is `type = 7` (INT64) with the ciphertext in
+    /// `bytesValue`. Used by a shared item's `type` field.
+    pub encrypted_int: bool,
 }
 
 /// A `ProtectionInfo` message: a DER encoded key plus its tag.
@@ -340,6 +345,9 @@ pub struct Zone {
     pub owner: String,
     pub protection_info: Option<Vec<u8>>,
     pub record_protection_info: Option<Vec<u8>>,
+    /// The tags the server sent with each protection, when it sent one.
+    pub protection_info_tag: Option<String>,
+    pub record_protection_info_tag: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -858,6 +866,7 @@ fn value_message(
     value: &FieldValue,
     encrypted: bool,
     encrypted_string: bool,
+    encrypted_int: bool,
     zone: &str,
     owner: &str,
 ) -> Writer {
@@ -865,6 +874,8 @@ fn value_message(
     let field_type = |code: u64| {
         if encrypted_string {
             STRING_TYPE
+        } else if encrypted_int {
+            INT_TYPE
         } else if encrypted {
             ENCRYPTED_BYTES_TYPE
         } else {
@@ -920,6 +931,7 @@ fn record_field_writer(field: &OutgoingField, zone: &str, owner: &str) -> Writer
             &field.value,
             field.encrypted,
             field.encrypted_string,
+            field.encrypted_int,
             zone,
             owner,
         ),
@@ -1183,6 +1195,8 @@ fn parse_zone(mut reader: Reader<'_>) -> Result<Zone> {
         owner: String::new(),
         protection_info: None,
         record_protection_info: None,
+        protection_info_tag: None,
+        record_protection_info_tag: None,
     };
     while let Some(field) = reader.next()? {
         match field.number {
@@ -1191,21 +1205,36 @@ fn parse_zone(mut reader: Reader<'_>) -> Result<Zone> {
                 zone.name = name;
                 zone.owner = owner;
             }
-            3 => zone.protection_info = parse_protection_info(field.message()?)?,
-            6 => zone.record_protection_info = parse_protection_info(field.message()?)?,
+            3 => {
+                let info = parse_protection_info(field.message()?)?;
+                zone.protection_info = info.as_ref().map(|info| info.der.clone());
+                zone.protection_info_tag = info.and_then(|info| info.tag);
+            }
+            6 => {
+                let info = parse_protection_info(field.message()?)?;
+                zone.record_protection_info = info.as_ref().map(|info| info.der.clone());
+                zone.record_protection_info_tag = info.and_then(|info| info.tag);
+            }
             _ => {}
         }
     }
     Ok(zone)
 }
 
-fn parse_protection_info(mut reader: Reader<'_>) -> Result<Option<Vec<u8>>> {
+fn parse_protection_info(mut reader: Reader<'_>) -> Result<Option<ProtectionInfoBytes>> {
+    let mut info = ProtectionInfoBytes::default();
+    let mut seen = false;
     while let Some(field) = reader.next()? {
-        if field.number == 1 {
-            return Ok(Some(field.bytes()?.to_vec()));
+        match field.number {
+            1 => {
+                info.der = field.bytes()?.to_vec();
+                seen = true;
+            }
+            2 => info.tag = Some(field.string()?.to_string()),
+            _ => {}
         }
     }
-    Ok(None)
+    Ok(seen.then_some(info))
 }
 
 pub fn parse_record(data: &[u8]) -> Result<Record> {
@@ -1242,7 +1271,10 @@ pub fn parse_record(data: &[u8]) -> Result<Record> {
                 let (name, value) = parse_record_field(field.message()?)?;
                 record.plugin_fields.push((name, value));
             }
-            13 => record.protection_info = parse_protection_info(field.message()?)?,
+            13 => {
+                record.protection_info =
+                    parse_protection_info(field.message()?)?.map(|info| info.der);
+            }
             15 => record.permission = Some(field.varint()? as u32),
             16 => {
                 let data = field.bytes()?;
@@ -1609,6 +1641,7 @@ mod tests {
             value,
             encrypted: false,
             encrypted_string: false,
+            encrypted_int: false,
         }
     }
 
@@ -2139,6 +2172,7 @@ mod tests {
                 value: FieldValue::Bytes(vec![1, 2, 3]),
                 encrypted: true,
                 encrypted_string: false,
+                encrypted_int: false,
             }],
             plugin_fields: Vec::new(),
             delete_fields: Vec::new(),

@@ -248,8 +248,33 @@ pub enum GroupAction {
     },
     /// List the groups this account owns.
     List,
+    /// Add one personal login to a group.
+    Add {
+        /// Group name, zone, or UUID.
+        group: String,
+        /// Name, domain, or username of the login to add.
+        query: Option<String>,
+        /// Select the entry by record id.
+        #[arg(long)]
+        id: Option<String>,
+        /// Show what would be added without changing anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Remove one shared item from a group.
+    Remove {
+        /// Group name, zone, or UUID.
+        group: String,
+        /// Item record name, or an entry id or query from the last sync.
+        item: String,
+        /// Confirm the permanent deletion.
+        #[arg(long)]
+        yes: bool,
+        /// Show what would be removed without changing anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
-
 #[derive(Debug, Subcommand)]
 pub enum AddItem {
     /// Add a login.
@@ -564,6 +589,26 @@ fn execute(cli: Cli) -> Result<()> {
                 dry_run,
             } => commands::group::delete(&paths, &mut config, &target, yes, dry_run, style),
             GroupAction::List => commands::group::list(&paths, &mut config, style),
+            GroupAction::Add {
+                group,
+                query,
+                id,
+                dry_run,
+            } => commands::group::add(
+                &paths,
+                &mut config,
+                &group,
+                query.as_deref(),
+                id.as_deref(),
+                dry_run,
+                style,
+            ),
+            GroupAction::Remove {
+                group,
+                item,
+                yes,
+                dry_run,
+            } => commands::group::remove(&paths, &mut config, &group, &item, yes, dry_run, style),
         },
         Command::ProbeEscrow => commands::probe::escrow(&paths, &mut config, style.json),
         Command::ProbeSettings => commands::probe::settings(&paths, &mut config, style.json),

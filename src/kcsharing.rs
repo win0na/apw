@@ -5,7 +5,7 @@
 //! inside `data` or `keyMaterial`.
 
 use crate::error::Result;
-use crate::wire::{Field, Reader};
+use crate::wire::{Field, Reader, Writer};
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct SharedItem {
@@ -105,6 +105,57 @@ fn double(field: Field<'_>) -> Result<f64> {
     Ok(f64::from_bits(field.varint()?))
 }
 
+/// Encode a `SharingItem`, the payload of a group's item record.
+///
+/// The field numbers mirror [`decode_item`]; dates keep their raw f64 bits.
+pub fn encode_item(item: &SharedItem) -> Vec<u8> {
+    let mut out = Writer::new();
+    if let Some(key) = &item.private_key {
+        out.bytes(2, &encode_private_key(key));
+    }
+    if let Some(password) = &item.internet_password {
+        out.bytes(3, &encode_password(password));
+    }
+    out.finish()
+}
+
+/// Encode a `SharingInternetPassword`.
+///
+/// Empty strings are written rather than dropped, because Apple's writer sends
+/// them (`path` and `securityDomain` are empty on every shared login) and the
+/// decoder reads either shape back as the same value.
+pub fn encode_password(pw: &SharedPassword) -> Vec<u8> {
+    let mut out = Writer::new();
+    out.string(1, &pw.access_group);
+    out.fixed64(2, pw.modification_date.to_bits());
+    out.fixed64(3, pw.creation_date.to_bits());
+    out.string(4, &pw.account);
+    out.string(5, &pw.protocol);
+    out.string(6, &pw.server);
+    out.int64(7, i64::from(pw.port));
+    out.string(8, &pw.authentication_type);
+    out.bytes(9, &pw.data);
+    out.string(10, &pw.path);
+    out.string(11, &pw.comment);
+    out.string(12, &pw.label);
+    out.bytes(16, &pw.notes);
+    out.string(24, &pw.item_description);
+    out.finish()
+}
+
+fn encode_private_key(key: &SharedPrivateKey) -> Vec<u8> {
+    let mut out = Writer::new();
+    out.string(1, &key.access_group);
+    out.string(4, &key.label);
+    out.bytes(5, &key.application_label);
+    out.bytes(6, &key.key_material);
+    out.fixed64(9, key.creation_date.to_bits());
+    out.fixed64(10, key.modification_date.to_bits());
+    out.string(15, &key.view_hint);
+    out.int64(16, i64::from(key.key_class));
+    out.finish()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -176,6 +227,89 @@ mod tests {
         let decoded = decode_item(item.as_slice()).unwrap();
         assert_eq!(decoded.internet_password.unwrap().account, "alice");
         assert!(decoded.private_key.is_none());
+    }
+
+    #[test]
+    fn an_encoded_password_round_trips() {
+        let password = SharedPassword {
+            access_group: "com.apple.cfnetwork".into(),
+            account: "alice@example.com".into(),
+            server: "example.com".into(),
+            protocol: "htps".into(),
+            path: "/login".into(),
+            authentication_type: "form".into(),
+            label: "example.com (alice@example.com)".into(),
+            comment: "a comment".into(),
+            item_description: "Web form password".into(),
+            data: b"hunter2\x00\xff".to_vec(),
+            notes: "多因素 note".as_bytes().to_vec(),
+            creation_date: 700_123_456.25,
+            modification_date: 700_999_999.5,
+            port: 8443,
+        };
+        let encoded = encode_password(&password);
+        let mut item = Writer::new();
+        item.bytes(3, &encoded);
+
+        let decoded = decode_item(item.as_slice()).unwrap();
+        assert_eq!(decoded.internet_password.as_ref(), Some(&password));
+        assert!(decoded.private_key.is_none());
+        assert_eq!(
+            decoded
+                .internet_password
+                .unwrap()
+                .modification_date
+                .to_bits(),
+            700_999_999.5f64.to_bits(),
+            "dates keep their exact bits"
+        );
+    }
+
+    #[test]
+    fn an_encoded_item_round_trips_both_kinds() {
+        let item = SharedItem {
+            internet_password: None,
+            private_key: Some(SharedPrivateKey {
+                access_group: "com.apple.cfnetwork".into(),
+                label: "passkey".into(),
+                view_hint: "hint".into(),
+                key_class: 7,
+                key_material: vec![1, 2, 3],
+                application_label: b"example.com".to_vec(),
+                creation_date: 10.5,
+                modification_date: 11.5,
+            }),
+        };
+        let decoded = decode_item(&encode_item(&item)).unwrap();
+        assert_eq!(decoded, item);
+
+        let both = SharedItem {
+            internet_password: Some(SharedPassword::default()),
+            private_key: Some(SharedPrivateKey::default()),
+        };
+        let decoded = decode_item(&encode_item(&both)).unwrap();
+        assert_eq!(decoded, both);
+    }
+
+    #[test]
+    fn empty_strings_stay_decodable() {
+        let password = SharedPassword {
+            data: b"secret".to_vec(),
+            ..SharedPassword::default()
+        };
+        let decoded = decode_item(&encode_item(&SharedItem {
+            internet_password: Some(password.clone()),
+            private_key: None,
+        }))
+        .unwrap();
+        let decoded = decoded.internet_password.unwrap();
+        assert_eq!(decoded.access_group, "");
+        assert_eq!(decoded.server, "");
+        assert_eq!(decoded.account, "");
+        assert_eq!(decoded.notes, Vec::<u8>::new());
+        assert_eq!(decoded.port, 0);
+        assert_eq!(decoded.data, b"secret".to_vec());
+        assert_eq!(decoded, password);
     }
 
     #[test]

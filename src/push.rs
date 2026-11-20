@@ -436,6 +436,7 @@ async fn save(
                 value,
                 encrypted: false,
                 encrypted_string: false,
+                encrypted_int: false,
             })
             .collect(),
         plugin_fields: Vec::new(),
