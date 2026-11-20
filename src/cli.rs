@@ -217,6 +217,9 @@ pub enum Command {
     /// Decode a group's participant protections with our service keys.
     #[command(hide = true)]
     ProbeParticipant { zone: String },
+    /// Create the sync subscriptions for one group zone.
+    #[command(hide = true)]
+    ProbeSubscribe { zone: String },
     /// Print the redacted key structure of stored item plists.
     #[command(hide = true)]
     ProbeStructure {
@@ -392,6 +395,7 @@ fn execute(cli: Cli) -> Result<()> {
             | Command::ProbeGroup { .. }
             | Command::ProbeStats
             | Command::ProbeStructure { .. }
+            | Command::ProbeSubscribe { .. }
             | Command::ProbeParticipant { .. }
     ) {
         Some(crate::config::lock_snapshot(&paths)?)
@@ -634,6 +638,9 @@ fn execute(cli: Cli) -> Result<()> {
         }
         Command::ProbeParticipant { zone } => {
             commands::probe::participant(&paths, &mut config, &zone, style.json)
+        }
+        Command::ProbeSubscribe { zone } => {
+            commands::probe::subscribe(&paths, &mut config, &zone, style.json)
         }
         Command::ProbeStructure { kind, limit } => {
             commands::probe::structure(&paths, &mut config, kind.as_deref(), limit, style.json)

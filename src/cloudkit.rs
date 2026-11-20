@@ -662,6 +662,46 @@ impl Gateway {
 
     /// Create or update one zone. The server answers with an empty result, so
     /// success means the zone now carries the protections that were sent.
+    /// Create a CloudKit subscription. A zone subscription makes the server
+    /// send change notifications for that zone; a database subscription is the
+    /// sync engine's own wake-up. Both are best-effort: a duplicate is fine.
+    pub async fn create_subscription(
+        &self,
+        name: &str,
+        zone: Option<(&str, Option<&str>)>,
+    ) -> Result<()> {
+        let mut identifier = Writer::new();
+        identifier.string(1, name);
+        identifier.uint64(2, 3);
+
+        let mut notification = Writer::new();
+        notification.bytes(1, &[]);
+        notification.boolean(2, false);
+        notification.boolean(4, true);
+
+        let mut subscription = Writer::new();
+        subscription.message(1, &identifier);
+        subscription.uint64(2, 3);
+        subscription.message(5, &notification);
+        if let Some((zone_name, owner)) = zone {
+            let owner = owner.unwrap_or_else(|| self.user_id());
+            subscription.message(10, &zone_identifier_writer(zone_name, owner));
+        }
+
+        let mut request = Writer::new();
+        request.message(1, &subscription);
+        let bundle = self.bundle.clone();
+        self.call(
+            "/ckdatabase/api/client/subscription/create",
+            &bundle,
+            300,
+            &request,
+            None,
+        )
+        .await?;
+        Ok(())
+    }
+
     pub async fn save_zone(&self, zone: &OutgoingZone) -> Result<()> {
         let request = zone_save_request(zone, &self.user_id);
         self.call(ZONE_SAVE, &self.bundle, OP_ZONE_SAVE, &request, None)
