@@ -662,7 +662,7 @@ pub(crate) fn missing_zone(error: &Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cloudkit::FieldValue;
+    use crate::cloudkit::{FieldValue, SAVE_UPDATE};
     use crate::wire::{Reader, Value};
 
     fn fields(data: &[u8]) -> Vec<crate::wire::Field<'_>> {
