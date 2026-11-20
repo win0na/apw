@@ -936,38 +936,3 @@ pub fn participant(paths: &Paths, config: &mut Config, zone: &str, json: bool) -
     }
     Ok(())
 }
-
-/// Create the sync subscriptions a client would make for one group zone.
-pub fn subscribe(paths: &Paths, config: &mut Config, zone: &str, json: bool) -> Result<()> {
-    let mut session = crate::commands::sync::group_session(paths, config)?;
-    let gateway = &mut session.gateway;
-    let (database, zone_result) = block_on(async {
-        let database = gateway
-            .create_subscription("CKSyncEngineDatabaseSubscription-private", None)
-            .await;
-        let zone_result = gateway
-            .create_subscription(
-                &format!("CKRecordZoneSubscription-{zone}"),
-                Some((zone, None)),
-            )
-            .await;
-        Ok::<_, Error>((database, zone_result))
-    })?;
-    let rows = serde_json::json!({
-        "database": result_text(&database),
-        "zone": result_text(&zone_result),
-    });
-    if output::use_json(json) {
-        output::print_json(&output::success(rows));
-    } else {
-        println!("{rows}");
-    }
-    Ok(())
-}
-
-fn result_text(result: &Result<()>) -> String {
-    match result {
-        Ok(()) => "ok".to_string(),
-        Err(error) => error.to_string(),
-    }
-}

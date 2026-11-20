@@ -14,6 +14,7 @@ apw 2.0 is one Rust binary that reads Apple Passwords data from iCloud:
 - No Chrome, no Apple extension, no native messaging host, no daemon.
 - A local encrypted snapshot serves every query; a systemd user timer refreshes it.
 - Logins, notes and titles, TOTP, passkey metadata, and shared groups, including shared-with-me.
+- Group items can be added and removed. Group creation is out of scope: the client renders groups from the local keychain-sharing mirror, which raw CloudKit writes do not reach.
 - Anisette comes from a server URL. No Apple-owned binary is shipped.
 
 ## Architecture

@@ -177,7 +177,7 @@ pub enum Command {
         #[arg(long)]
         remote: bool,
     },
-    /// Create, delete, or list password groups.
+    /// List password groups and add or remove their items.
     Group {
         #[command(subcommand)]
         action: GroupAction,
@@ -217,9 +217,6 @@ pub enum Command {
     /// Decode a group's participant protections with our service keys.
     #[command(hide = true)]
     ProbeParticipant { zone: String },
-    /// Create the sync subscriptions for one group zone.
-    #[command(hide = true)]
-    ProbeSubscribe { zone: String },
     /// Print the redacted key structure of stored item plists.
     #[command(hide = true)]
     ProbeStructure {
@@ -233,25 +230,6 @@ pub enum Command {
 
 #[derive(Debug, Subcommand)]
 pub enum GroupAction {
-    /// Create an owner-only group.
-    Create {
-        /// Name shown in Apple Passwords.
-        name: String,
-        /// Print the zone and name without changing anything.
-        #[arg(long)]
-        dry_run: bool,
-    },
-    /// Delete a group this tool created.
-    Delete {
-        /// Zone (`group-<UUID>`), bare UUID, or the group's name.
-        target: String,
-        /// Confirm the permanent deletion.
-        #[arg(long)]
-        yes: bool,
-        /// Show what would be deleted without changing anything.
-        #[arg(long)]
-        dry_run: bool,
-    },
     /// List the groups this account owns.
     List,
     /// Add one personal login to a group.
@@ -395,7 +373,6 @@ fn execute(cli: Cli) -> Result<()> {
             | Command::ProbeGroup { .. }
             | Command::ProbeStats
             | Command::ProbeStructure { .. }
-            | Command::ProbeSubscribe { .. }
             | Command::ProbeParticipant { .. }
     ) {
         Some(crate::config::lock_snapshot(&paths)?)
@@ -588,14 +565,6 @@ fn execute(cli: Cli) -> Result<()> {
             commands::write::resolve(&paths, &mut config, &id, local, remote, style)
         }
         Command::Group { action } => match action {
-            GroupAction::Create { name, dry_run } => {
-                commands::group::create(&paths, &mut config, &name, dry_run, style)
-            }
-            GroupAction::Delete {
-                target,
-                yes,
-                dry_run,
-            } => commands::group::delete(&paths, &mut config, &target, yes, dry_run, style),
             GroupAction::List => commands::group::list(&paths, &mut config, style),
             GroupAction::Add {
                 group,
@@ -638,9 +607,6 @@ fn execute(cli: Cli) -> Result<()> {
         }
         Command::ProbeParticipant { zone } => {
             commands::probe::participant(&paths, &mut config, &zone, style.json)
-        }
-        Command::ProbeSubscribe { zone } => {
-            commands::probe::subscribe(&paths, &mut config, &zone, style.json)
         }
         Command::ProbeStructure { kind, limit } => {
             commands::probe::structure(&paths, &mut config, kind.as_deref(), limit, style.json)

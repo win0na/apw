@@ -110,7 +110,7 @@ pub struct GroupSession {
 
 /// Open the shared-group container and decrypt the Manatee PCS service keys.
 ///
-/// `group create`, `delete`, and `list` all start here instead of repeating the
+/// `group list`, `add`, and `remove` all start here instead of repeating the
 /// TLK and class-key fetch that `sync` already performs.
 pub fn group_session(paths: &Paths, config: &mut Config) -> Result<GroupSession> {
     let snapshot = vault::load(paths, config)?;

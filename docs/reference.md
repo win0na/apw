@@ -22,6 +22,9 @@ Commands, files, configuration, output, and limits.
 | `apw rm QUERY [--id UUID] [--yes] [--dry-run]` | Delete a login, note or Wi-Fi network and queue the delete. |
 | `apw pending` | List changes that have not been pushed. |
 | `apw resolve ID [--local] [--remote]` | Force or drop a blocked change. |
+| `apw group list` | List shared groups with owner and member count. |
+| `apw group add GROUP [QUERY] [--id UUID] [--dry-run]` | Add a personal login to a group you own. |
+| `apw group remove GROUP ITEM [--yes] [--dry-run]` | Remove an item from a group you own. |
 | `apw install-units` | Write the systemd user service and timer. |
 
 `--json`, `--wide`, and `--no-header` are global. Tables are the default on a terminal; a pipe or a redirect gets JSON. `--wide` and `--no-header` keep the text form through a pipe.
@@ -49,6 +52,8 @@ Passwords enter through `--password-stdin` (one line, trailing newline removed),
 `--totp` accepts an `otpauth://` URI or a bare base32 secret. It is stored in the login's metadata the way Apple stores it: raw secret bytes, algorithm, digits, period, and the original URI when one was given. `--clear-totp` removes the key. A note's body is metadata `notes`; `apw edit` changes it with `--notes` or `--body-stdin`. A Wi-Fi edit accepts only a password, because the SSID is the join key.
 
 Changing a site or username is refused, because the item and its metadata join on both. Delete the entry and add a new login instead.
+
+Groups are read, and their items can be added and removed. `apw` cannot create or delete a group: Apple Passwords renders groups from a local mirror kept by the keychain-sharing daemon, and a group written straight to CloudKit never enters that mirror. Create the group on an Apple device first.
 
 ## Files
 

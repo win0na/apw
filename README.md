@@ -76,7 +76,11 @@ A password comes from `--password-stdin`, from `--generate`, or from a prompt th
 
 If another device changed the same entry, the push blocks instead of overwriting it and prints the pending id. `apw resolve <id> --local` pushes the local version; `--remote` drops it and takes the server copy.
 
-Writes cover personal logins, Wi-Fi networks and notes. Cards, shared items and passkey creation stay read-only. A login and a note are two records, the item and its metadata; a Wi-Fi entry is one. The item goes first on create and edit, and last on delete, so an interrupted write leaves a readable entry rather than an orphan.
+Writes cover personal logins, Wi-Fi networks, notes, and the contents of a group you own. Cards, shared items outside groups, and passkey creation stay read-only.
+
+Groups are read, and a login can be added to or removed from an existing group: `apw group list`, `apw group add <group> <login>`, `apw group remove <group> <item> --yes`. Creating or deleting a group is not supported. Apple Passwords lists only groups its local keychain-sharing daemon registered, and a group written straight to CloudKit never enters that list, so `apw` cannot make one any device would show.
+
+A login and a note are two records, the item and its metadata; a Wi-Fi entry is one. The item goes first on create and edit, and last on delete, so an interrupted write leaves a readable entry rather than an orphan.
 
 `rm` is permanent: Recently Deleted is not implemented, so Apple Passwords has no copy to restore either. Changing a login's site or username, or a network's SSID, is not supported in place; delete the entry and add it again.
 
@@ -112,9 +116,9 @@ secret-tool clear service apw account snapshot-key
 
 | Area | State |
 | --- | --- |
-| CLI, snapshot, `list`, `get`, `wifi`, `otp`, `status`, `install-units` | Works; 57 unit and 18 integration tests |
+| CLI, snapshot, `list`, `get`, `wifi`, `otp`, `status`, `install-units` | Works; 137 unit and 25 integration tests |
 | `login`, `join`, `sync` against iCloud | Works; 383 items, 370 logins, 33 passkeys, 47 codes |
-| Shared groups | Read path implemented; the test account has no shared items |
+| Shared groups | Read and list; add or remove a login in an owned group. Creating a group is not supported |
 | Passkeys, notes, cards | Read; passkeys are counted in `status` but not listed |
 | Packaging | Tarball, `.deb`, AUR recipe, Nix flake |
 

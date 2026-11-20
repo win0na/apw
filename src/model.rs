@@ -66,9 +66,13 @@ pub struct Vault {
     /// material.
     #[serde(default)]
     pub synckeys: std::collections::BTreeMap<String, String>,
-    /// Group zones this tool created, so a retry resumes and a delete only
-    /// touches zones we own.
-    #[serde(default)]
+    /// The journal of group zones an older `apw group create` made.
+    ///
+    /// Creating groups over raw CloudKit only produced zones Passwords.app never
+    /// lists, so nothing writes this any more. Snapshots written before that
+    /// change still carry it, and `apw group list` uses the names to label a
+    /// zone whose protection does not open. It is not written again.
+    #[serde(default, skip_serializing)]
     pub group_ops: Vec<GroupOp>,
 }
 
@@ -541,7 +545,9 @@ pub struct Group {
     pub shared: bool,
 }
 
-/// How far an owner-side group operation got.
+/// How far an owner-side group creation got.
+///
+/// Only read now, from snapshots written before group creation was removed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum GroupPhase {
@@ -551,11 +557,9 @@ pub enum GroupPhase {
     Shared,
 }
 
-/// One group zone this tool created.
+/// One group zone an older `apw group create` made.
 ///
-/// The journal is written before the first network call of `group create`, so
-/// a failed share save leaves `Created` behind and the next run resumes the
-/// same zone instead of leaking a second one.
+/// Only read now, from snapshots written before group creation was removed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GroupOp {
     /// The zone name, `group-<UPPER UUID>`.
@@ -870,23 +874,23 @@ mod tests {
     }
 
     #[test]
-    fn the_group_journal_round_trips_through_json() {
-        let mut vault = Vault::default();
-        vault.group_ops.push(GroupOp {
-            zone: "group-6F1C2A4E-0B7D-4C3A-9E55-1234567890AB".into(),
-            name: "Family".into(),
-            phase: GroupPhase::Created,
-        });
-        vault.group_ops.push(GroupOp {
-            zone: "group-1111".into(),
-            name: "Work".into(),
-            phase: GroupPhase::Shared,
-        });
+    fn the_legacy_group_journal_loads_but_is_not_saved() {
+        let json = r#"{
+            "version": 1,
+            "group_ops": [
+                {"zone": "group-1111", "name": "Family", "phase": "created"},
+                {"zone": "group-2222", "name": "Work", "phase": "shared"}
+            ]
+        }"#;
+
+        let vault: Vault = serde_json::from_str(json).expect("old journal loads");
+        assert_eq!(vault.group_ops.len(), 2);
+        assert_eq!(vault.group_ops[0].phase, GroupPhase::Created);
 
         let json = serde_json::to_string(&vault).unwrap();
-        assert!(json.contains("\"phase\":\"created\""));
-        assert!(json.contains("\"phase\":\"shared\""));
-        let parsed: Vault = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.group_ops, vault.group_ops);
+        assert!(
+            !json.contains("group_ops"),
+            "the retired journal is not written again"
+        );
     }
 }
