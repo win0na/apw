@@ -492,6 +492,8 @@ pub fn group(paths: &Paths, config: &mut Config, zone: &str, json: bool) -> Resu
                     "public_access": info.public_access,
                     "invited_pcs_len": info.invited_pcs.as_ref().map(|p| p.der.len()),
                     "self_added_pcs_len": info.self_added_pcs.as_ref().map(|p| p.der.len()),
+                    "identifier": info.identifier.as_deref().map(hex),
+                    "identifier_len": info.identifier.as_ref().map(Vec::len),
                     "routing_key": info.short_token_routing_key,
                     "token_hash": info.short_token_hash.as_ref().map(Vec::len),
                     "hostname": info.displayed_hostname,

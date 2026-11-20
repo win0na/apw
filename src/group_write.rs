@@ -21,7 +21,7 @@ use sha2::{Digest, Sha256};
 
 use crate::cloudkit::{
     self, FieldValue, Gateway, OutgoingField, OutgoingRecord, OutgoingZone, ProtectionInfoBytes,
-    SAVE_CREATE, SAVE_UPDATE,
+    SAVE_CREATE,
 };
 use crate::error::{Error, Result};
 use crate::kcsharing::{self, SharedItem, SharedPassword};
@@ -145,7 +145,7 @@ pub async fn create(
         name: SHARE_RECORD.into(),
         record_type: SHARE_TYPE.into(),
         etag: None,
-        semantics: SAVE_UPDATE,
+        semantics: SAVE_CREATE,
         fields: vec![OutgoingField {
             name: "displayName".into(),
             value: FieldValue::Bytes(display_name(record_key, zone, name)?),
@@ -191,7 +191,7 @@ pub async fn add_item(
 ) -> Result<String> {
     let record = item_record(zone, record_key, tag, entry, now)?;
     let name = record.name.clone();
-    gateway.save_share_record(zone, None, &record).await?;
+    gateway.save_record(zone, None, &record).await?;
     Ok(name)
 }
 
