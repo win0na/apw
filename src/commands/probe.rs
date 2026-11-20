@@ -704,7 +704,7 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-fn describe_plist(value: &plist::Value) -> serde_json::Value {
+pub(crate) fn describe_plist(value: &plist::Value) -> serde_json::Value {
     use plist::Value;
     match value {
         Value::String(text) if text.len() <= 80 => {

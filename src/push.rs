@@ -80,6 +80,9 @@ struct StepSpec<'a> {
     /// Sidecars compare and seal the `v_Data` metadata dictionary, not the
     /// outer item plist.
     metadata: bool,
+    /// A trash step rewrites the outer plist while its base stays the `v_Data`
+    /// metadata dictionary, so the two sides compare differently.
+    trash: bool,
     /// The synckey class this record is sealed under.
     class: &'a str,
 }
@@ -90,6 +93,25 @@ impl StepSpec<'_> {
             metadata_matches(server, wanted_b64)
         } else {
             matches(server, wanted_b64)
+        }
+    }
+
+    /// The server already holds what this step would write.
+    fn new_matches(&self, server: &Value, wanted_b64: &str) -> bool {
+        if self.trash {
+            // The trash payload is the outer plist, not the metadata dictionary.
+            matches(server, wanted_b64)
+        } else {
+            self.matches(server, wanted_b64)
+        }
+    }
+
+    /// The server still holds the state this step started from.
+    fn base_matches(&self, server: &Value, base_b64: &str) -> bool {
+        if self.trash {
+            metadata_matches(server, base_b64)
+        } else {
+            self.matches(server, base_b64)
         }
     }
 }
@@ -107,10 +129,17 @@ pub async fn push_pending(
 ) -> PushReport {
     let mut report = PushReport::default();
     let mut kept = Vec::with_capacity(pending.len());
+    let now = chrono::Utc::now();
     for mut op in std::mem::take(pending) {
         if let Some(reason) = op.blocked.clone() {
             eprintln!("push: {}: {reason}", op.label);
             report.blocked += 1;
+            kept.push(op);
+            continue;
+        }
+        if !model::is_due(&op, now) {
+            // A backoff window is still open; leave the op exactly as it is.
+            report.skipped += 1;
             kept.push(op);
             continue;
         }
@@ -120,6 +149,7 @@ pub async fn push_pending(
             Ok(OpEnd::Blocked(reason)) => {
                 eprintln!("push: {}: {reason}", op.label);
                 op.blocked = Some(reason);
+                op.next_attempt = None;
                 report.blocked += 1;
                 kept.push(op);
             }
@@ -130,6 +160,8 @@ pub async fn push_pending(
                 if op.attempts >= MAX_ATTEMPTS {
                     op.blocked = Some(format!("repeated failures: {message}"));
                 }
+                // Even a blocked op keeps the stamp; `resolve --local` clears it.
+                op.next_attempt = Some(model::backoff(op.attempts, now).to_rfc3339());
                 report.failed += 1;
                 kept.push(op);
             }
@@ -175,11 +207,13 @@ async fn push_one(
             }
         }
         OpKind::Delete => {
-            // Remove the metadata before the item it describes.
+            // A delete is a trash: the metadata goes first, then the item it
+            // describes, both saved as edits with the base-vs-server check.
             if op.sidecar_dirty {
                 match apply_sidecar(op, env).await? {
                     StepOutcome::Matched => {}
-                    StepOutcome::Wrote { .. } => {
+                    StepOutcome::Wrote { etag } => {
+                        op.sidecar_etag = etag;
                         wrote = true;
                         update_entry(entries, op);
                     }
@@ -189,7 +223,8 @@ async fn push_one(
             if op.item_dirty {
                 match apply_item(op, env).await? {
                     StepOutcome::Matched => {}
-                    StepOutcome::Wrote { .. } => {
+                    StepOutcome::Wrote { etag } => {
+                        op.item_etag = etag;
                         wrote = true;
                         update_entry(entries, op);
                     }
@@ -215,6 +250,7 @@ async fn apply_item(op: &PendingOp, env: &PushEnv<'_>) -> Result<StepOutcome, Er
         label: &op.label,
         op_id: &op.id,
         metadata: false,
+        trash: false,
         class: item_class(op.entry_kind),
     };
     apply(&spec, env).await
@@ -235,12 +271,18 @@ async fn apply_sidecar(op: &mut PendingOp, env: &PushEnv<'_>) -> Result<StepOutc
         name: op.sidecar_name.as_deref().unwrap_or_default(),
         record_type: record_type(op.sidecar_type.as_deref().unwrap_or_default()),
         base: op.sidecar_base.as_deref(),
-        new: op.sidecar_new.as_deref(),
+        // A trash rewrites the outer plist; an edit writes the metadata anew.
+        new: if op.kind == OpKind::Delete {
+            op.sidecar_write.as_deref()
+        } else {
+            op.sidecar_new.as_deref()
+        },
         write: op.sidecar_write.as_deref(),
         force: op.force,
         label: &op.label,
         op_id: &op.id,
         metadata: true,
+        trash: op.kind == OpKind::Delete,
         class: ITEM_CLASS,
     };
     apply(&spec, env).await
@@ -250,8 +292,9 @@ async fn apply(step: &StepSpec<'_>, env: &PushEnv<'_>) -> Result<StepOutcome, Er
     let server = retrieve(env, step.zone, step.owner, step.name).await?;
     match step.kind {
         OpKind::Create => create(step, env, server.as_ref()).await,
-        OpKind::Edit => edit(step, env, server.as_ref()).await,
-        OpKind::Delete => delete(step, env, server.as_ref()).await,
+        // A delete is a trash: it writes the same records under their class key
+        // with a `-recently-deleted` access group, so it saves like an edit.
+        OpKind::Edit | OpKind::Delete => edit(step, env, server.as_ref()).await,
     }
 }
 
@@ -301,6 +344,10 @@ async fn edit(
     server: Option<&Record>,
 ) -> Result<StepOutcome, Error> {
     let Some(server) = server else {
+        if step.kind == OpKind::Delete {
+            // Nothing left to trash means the delete already happened.
+            return Ok(StepOutcome::Matched);
+        }
         return Ok(StepOutcome::Blocked(format!(
             "{} was deleted on another device",
             step.label
@@ -309,10 +356,17 @@ async fn edit(
     let Some(value) = ckks::decrypt_one(server, env.class_keys).map(|(_, value)| value) else {
         return Ok(StepOutcome::Blocked(changed(step)));
     };
-    if step.new.is_some_and(|wanted| step.matches(&value, wanted)) {
+    if step
+        .new
+        .is_some_and(|wanted| step.new_matches(&value, wanted))
+    {
         return Ok(StepOutcome::Matched);
     }
-    if !step.force && !step.base.is_some_and(|base| step.matches(&value, base)) {
+    if !step.force
+        && !step
+            .base
+            .is_some_and(|base| step.base_matches(&value, base))
+    {
         return Ok(StepOutcome::Blocked(changed(step)));
     }
     let Some(parent) = parent_for(env, step.zone, Some(server), step.class) else {
@@ -337,26 +391,6 @@ async fn edit(
     let fields = seal_fields(step.name, class_key, &parent, gen, &bplist)?;
     let etag = save(step, env, fields, server.etag.clone(), SAVE_UPDATE).await?;
     Ok(StepOutcome::Wrote { etag })
-}
-
-async fn delete(
-    step: &StepSpec<'_>,
-    env: &PushEnv<'_>,
-    server: Option<&Record>,
-) -> Result<StepOutcome, Error> {
-    let Some(server) = server else {
-        return Ok(StepOutcome::Matched);
-    };
-    let Some(value) = ckks::decrypt_one(server, env.class_keys).map(|(_, value)| value) else {
-        return Ok(StepOutcome::Blocked(changed(step)));
-    };
-    if !step.force && !step.base.is_some_and(|base| step.matches(&value, base)) {
-        return Ok(StepOutcome::Blocked(changed(step)));
-    }
-    env.gateway
-        .delete_record(step.zone, step.owner, step.name)
-        .await?;
-    Ok(StepOutcome::Wrote { etag: None })
 }
 
 fn changed(step: &StepSpec<'_>) -> String {

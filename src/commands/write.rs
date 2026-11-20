@@ -25,6 +25,14 @@ use crate::vault;
 const GENERATED_CHARSET: &[u8] =
     b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*-_=+";
 
+/// Apple's suffix on the access group of an item in Recently Deleted.
+const RECENTLY_DELETED: &str = "-recently-deleted";
+
+/// A pending queue beyond these caps is refused, so a long offline run cannot
+/// grow the vault without bound.
+pub(crate) const MAX_PENDING_OPS: usize = 200;
+pub(crate) const MAX_PENDING_BYTES: usize = 16 * 1024 * 1024;
+
 #[allow(clippy::too_many_arguments)]
 pub fn add_login(
     paths: &Paths,
@@ -134,11 +142,13 @@ pub fn add_login(
         sidecar_dirty: true,
         blocked: None,
         attempts: 0,
+        next_attempt: None,
         force: false,
         label: label.clone(),
     };
 
     let mut working = vault::load(paths, config)?;
+    ensure_queue_room(&working)?;
     let name = entry.display_name();
     if dry_run {
         if style.json {
@@ -252,11 +262,13 @@ pub fn add_wifi(
         sidecar_dirty: false,
         blocked: None,
         attempts: 0,
+        next_attempt: None,
         force: false,
         label: label.clone(),
     };
 
     let mut working = vault::load(paths, config)?;
+    ensure_queue_room(&working)?;
     let name = entry.display_name();
     if dry_run {
         if style.json {
@@ -376,11 +388,13 @@ pub fn add_note(
         sidecar_dirty: true,
         blocked: None,
         attempts: 0,
+        next_attempt: None,
         force: false,
         label: label.clone(),
     };
 
     let mut working = vault::load(paths, config)?;
+    ensure_queue_room(&working)?;
     let name = entry.display_name();
     if dry_run {
         if style.json {
@@ -664,11 +678,13 @@ pub fn edit(
         sidecar_dirty: sidecar_changed,
         blocked: None,
         attempts: 0,
+        next_attempt: None,
         force: false,
         label,
     };
 
     let mut working = vault.clone();
+    ensure_queue_room(&working)?;
     let merged = merge_edit(&mut working.pending, op);
     let name = {
         let entry = &mut working.entries[index];
@@ -740,10 +756,15 @@ pub fn rm(
         ))
     })?;
     if !yes {
-        return Err(Error::Invalid(
-            "refusing to delete without --yes; this deletes the entry permanently".into(),
-        ));
+        return Err(Error::Invalid("refusing to delete without --yes".into()));
     }
+    ensure_queue_room(&vault)?;
+
+    // Apple does not remove the record. It moves the same item, under the same
+    // class key, to Recently Deleted by appending `-recently-deleted` to
+    // `agrp` and stamping `mdat`. Every other key, including the secret, stays.
+    let deleted_at = Utc::now();
+    let (item_new, sidecar_new) = trash_payloads(&record, deleted_at)?;
 
     let label = entry_label(&entry);
     let op = PendingOp {
@@ -755,18 +776,19 @@ pub fn rm(
         item_name: entry.id.clone(),
         item_type: record.item_type.clone(),
         item_base: record.plist.clone(),
-        item_new: None,
+        item_new: item_new.clone(),
         item_etag: record.item_etag.clone(),
-        item_dirty: record.plist.is_some(),
+        item_dirty: true,
         sidecar_name: record.sidecar_name.clone(),
         sidecar_type: record.sidecar_type.clone(),
         sidecar_base: record.metadata.clone(),
-        sidecar_new: None,
-        sidecar_write: None,
+        sidecar_new: sidecar_new.clone(),
+        sidecar_write: sidecar_new,
         sidecar_etag: record.sidecar_etag.clone(),
-        sidecar_dirty: record.metadata.is_some(),
+        sidecar_dirty: record.sidecar_name.is_some(),
         blocked: None,
         attempts: 0,
+        next_attempt: None,
         force: false,
         label,
     };
@@ -802,14 +824,13 @@ pub fn rm(
             "name": name,
             "label": op.label,
             "pending_id": op.id,
-            "permanent": true,
+            "recently_deleted": true,
+            "recoverable_days": 30,
         })));
     } else {
         println!("deleted {} {name}", entry.id);
         println!("pending {}", op.id);
-        println!(
-            "the entry is gone from this snapshot; it cannot be restored until push support for Recently Deleted lands"
-        );
+        println!("the entry is in Recently Deleted and can be restored on any device for 30 days");
     }
     Ok(())
 }
@@ -830,6 +851,7 @@ pub fn pending(paths: &Paths, config: &mut Config, style: Style) -> Result<()> {
                     None => "pending".to_string(),
                 },
                 "attempts": op.attempts,
+                "next_attempt": op.next_attempt,
             })
         })
         .collect::<Vec<_>>();
@@ -852,11 +874,12 @@ pub fn pending(paths: &Paths, config: &mut Config, style: Style) -> Result<()> {
                     None => "pending".to_string(),
                 },
                 op.attempts.to_string(),
+                op.next_attempt.clone().unwrap_or_else(|| "-".to_string()),
             ]
         })
         .collect::<Vec<_>>();
     output::print_table_opts(
-        &["ID", "KIND", "LABEL", "STATE", "ATTEMPTS"],
+        &["ID", "KIND", "LABEL", "STATE", "ATTEMPTS", "RETRY"],
         &table,
         style.no_header,
         style.wide,
@@ -889,6 +912,7 @@ pub fn resolve(
         op.blocked = None;
         op.force = true;
         op.attempts = 0;
+        op.next_attempt = None;
     } else {
         vault.pending.remove(index);
     }
@@ -954,6 +978,65 @@ pub(crate) fn sidecar_plist(
         Value::Date(plist::Date::from(std::time::SystemTime::now())),
     );
     plist_bytes(&Value::Dictionary(sidecar))
+}
+
+/// The base64 plist Apple keeps for an item in Recently Deleted: the base
+/// dictionary with `-recently-deleted` appended to `agrp` (idempotently) and
+/// `mdat` set to the deletion time. Every other key is preserved byte for byte
+/// after the plist round trip.
+pub(crate) fn trashed_plist(base: &str, label: &str, at: chrono::DateTime<Utc>) -> Result<String> {
+    let mut dict = decode_dict(base, label)?;
+    trash_dict(&mut dict, at);
+    Ok(encode(&plist_bytes(&Value::Dictionary(dict))?))
+}
+
+/// The item and sidecar payloads for moving `record` to Recently Deleted.
+/// The sidecar is `Some` only when the record has one; a Wi-Fi record has none.
+pub(crate) fn trash_payloads(
+    record: &RecordMeta,
+    at: chrono::DateTime<Utc>,
+) -> Result<(Option<String>, Option<String>)> {
+    let item_new = record
+        .plist
+        .as_deref()
+        .map(|base| trashed_plist(base, "item", at))
+        .transpose()?;
+    let sidecar_new = if record.sidecar_name.is_some() {
+        let metadata = match record.metadata.as_deref() {
+            Some(value) => decode_dict(value, "metadata")?,
+            None => {
+                let mut dict = new_metadata_dict();
+                dict.insert("s_as".into(), Value::Array(Vec::new()));
+                dict
+            }
+        };
+        let item = match record.plist.as_deref() {
+            Some(value) => decode_dict(value, "item")?,
+            None => Dictionary::new(),
+        };
+        let outer = match record.sidecar_plist.as_deref() {
+            Some(value) => value.to_string(),
+            None => encode(&sidecar_plist(None, &item, &metadata)?),
+        };
+        Some(trashed_plist(&outer, "sidecar", at)?)
+    } else {
+        None
+    };
+    Ok((item_new, sidecar_new))
+}
+
+fn trash_dict(dict: &mut Dictionary, at: chrono::DateTime<Utc>) {
+    let agrp = dictionary_text(dict, "agrp").unwrap_or_default();
+    let agrp = if agrp.ends_with(RECENTLY_DELETED) {
+        agrp
+    } else {
+        format!("{agrp}{RECENTLY_DELETED}")
+    };
+    dict.insert("agrp".into(), Value::String(agrp));
+    dict.insert(
+        "mdat".into(),
+        Value::Date(plist::Date::from(std::time::SystemTime::from(at))),
+    );
 }
 
 fn dictionary_text(dict: &Dictionary, key: &str) -> Option<String> {
@@ -1088,6 +1171,7 @@ fn merge_edit(pending: &mut Vec<PendingOp>, op: PendingOp) -> PendingOp {
         existing.entry_kind = op.entry_kind;
         existing.blocked = None;
         existing.attempts = 0;
+        existing.next_attempt = None;
         existing.label = op.label;
         if existing.sidecar_name.is_none() {
             existing.sidecar_name = op.sidecar_name;
@@ -1100,6 +1184,40 @@ fn merge_edit(pending: &mut Vec<PendingOp>, op: PendingOp) -> PendingOp {
         pending.push(op.clone());
         op
     }
+}
+
+/// The base64 payload bytes the pending queue holds.
+fn pending_payload_bytes(vault: &Vault) -> usize {
+    vault
+        .pending
+        .iter()
+        .map(|op| {
+            [
+                &op.item_base,
+                &op.item_new,
+                &op.sidecar_base,
+                &op.sidecar_new,
+            ]
+            .into_iter()
+            .filter_map(|payload| payload.as_ref())
+            .map(String::len)
+            .sum::<usize>()
+        })
+        .sum()
+}
+
+/// Refuse a new op when the queue is already at its cap. `apw sync` drains
+/// what it can and `apw resolve` drops what it cannot.
+pub(crate) fn ensure_queue_room(vault: &Vault) -> Result<()> {
+    let bytes = pending_payload_bytes(vault);
+    if vault.pending.len() >= MAX_PENDING_OPS || bytes >= MAX_PENDING_BYTES {
+        let mib = bytes as f64 / (1024.0 * 1024.0);
+        return Err(Error::Invalid(format!(
+            "pending queue is full ({} ops, {mib:.1} MB); run apw sync or apw resolve",
+            vault.pending.len()
+        )));
+    }
+    Ok(())
 }
 
 fn find_entry(vault: &Vault, query: Option<&str>, id: Option<&str>) -> Result<usize> {
@@ -1194,6 +1312,221 @@ fn kind_name(kind: OpKind) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn at(seconds: i64) -> chrono::DateTime<Utc> {
+        chrono::DateTime::from_timestamp(seconds, 0).expect("timestamp")
+    }
+
+    fn decode(b64: &str) -> Dictionary {
+        decode_dict(b64, "test").expect("plist dictionary")
+    }
+
+    fn without_trash_keys(dict: &Dictionary) -> Dictionary {
+        let mut copy = dict.clone();
+        copy.remove("agrp");
+        copy.remove("mdat");
+        copy
+    }
+
+    #[test]
+    fn trashing_a_login_changes_only_agrp_and_mdat() {
+        let base = plist_bytes(&new_login_plist("example.com", "alice", b"hunter2")).unwrap();
+        let original = decode(&encode(&base));
+        let deleted_at = at(1_800_000_000);
+
+        let trashed = decode(&trashed_plist(&encode(&base), "item", deleted_at).unwrap());
+
+        assert_eq!(
+            trashed.get("agrp").and_then(Value::as_string),
+            Some("com.apple.cfnetwork-recently-deleted")
+        );
+        assert_eq!(
+            trashed.get("mdat").and_then(Value::as_date),
+            Some(plist::Date::from(std::time::SystemTime::from(deleted_at)))
+        );
+        assert_eq!(
+            trashed.get("v_Data").and_then(Value::as_data),
+            Some(b"hunter2".as_slice())
+        );
+        for key in ["labl", "acct", "srvr", "cdat", "sha1"] {
+            assert_eq!(trashed.get(key), original.get(key), "{key} is preserved");
+        }
+        assert_eq!(without_trash_keys(&trashed), without_trash_keys(&original));
+    }
+
+    #[test]
+    fn trashing_a_wifi_item_only_touches_agrp_and_mdat() {
+        let base = plist_bytes(&new_wifi_plist("HomeNet", b"wifi-pass")).unwrap();
+        let deleted_at = at(1_800_000_000);
+
+        let trashed = decode(&trashed_plist(&encode(&base), "item", deleted_at).unwrap());
+
+        assert_eq!(
+            trashed.get("agrp").and_then(Value::as_string),
+            Some("apple-recently-deleted")
+        );
+        assert_eq!(
+            trashed.get("v_Data").and_then(Value::as_data),
+            Some(b"wifi-pass".as_slice())
+        );
+        assert_eq!(
+            trashed.get("svce").and_then(Value::as_string),
+            Some("AirPort")
+        );
+    }
+
+    #[test]
+    fn trashing_a_sidecar_uses_the_password_manager_suffix() {
+        let metadata = new_note_metadata("Example", "note");
+        let outer = new_metadata_plist("example.com", "alice", &metadata);
+
+        let trashed = decode(
+            &trashed_plist(&encode(&plist_bytes(&outer).unwrap()), "sidecar", at(1)).unwrap(),
+        );
+
+        assert_eq!(
+            trashed.get("agrp").and_then(Value::as_string),
+            Some("com.apple.password-manager-recently-deleted")
+        );
+    }
+
+    #[test]
+    fn trashing_twice_keeps_one_suffix_and_refreshes_mdat() {
+        let base = plist_bytes(&new_login_plist("example.com", "alice", b"hunter2")).unwrap();
+        let once = trashed_plist(&encode(&base), "item", at(1_000)).unwrap();
+        let twice = trashed_plist(&once, "item", at(2_000)).unwrap();
+
+        let trashed = decode(&twice);
+        assert_eq!(
+            trashed.get("agrp").and_then(Value::as_string),
+            Some("com.apple.cfnetwork-recently-deleted")
+        );
+        assert_eq!(
+            trashed.get("mdat").and_then(Value::as_date),
+            Some(plist::Date::from(std::time::SystemTime::from(at(2_000))))
+        );
+    }
+
+    fn sidecar_record_meta(plist: &str, outer: bool) -> RecordMeta {
+        let metadata = new_note_metadata("Example", "note");
+        RecordMeta {
+            zone: "Passwords".into(),
+            item_type: "item".into(),
+            plist: Some(plist.into()),
+            sidecar_name: Some(uuid()),
+            sidecar_type: Some("item".into()),
+            metadata: Some(encode(
+                &plist_bytes(&Value::Dictionary(metadata.clone())).unwrap(),
+            )),
+            sidecar_plist: outer.then(|| {
+                encode(
+                    &plist_bytes(&new_metadata_plist("example.com", "alice", &metadata)).unwrap(),
+                )
+            }),
+            ..RecordMeta::default()
+        }
+    }
+
+    #[test]
+    fn trashing_a_login_with_a_sidecar_returns_both_payloads() {
+        let login =
+            encode(&plist_bytes(&new_login_plist("example.com", "alice", b"hunter2")).unwrap());
+
+        for outer in [true, false] {
+            let record = sidecar_record_meta(&login, outer);
+            let (item, sidecar) = trash_payloads(&record, at(1_800_000_000)).expect("trash");
+
+            let item = decode(&item.expect("item payload"));
+            assert_eq!(
+                item.get("agrp").and_then(Value::as_string),
+                Some("com.apple.cfnetwork-recently-deleted")
+            );
+            let sidecar = decode(&sidecar.expect("sidecar payload"));
+            assert_eq!(
+                sidecar.get("agrp").and_then(Value::as_string),
+                Some("com.apple.password-manager-recently-deleted")
+            );
+        }
+    }
+
+    #[test]
+    fn trashing_a_wifi_record_returns_only_the_item() {
+        let wifi = encode(&plist_bytes(&new_wifi_plist("HomeNet", b"wifi-pass")).unwrap());
+        let record = RecordMeta {
+            zone: "WiFi".into(),
+            item_type: "item".into(),
+            plist: Some(wifi),
+            ..RecordMeta::default()
+        };
+
+        let (item, sidecar) = trash_payloads(&record, at(1)).expect("trash");
+
+        let item = decode(&item.expect("item payload"));
+        assert_eq!(
+            item.get("agrp").and_then(Value::as_string),
+            Some("apple-recently-deleted")
+        );
+        assert!(sidecar.is_none());
+    }
+
+    fn queued_op(payload: Option<String>) -> PendingOp {
+        PendingOp {
+            id: uuid(),
+            kind: OpKind::Edit,
+            entry_kind: EntryKind::Login,
+            zone: "Passwords".into(),
+            owner: None,
+            item_name: uuid(),
+            item_type: "item".into(),
+            item_base: None,
+            item_new: payload,
+            item_etag: None,
+            item_dirty: true,
+            sidecar_name: None,
+            sidecar_type: None,
+            sidecar_base: None,
+            sidecar_new: None,
+            sidecar_write: None,
+            sidecar_etag: None,
+            sidecar_dirty: false,
+            blocked: None,
+            attempts: 0,
+            next_attempt: None,
+            force: false,
+            label: String::new(),
+        }
+    }
+
+    #[test]
+    fn the_queue_cap_counts_ops() {
+        let mut vault = Vault {
+            pending: (0..MAX_PENDING_OPS).map(|_| queued_op(None)).collect(),
+            ..Vault::default()
+        };
+
+        let error = ensure_queue_room(&vault).expect_err("a full queue is refused");
+
+        let text = error.to_string();
+        assert!(text.contains("pending queue is full (200 ops"), "{text}");
+        assert!(text.contains("apw sync"), "{text}");
+        assert!(text.contains("apw resolve"), "{text}");
+
+        vault.pending.pop();
+        ensure_queue_room(&vault).expect("one slot free");
+    }
+
+    #[test]
+    fn the_queue_cap_counts_payload_bytes() {
+        let mut vault = Vault {
+            pending: vec![queued_op(Some("A".repeat(MAX_PENDING_BYTES)))],
+            ..Vault::default()
+        };
+        let error = ensure_queue_room(&vault).expect_err("an oversized queue is refused");
+        assert!(error.to_string().contains("MB"), "{error}");
+
+        vault.pending = vec![queued_op(Some("A".repeat(MAX_PENDING_BYTES - 1)))];
+        ensure_queue_room(&vault).expect("one byte under the cap");
+    }
 
     #[test]
     fn note_metadata_stores_title_and_body_as_data() {

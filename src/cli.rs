@@ -147,17 +147,18 @@ pub enum Command {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Delete a login from the local snapshot.
+    /// Move a login to Recently Deleted.
     ///
     /// Pass a query, or select the entry with `--id`:
-    /// `apw rm --id <uuid> --yes`.
+    /// `apw rm --id <uuid> --yes`. The entry can be restored on any device for
+    /// 30 days.
     Rm {
         /// Name, domain, or username. Optional when --id is given.
         query: Option<String>,
         /// Select the entry by record id.
         #[arg(long)]
         id: Option<String>,
-        /// Confirm the permanent deletion.
+        /// Confirm the deletion.
         #[arg(long)]
         yes: bool,
         /// Show what would change without saving.

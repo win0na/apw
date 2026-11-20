@@ -28,7 +28,7 @@ apw
 ├── wire       protobuf framing and the CloudKit gateway client
 ├── octagon    P-384 peer, escrow recovery, trust join, TLK shares
 ├── ckks       zones, records, AES-SIV decryption and sealing, item plists
-├── push       queued writes, conflict checks, CloudKit save and delete
+├── push       queued writes, conflict checks, CloudKit saves
 ├── pcs        shared groups, PCSShareProtection
 └── groups     shared keychain zones and entry mapping
 ```
@@ -114,7 +114,8 @@ There are no live Apple credentials in the development environment, and escrow a
 - Two undocumented protocols to maintain (GSA, Octagon/CKKS). Apple can change them without notice.
 - The CloudKit gateway is internal. Its request framing and error codes can change without notice.
 - An anisette server is a hard prerequisite for login.
-- Writes limited to personal logins, Wi-Fi networks and notes. No card, passkey or shared-item writes, no Recently Deleted.
+- Writes limited to personal logins, Wi-Fi networks and notes. No card, passkey or shared-item writes.
+- Deletes move to Recently Deleted (30 days, no restore command).
 - Shared-with-me depends on the owner's PCS key delivery in the share record. It is the least proven part of the design and the test account has no shared items.
 - Apple's iCloud terms prohibit automated access. The client stays polite: paced syncs, no retries, one login attempt per action. The contract risk is the user's.
 

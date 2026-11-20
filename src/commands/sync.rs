@@ -438,6 +438,13 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Resu
     // Only a zone read replaces the synckey names; an early failure keeps them.
     if zones_read {
         snapshot.synckeys = sync_keys;
+        if std::env::var_os("APW_DEBUG").is_some() {
+            for (class, name) in &snapshot.synckeys {
+                if class.contains("deleted") || std::env::var_os("APW_DEBUG_CLASSES").is_some() {
+                    eprintln!("sync: class key {class} -> {name}");
+                }
+            }
+        }
     }
 
     if std::env::var_os("APW_DEBUG").is_some() {
@@ -624,9 +631,28 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Resu
         }
         let agrp = entry.agrp.clone().unwrap_or_default();
         // Tombstones and key material are not user items.
-        if agrp.ends_with("-recently-deleted")
-            || agrp.starts_with("com.apple.ProtectedCloudStorage")
-        {
+        if agrp.ends_with("-recently-deleted") {
+            if std::env::var_os("APW_DEBUG").is_some() {
+                eprintln!(
+                    "sync: recently deleted {} agrp {agrp} parent {}",
+                    entry.id,
+                    entry
+                        .record
+                        .as_ref()
+                        .and_then(|record| record.parent.as_deref())
+                        .unwrap_or("")
+                );
+                if std::env::var_os("APW_DEBUG_ITEMS").is_some() {
+                    eprintln!(
+                        "sync: deleted plist {}",
+                        serde_json::to_string(&crate::commands::probe::describe_plist(value))
+                            .unwrap_or_default()
+                    );
+                }
+            }
+            continue;
+        }
+        if agrp.starts_with("com.apple.ProtectedCloudStorage") {
             continue;
         }
         if agrp == "com.apple.password-manager.website-metadata" {

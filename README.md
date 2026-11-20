@@ -70,7 +70,7 @@ apw rm example.com --yes
 apw pending
 ```
 
-`add`, `edit`, and `rm` change the snapshot and queue the change. `apw sync` pushes queued changes after it reads, so an edit made offline goes out on the next sync. `apw pending` lists the queue.
+`add`, `edit`, and `rm` change the snapshot and queue the change. `apw sync` pushes queued changes after it reads, so an edit made offline goes out on the next sync. `apw pending` lists the queue, including when a failed push will be retried. A transient failure backs off from 30 seconds up to an hour; five failures block the change until you resolve it. The queue holds at most 200 changes or 16 MiB.
 
 A password comes from `--password-stdin`, from `--generate`, or from a prompt that asks twice. There is no `--password` flag, so a password does not land in shell history. `--totp` takes an `otpauth://` URI or a base32 secret, and `apw edit` also takes `--clear-totp`. `--dry-run` prints the queued change without writing it.
 
@@ -82,7 +82,7 @@ Groups are read, and a login can be added to or removed from an existing group: 
 
 A login and a note are two records, the item and its metadata; a Wi-Fi entry is one. The item goes first on create and edit, and last on delete, so an interrupted write leaves a readable entry rather than an orphan.
 
-`rm` is permanent: Recently Deleted is not implemented, so Apple Passwords has no copy to restore either. Changing a login's site or username, or a network's SSID, is not supported in place; delete the entry and add it again.
+`rm` moves the entry to Recently Deleted, where Apple Passwords keeps it for 30 days before purging it. The record is re-saved with the deleted marker rather than removed, so the app can still restore it; `apw` has no restore command yet. Changing a login's site or username, or a network's SSID, is not supported in place; delete the entry and add it again.
 
 ## Timer
 

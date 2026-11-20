@@ -19,7 +19,7 @@ Commands, files, configuration, output, and limits.
 | `apw add note TITLE [--body TEXT] [--body-stdin] [--dry-run]` | Add a note and queue it. |
 | `apw notes [QUERY]` | List notes. |
 | `apw edit QUERY [--id UUID] [--title TEXT] [--notes TEXT] [--clear-notes] [--totp URI\|BASE32] [--clear-totp] [--password-stdin] [--generate] [--dry-run]` | Change a login, note or Wi-Fi network and queue the change. |
-| `apw rm QUERY [--id UUID] [--yes] [--dry-run]` | Delete a login, note or Wi-Fi network and queue the delete. |
+| `apw rm QUERY [--id UUID] [--yes] [--dry-run]` | Move a login, note or Wi-Fi network to Recently Deleted and queue it. |
 | `apw pending` | List changes that have not been pushed. |
 | `apw resolve ID [--local] [--remote]` | Force or drop a blocked change. |
 | `apw group list` | List shared groups with owner and member count. |
@@ -45,7 +45,9 @@ Writes cover personal logins, Wi-Fi networks and notes. Cards, shared entries an
 
 Logins and notes live in the Passwords zone; Wi-Fi networks live in the WiFi zone and are sealed under its classC key. A login is an item plus password-manager metadata. A note is an empty item plus metadata that carries the title and body. A Wi-Fi entry is one item with the network name in `acct` and `labl` and no metadata. A create or edit writes the item first and the metadata second; a delete removes the metadata first. If the second write fails, the next sync sees the first one already done and writes only the rest.
 
-`rm` deletes permanently. Recently Deleted is not implemented, so there is no undo in `apw` or in Apple Passwords.
+`rm` re-saves the record with the `-recently-deleted` access group and a fresh modification date. Apple Passwords keeps it in Recently Deleted for 30 days and can restore it; `apw` has no restore command yet.
+
+A push that fails for a transient reason stays queued with a retry time: 30 seconds after the first failure, doubling to an hour. After five failures it blocks until `apw resolve`. The queue is capped at 200 operations or 16 MiB of stored payload; `add`, `edit` and `rm` refuse to enqueue past that.
 
 Passwords enter through `--password-stdin` (one line, trailing newline removed), `--generate` (20 characters, printed once), or a prompt that asks twice. There is no `--password` flag. A password edit appends the old value to Apple's password history.
 

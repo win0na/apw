@@ -299,6 +299,15 @@ pub fn entry_from_plist_kind(
     {
         return None;
     }
+    // A tombstone is the keychain's deletion marker; it has no secret to show.
+    let tomb = dict.get("tomb").and_then(|value| {
+        value
+            .as_signed_integer()
+            .or_else(|| value.as_unsigned_integer().map(|number| number as i64))
+    });
+    if tomb.is_some_and(|tomb| tomb != 0) {
+        return None;
+    }
     let agrp = string(dict, "agrp").unwrap_or_default();
     let is_metadata = agrp == "com.apple.password-manager";
     let mut srvr = text(dict, "srvr");
@@ -1059,6 +1068,20 @@ mod tests {
     fn strips_iso_padding() {
         assert_eq!(strip_padding(b"secret\x80\x00\x00"), b"secret");
         assert_eq!(strip_padding(b"secret"), b"secret");
+    }
+
+    #[test]
+    fn a_tombstone_plist_is_not_an_entry() {
+        let mut item = new_login_plist("example.com", "alice", b"secret")
+            .as_dictionary()
+            .cloned()
+            .expect("dictionary");
+        item.insert("tomb".into(), Value::from(1i64));
+
+        assert!(entry_from_plist("item-1", &Value::Dictionary(item.clone())).is_none());
+
+        item.insert("tomb".into(), Value::from(0i64));
+        assert!(entry_from_plist("item-1", &Value::Dictionary(item)).is_some());
     }
 
     #[test]

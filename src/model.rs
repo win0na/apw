@@ -278,6 +278,10 @@ pub struct PendingOp {
     pub blocked: Option<String>,
     #[serde(default)]
     pub attempts: u32,
+    /// RFC3339 time before which this op is not retried. Set after a transient
+    /// failure so a failing server is not hammered on every sync.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_attempt: Option<String>,
     /// Set by `resolve --local` to push a blocked op even if it was refused.
     #[serde(default)]
     pub force: bool,
@@ -285,6 +289,27 @@ pub struct PendingOp {
     /// `"Scratch Login (tester)"`.
     #[serde(default)]
     pub label: String,
+}
+
+/// The delay before retrying an op that has failed `attempts` times: 30s
+/// doubling each time, capped at an hour. The first retry waits 30s and the
+/// eighth and later wait the cap.
+pub fn backoff(attempts: u32, now: chrono::DateTime<chrono::Utc>) -> chrono::DateTime<chrono::Utc> {
+    if attempts == 0 {
+        return now;
+    }
+    let shift = attempts.saturating_sub(1).min(7);
+    let seconds = 30u64.saturating_mul(1u64 << shift).min(3600);
+    now + chrono::Duration::seconds(seconds as i64)
+}
+
+/// Whether the op may be pushed at `now`. A missing or unreadable
+/// `next_attempt` counts as due, so a hand-edited vault never stalls.
+pub fn is_due(op: &PendingOp, now: chrono::DateTime<chrono::Utc>) -> bool {
+    op.next_attempt
+        .as_deref()
+        .and_then(|text| chrono::DateTime::parse_from_rfc3339(text).ok())
+        .is_none_or(|at| at <= now)
 }
 
 impl Entry {
@@ -819,6 +844,7 @@ mod tests {
             sidecar_dirty: true,
             blocked: None,
             attempts: 1,
+            next_attempt: None,
             force: false,
             label: String::new(),
         });
@@ -871,6 +897,72 @@ mod tests {
         assert!(vault.group_ops.is_empty());
         assert!(vault.entries[0].record.is_none());
         assert_eq!(vault.entries[0].id, "id-1");
+    }
+
+    fn op_with_next_attempt(next_attempt: Option<&str>) -> PendingOp {
+        PendingOp {
+            id: "op-1".to_string(),
+            kind: OpKind::Edit,
+            entry_kind: EntryKind::Login,
+            zone: "Passwords".to_string(),
+            owner: None,
+            item_name: "item-1".to_string(),
+            item_type: "item".to_string(),
+            item_base: None,
+            item_new: None,
+            item_etag: None,
+            item_dirty: true,
+            sidecar_name: None,
+            sidecar_type: None,
+            sidecar_base: None,
+            sidecar_new: None,
+            sidecar_write: None,
+            sidecar_etag: None,
+            sidecar_dirty: false,
+            blocked: None,
+            attempts: 0,
+            next_attempt: next_attempt.map(str::to_string),
+            force: false,
+            label: String::new(),
+        }
+    }
+
+    #[test]
+    fn backoff_doubles_from_thirty_seconds_and_caps_at_an_hour() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let delay = |attempts| (backoff(attempts, now) - now).num_seconds();
+        assert_eq!(delay(0), 0);
+        assert_eq!(delay(1), 30);
+        assert_eq!(delay(2), 60);
+        assert_eq!(delay(3), 120);
+        assert_eq!(delay(6), 960);
+        assert_eq!(delay(7), 1920);
+        assert_eq!(delay(8), 3600);
+        assert_eq!(delay(u32::MAX), 3600);
+    }
+
+    #[test]
+    fn an_op_is_due_unless_a_future_retry_is_set() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        assert!(is_due(&op_with_next_attempt(None), now));
+        assert!(is_due(
+            &op_with_next_attempt(Some("2025-12-31T23:59:59Z")),
+            now
+        ));
+        assert!(is_due(
+            &op_with_next_attempt(Some("2026-01-01T00:00:00Z")),
+            now
+        ));
+        assert!(!is_due(
+            &op_with_next_attempt(Some("2026-01-01T00:00:30Z")),
+            now
+        ));
+        // An unreadable stamp is treated as due rather than as a stall.
+        assert!(is_due(&op_with_next_attempt(Some("tomorrow")), now));
     }
 
     #[test]
