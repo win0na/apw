@@ -1603,6 +1603,13 @@ pub struct ProtectionSpec<'a> {
     /// Share-participant metadata, written for a group's participant
     /// protection and absent everywhere else.
     pub participant: Option<ParticipantSpec<'a>>,
+    /// Wrap only the derived share master, marked as a derived key. Apple
+    /// writes a participant's own protection this way: one key entry with
+    /// flags 1 and no rm-master entry.
+    pub share_only: bool,
+    /// Zone protection: Apple marks the owner entry 8 at roll 1 and 16 after
+    /// a roll, and every access entry 8.
+    pub zone: bool,
 }
 
 /// The keyset attributes Apple writes on a share participant protection.
@@ -1637,6 +1644,8 @@ pub fn create_protection(spec: &ProtectionSpec<'_>) -> Result<(Protection, Vec<P
         spec.is_share,
         &spec.extra_keys,
         spec.participant.as_ref(),
+        spec.share_only,
+        spec.zone,
     )
 }
 
@@ -1652,6 +1661,7 @@ pub fn create_protection(spec: &ProtectionSpec<'_>) -> Result<(Protection, Vec<P
 ///
 /// Returns `(protection, keys)` with the same convention as
 /// [`create_protection`]: identity keys first, the new effective master last.
+#[allow(clippy::too_many_arguments)]
 pub fn roll_protection(
     decoded: &Decoded,
     me: &SecretKey,
@@ -1660,22 +1670,33 @@ pub fn roll_protection(
     roll: u32,
     extra_keys: Vec<PcsKey>,
     is_share: bool,
+    zone: bool,
 ) -> Result<(Protection, Vec<PcsKey>)> {
-    let last = decoded
-        .keys
-        .first()
-        .ok_or_else(|| Error::Message("decoded protection has no master key".into()))?;
+    // A record protection keeps its key across rolls; only the count and
+    // signatures change, so old items stay readable without carrying the old
+    // keys in the identity bundle. Zone protections re-wrap a new master.
+    let master = if is_share {
+        PcsKey::random()
+    } else {
+        decoded
+            .keys
+            .first()
+            .cloned()
+            .ok_or_else(|| Error::Message("protection has no key to roll".into()))?
+    };
     build_protection(
-        &PcsKey::random(),
+        &master,
         me,
         &decoded.identities,
         &access,
         Some(sign_with),
-        Some(last),
+        None,
         roll,
         is_share,
         &extra_keys,
         None,
+        false,
+        zone,
     )
 }
 
@@ -1701,6 +1722,8 @@ fn build_protection(
     is_share: bool,
     extra_keys: &[PcsKey],
     participant: Option<&ParticipantSpec<'_>>,
+    share_only: bool,
+    zone: bool,
 ) -> Result<(Protection, Vec<PcsKey>)> {
     let effective = if is_share {
         rm.share_variant()
@@ -1756,8 +1779,18 @@ fn build_protection(
             key: key_ref(me),
             trailing: Vec::new(),
         },
-        wrapped: rm.wrap_for(me)?,
-        flags: None,
+        wrapped: if share_only {
+            effective.wrap_for(me)?
+        } else {
+            rm.wrap_for(me)?
+        },
+        flags: if share_only {
+            Some(1)
+        } else if zone {
+            Some(if roll > 1 { 16 } else { 8 })
+        } else {
+            None
+        },
         trailing: Vec::new(),
     }];
     for recipient in access {
@@ -1767,8 +1800,18 @@ fn build_protection(
                 key: key_ref(recipient),
                 trailing: Vec::new(),
             },
-            wrapped: effective.wrap_for(recipient)?,
-            flags: if is_share { Some(1) } else { None },
+            wrapped: if zone {
+                rm.wrap_for(recipient)?
+            } else {
+                effective.wrap_for(recipient)?
+            },
+            flags: if zone {
+                Some(8)
+            } else if is_share {
+                Some(1)
+            } else {
+                None
+            },
             trailing: Vec::new(),
         });
     }
@@ -1911,34 +1954,36 @@ fn build_protection(
 /// The `[0]` keyset attributes of a share participant protection: attribute 8
 /// names the invitation's signer, attribute 9 the public sharing key.
 fn participant_attributes(spec: &ParticipantSpec<'_>) -> Vec<PcsAttribute> {
-    let signer = spec
-        .sign_with
-        .map(|key| key.public_key().to_encoded_point(true).as_bytes().to_vec());
-    // Apple's participant protection can name a public key with no private
-    // half; this crate only ever writes a signer it owns.
-    let public_key = signer.unwrap_or_else(|| spec.share_key.clone());
-    vec![
-        PcsAttribute {
+    let mut attributes = Vec::new();
+    // Attr 8 names the invitation signer; Apple omits it on the owner's own
+    // participant protection, which only carries the share key in attr 9.
+    if let Some(signer) = spec.sign_with {
+        attributes.push(PcsAttribute {
             key: 8,
             value: PcsKeyRef {
                 keytype: 3,
-                key: public_key,
+                key: signer
+                    .public_key()
+                    .to_encoded_point(true)
+                    .as_bytes()
+                    .to_vec(),
                 trailing: Vec::new(),
             }
             .encode(),
             trailing: Vec::new(),
-        },
-        PcsAttribute {
-            key: 9,
-            value: PcsKeyRef {
-                keytype: 3,
-                key: spec.share_key.clone(),
-                trailing: Vec::new(),
-            }
-            .encode(),
+        });
+    }
+    attributes.push(PcsAttribute {
+        key: 9,
+        value: PcsKeyRef {
+            keytype: 3,
+            key: spec.share_key.clone(),
             trailing: Vec::new(),
-        },
-    ]
+        }
+        .encode(),
+        trailing: Vec::new(),
+    });
+    attributes
 }
 
 fn sign_digest(key: &SecretKey, hash: &[u8], self_signed: bool) -> Result<PcsSignature> {
@@ -2560,22 +2605,6 @@ mod tests {
             .expect("[3] signature verifies with the signing key");
     }
 
-    fn verify_countersignature(protection: &Protection, previous: &PcsKey) -> PcsSignature {
-        let signature = protection
-            .countersignature()
-            .unwrap()
-            .expect("countersignature");
-        let key = previous.master_ec_key().unwrap();
-        let hash = Sha256::digest(protection.digest().unwrap());
-        let point = key.public_key().to_encoded_point(false);
-        let verifying = VerifyingKey::from_sec1_bytes(point.as_bytes()).unwrap();
-        let parsed = EcdsaSignature::from_der(&signature.signature).unwrap();
-        verifying
-            .verify_prehash(hash.as_slice(), &parsed)
-            .expect("signature_2 verifies with the previous master");
-        signature
-    }
-
     fn zone_spec<'a>(
         service: &'a SecretKey,
         signing: &'a SecretKey,
@@ -2591,6 +2620,8 @@ mod tests {
             is_share: false,
             extra_keys: Vec::new(),
             participant: None,
+            share_only: false,
+            zone: true,
         }
     }
 
@@ -2668,6 +2699,8 @@ mod tests {
             is_share: false,
             extra_keys: Vec::new(),
             participant: None,
+            share_only: false,
+            zone: false,
         })
         .unwrap();
         assert_eq!(keys.len(), 1, "a record protection has one record key");
@@ -2697,7 +2730,7 @@ mod tests {
         let other = random_key();
 
         let (protection, keys) = create_protection(&zone_spec(&service, &signing, &zone)).unwrap();
-        let previous = keys.last().expect("master").clone();
+        let _previous = keys.last().expect("master").clone();
         let first = Protection::parse(&protection.encode().unwrap()).unwrap();
         let decoded = first.decode(std::slice::from_ref(&service), false).unwrap();
 
@@ -2708,6 +2741,7 @@ mod tests {
             &signing,
             2,
             Vec::new(),
+            true,
             true,
         )
         .unwrap();
@@ -2736,14 +2770,14 @@ mod tests {
             .iter()
             .find(|entry| key_ref_matches(&entry.decryption_key.key, &other))
             .expect("access entry");
-        assert_eq!(access.flags, Some(1), "access entry is readonly");
+        assert_eq!(access.flags, Some(8), "zone access entries carry flag 8");
         let mine = parsed
             .keyset
             .keys
             .iter()
             .find(|entry| key_ref_matches(&entry.decryption_key.key, &service))
             .expect("master entry");
-        assert_eq!(mine.flags, None, "absent flags stay absent");
+        assert_eq!(mine.flags, Some(16), "a rolled zone entry carries flag 16");
 
         let service_decoded = parsed
             .decode(std::slice::from_ref(&service), false)
@@ -2757,7 +2791,10 @@ mod tests {
         );
 
         verify_outer(&parsed, &signing);
-        verify_countersignature(&parsed, &previous);
+        assert!(
+            parsed.countersignature().unwrap().is_none(),
+            "Apple's rolled zone protections carry no countersignature"
+        );
         let mut hmac_input = parsed.keyset.encode();
         hmac_input.extend_from_slice(&parsed.meta);
         hmac_input.extend_from_slice(&parsed.signature_data.as_ref().unwrap().signature);
@@ -2781,6 +2818,7 @@ mod tests {
             &signing,
             2,
             Vec::new(),
+            true,
             true,
         )
         .unwrap();
@@ -2812,6 +2850,8 @@ mod tests {
             is_share: false,
             extra_keys: Vec::new(),
             participant: None,
+            share_only: false,
+            zone: false,
         })
         .unwrap();
         let old = keys[0].clone();
@@ -2825,6 +2865,7 @@ mod tests {
             &zone,
             3,
             vec![old.clone()],
+            false,
             false,
         )
         .unwrap();
@@ -2843,7 +2884,10 @@ mod tests {
         assert_eq!(decoded.keys[0].0, rolled_keys.last().unwrap().0);
         assert_eq!(decoded.keys[1].0, old.0, "old record key is retained");
         verify_outer(&parsed, &zone);
-        verify_countersignature(&parsed, &old);
+        assert!(
+            parsed.countersignature().unwrap().is_none(),
+            "rolled record protections carry no countersignature"
+        );
     }
 
     /// The four protections a group's first share needs, each verified with the
@@ -2869,6 +2913,8 @@ mod tests {
             is_share: false,
             extra_keys: Vec::new(),
             participant: None,
+            share_only: false,
+            zone: false,
         })
         .unwrap();
         let zone_master = zone_keys.last().unwrap().clone();
@@ -2892,6 +2938,8 @@ mod tests {
             is_share: false,
             extra_keys: Vec::new(),
             participant: None,
+            share_only: false,
+            zone: false,
         })
         .unwrap();
         let record_master = record_keys.last().unwrap().clone();
@@ -2916,6 +2964,8 @@ mod tests {
             is_share: true,
             extra_keys: Vec::new(),
             participant: None,
+            share_only: false,
+            zone: false,
         })
         .unwrap();
         let parsed = Protection::parse(&invited_protection.encode().unwrap()).unwrap();
@@ -2945,6 +2995,8 @@ mod tests {
             is_share: false,
             extra_keys: Vec::new(),
             participant: None,
+            share_only: false,
+            zone: false,
         })
         .unwrap();
         let parsed = Protection::parse(&self_added.encode().unwrap()).unwrap();
@@ -2987,6 +3039,8 @@ mod tests {
                 share_key: key_x(&service),
                 sign_with: Some(&service),
             }),
+            share_only: false,
+            zone: false,
         })
         .unwrap();
         let parsed = Protection::parse(&protection.encode().unwrap()).unwrap();

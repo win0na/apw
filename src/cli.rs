@@ -214,6 +214,9 @@ pub enum Command {
     /// Print one CloudKit record's fields.
     #[command(hide = true)]
     ProbeRecord { zone: String, name: String },
+    /// Decode a group's participant protections with our service keys.
+    #[command(hide = true)]
+    ProbeParticipant { zone: String },
     /// Print the redacted key structure of stored item plists.
     #[command(hide = true)]
     ProbeStructure {
@@ -389,6 +392,7 @@ fn execute(cli: Cli) -> Result<()> {
             | Command::ProbeGroup { .. }
             | Command::ProbeStats
             | Command::ProbeStructure { .. }
+            | Command::ProbeParticipant { .. }
     ) {
         Some(crate::config::lock_snapshot(&paths)?)
     } else {
@@ -627,6 +631,9 @@ fn execute(cli: Cli) -> Result<()> {
         Command::ProbeStats => commands::probe::stats(&paths, &mut config, style.json),
         Command::ProbeRecord { zone, name } => {
             commands::probe::record(&paths, &mut config, &zone, &name, style.json)
+        }
+        Command::ProbeParticipant { zone } => {
+            commands::probe::participant(&paths, &mut config, &zone, style.json)
         }
         Command::ProbeStructure { kind, limit } => {
             commands::probe::structure(&paths, &mut config, kind.as_deref(), limit, style.json)

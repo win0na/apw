@@ -1109,6 +1109,7 @@ mod tests {
             permission: None,
             pcs_key: None,
             share_info: None,
+            share_id: None,
             stable_url: None,
         }
     }

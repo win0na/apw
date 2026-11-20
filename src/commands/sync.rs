@@ -233,6 +233,16 @@ pub fn group_session(paths: &Paths, config: &mut Config) -> Result<GroupSession>
         let decrypted = ckks::decrypt_items(&item_records, &class_keys);
         let service_keys = service_keys(&decrypted.values);
         if std::env::var_os("APW_DEBUG").is_some() {
+            for key in &service_keys {
+                let x: String = key
+                    .public_x()
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect();
+                eprintln!("group: service key x={x} signing={}", key.signing.is_some());
+            }
+        }
+        if std::env::var_os("APW_DEBUG").is_some() {
             eprintln!(
                 "group: {} tlks, {} class keys, {} Manatee items, {} service keys",
                 tlks.len(),

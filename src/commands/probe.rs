@@ -483,8 +483,11 @@ pub fn group(paths: &Paths, config: &mut Config, zone: &str, json: bool) -> Resu
                         "type": p.participant_type,
                         "permission": p.permission,
                         "public_key_len": p.public_key.as_ref().map(Vec::len),
+                        "public_key": p.public_key.as_deref().map(hex),
                         "info_len": p.protection_info.as_ref().map(|i| i.der.len()),
                         "info_tag": p.protection_info.as_ref().and_then(|i| i.tag.clone()),
+                        "info_public_key": p.protection_info_public_key.as_deref().map(hex),
+                    "protection": p.protection_info.as_ref().map(|i| protection_summary(&i.der)),
                     })).collect::<Vec<_>>(),
                     "public_access": info.public_access,
                     "invited_pcs_len": info.invited_pcs.as_ref().map(|p| p.der.len()),
@@ -499,7 +502,9 @@ pub fn group(paths: &Paths, config: &mut Config, zone: &str, json: bool) -> Resu
                         "protected_len": u.protected_full_token.as_ref().map(Vec::len),
                     })),
                     "pcs_key_len": record.pcs_key.as_ref().map(Vec::len),
+                    "share_id": record.share_id,
                     "permission": record.permission,
+                    "share_id": record.share_id,
                     "plugins": record.plugin_fields.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>(),
                     "fields": record.fields.iter().map(|(n, v)| {
                         let size = match v {
@@ -563,7 +568,12 @@ pub fn group(paths: &Paths, config: &mut Config, zone: &str, json: bool) -> Resu
         Ok::<_, crate::error::Error>(serde_json::json!({
             "zone": zone_info.name,
             "owner": zone_info.owner,
+            "zone_protection": zone_info.protection_info.as_deref().map(protection_summary),
             "protection_bytes": zone_info.protection_info.as_ref().map(Vec::len),
+            "record_protection": zone_info
+                .record_protection_info
+                .as_deref()
+                .map(protection_summary),
             "record_protection_bytes": zone_info.record_protection_info.as_ref().map(Vec::len),
             "pages": pages,
             "status": status,
@@ -816,6 +826,111 @@ pub fn record(
             "{}",
             serde_json::to_string_pretty(&body[0]["fields"]).unwrap_or_default()
         );
+    }
+    Ok(())
+}
+
+/// Shape of a PCS protection without decoding its keys.
+fn protection_summary(der: &[u8]) -> serde_json::Value {
+    use crate::pcs::Protection;
+    match Protection::parse(der) {
+        Ok(p) => serde_json::json!({
+            "len": der.len(),
+            "share_keys": p.keyset.keys.len(),
+            "key_refs": p.keyset.keys.iter().map(|key| hex(&key.decryption_key.key)).collect::<Vec<_>>(),
+            "flags": p.keyset.keys.iter().map(|key| key.flags).collect::<Vec<_>>(),
+            "wrapped": p.keyset.keys.iter().map(|key| key.wrapped.len()).collect::<Vec<_>>(),
+            "keyset_attributes": p.keyset.attributes.as_ref().map(|a| a.iter().map(|x| (x.key, x.value.len())).collect::<Vec<_>>()),
+            "unparsed": p.keyset.unparsed.len(),
+            "keyset_trailing": p.keyset.trailing.len(),
+            "roll": p.roll_count().ok(),
+            "sig_version": p.signature_data.as_ref().map(|s| s.version),
+            "sig_len": p.signature_data.as_ref().map(|s| s.signature.len()),
+            "hmac_len": p.hmac.len(),
+            "signature": p.signature.as_ref().map(|s| (s.keyid.len(), s.signature.len())),
+            "attributes": p.attributes.as_ref().map(|a| a.iter().map(|x| x.key).collect::<Vec<_>>()),
+            "trailing": p.trailing.len(),
+            "meta_len": p.meta.len(),
+        }),
+        Err(error) => serde_json::json!(format!("parse error: {error}")),
+    }
+}
+
+/// Decode the participants of a group's share with our PCS service keys.
+pub fn participant(paths: &Paths, config: &mut Config, zone: &str, json: bool) -> Result<()> {
+    use p256::elliptic_curve::sec1::ToEncodedPoint;
+
+    let session = crate::commands::sync::group_session(paths, config)?;
+    let secrets: Vec<_> = session
+        .service_keys
+        .iter()
+        .map(|key| key.secret.clone())
+        .collect();
+    let rows = block_on(async {
+        let owner = session.gateway.user_id().to_string();
+        let page = session
+            .gateway
+            .record_sync(zone, Some(&owner), None)
+            .await?;
+        let mut rows = Vec::new();
+        for record in &page.records {
+            let Some(info) = &record.share_info else {
+                continue;
+            };
+            for participant in &info.participants {
+                let Some(protection) = &participant.protection_info else {
+                    continue;
+                };
+                let parsed = crate::pcs::Protection::parse(&protection.der)?;
+                let mut opened = Vec::new();
+                for secret in &secrets {
+                    if let Ok(decoded) = parsed.decode(std::slice::from_ref(secret), true) {
+                        let identities: Vec<String> = decoded
+                            .identities
+                            .iter()
+                            .map(|key| {
+                                let point = key.public_key().to_encoded_point(true);
+                                hex(&point.as_bytes()[1..])
+                            })
+                            .collect();
+                        let keys: Vec<String> = Vec::new();
+                        opened.push(serde_json::json!({
+                            "service": hex(
+                                &secret.public_key().to_encoded_point(true).as_bytes()[1..],
+                            ),
+                            "identities": identities,
+                            "keys": keys,
+                        }));
+                    }
+                }
+                rows.push(serde_json::json!({
+                    "user": participant.user_id,
+                    "public_key": participant.public_key.as_deref().map(hex),
+                    "info_len": protection.der.len(),
+                    "roll": parsed.roll_count().ok(),
+                    "opened": opened,
+                }));
+            }
+        }
+        Ok::<_, Error>(rows)
+    })?;
+
+    if output::use_json(json) {
+        output::print_json(&output::success(serde_json::Value::Array(rows)));
+    } else {
+        for row in &rows {
+            println!(
+                "{} pk={} len={} roll={}",
+                row["user"].as_str().unwrap_or(""),
+                row["public_key"].as_str().unwrap_or(""),
+                row["info_len"],
+                row["roll"]
+            );
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&row["opened"]).unwrap_or_default()
+            );
+        }
     }
     Ok(())
 }

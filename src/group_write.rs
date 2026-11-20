@@ -95,6 +95,7 @@ pub async fn create(
         state.zone_roll + 1,
         Vec::new(),
         true,
+        true,
     )?;
     // The record protection follows the zone identity that the rolled zone
     // protection still lists, so a reader can unwrap it.
@@ -109,7 +110,8 @@ pub async fn create(
         Vec::new(),
         zone_identity,
         state.record_roll + 2,
-        state.record.keys.clone(),
+        Vec::new(),
+        false,
         false,
     )?;
     let record_key = record_keys
@@ -377,6 +379,8 @@ async fn create_zone(gateway: &Gateway, service: &ServiceKey, zone: &str) -> Res
         is_share: false,
         extra_keys: Vec::new(),
         participant: None,
+        share_only: false,
+        zone: true,
     })?;
     let (record_protection, _) = create_protection(&ProtectionSpec {
         me: &zone_key,
@@ -388,6 +392,8 @@ async fn create_zone(gateway: &Gateway, service: &ServiceKey, zone: &str) -> Res
         is_share: false,
         extra_keys: Vec::new(),
         participant: None,
+        share_only: false,
+        zone: false,
     })?;
 
     let zone_bytes = zone_protection.encode()?;
@@ -434,9 +440,11 @@ fn share_keys(service: &ServiceKey) -> Result<ShareKeys> {
         // Attributes 8 and 9 name the sharing key and its signer; attribute 7
         // is the signer's signature over the protection digest.
         participant: Some(ParticipantSpec {
-            share_key: compressed(&service.secret),
-            sign_with: Some(&service.secret),
+            share_key: x_only(&compressed(&participant_key)),
+            sign_with: None,
         }),
+        share_only: true,
+        zone: false,
     })?;
     let invited_key = random_key();
     let (invited_protection, _) = create_protection(&ProtectionSpec {
@@ -449,6 +457,8 @@ fn share_keys(service: &ServiceKey) -> Result<ShareKeys> {
         is_share: true,
         extra_keys: Vec::new(),
         participant: None,
+        share_only: false,
+        zone: false,
     })?;
 
     let self_ec = random_key();
@@ -462,6 +472,8 @@ fn share_keys(service: &ServiceKey) -> Result<ShareKeys> {
         is_share: false,
         extra_keys: Vec::new(),
         participant: None,
+        share_only: false,
+        zone: false,
     })?;
 
     Ok(ShareKeys {

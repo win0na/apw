@@ -86,6 +86,8 @@ pub struct Record {
     pub share_info: Option<ShareInfo>,
     /// `stableUrl` (record field 22), carried by a share record.
     pub stable_url: Option<StableUrl>,
+    /// `shareId` (record field 8), set when the server registers the record as a share.
+    pub share_id: Option<String>,
 }
 
 /// A record to write to CloudKit.
@@ -1252,6 +1254,7 @@ pub fn parse_record(data: &[u8]) -> Result<Record> {
         pcs_key: None,
         share_info: None,
         stable_url: None,
+        share_id: None,
     };
     while let Some(field) = reader.next()? {
         match field.number {
@@ -1296,6 +1299,7 @@ pub fn parse_record(data: &[u8]) -> Result<Record> {
                     }
                 }));
             }
+            8 => record.share_id = share_identifier_name(field.bytes()?),
             24 => record.pcs_key = Some(field.bytes()?.to_vec()),
             _ => {}
         }
@@ -1496,6 +1500,24 @@ fn parse_identifier(mut reader: Reader<'_>) -> Result<String> {
         }
     }
     Err(Error::Message("record has no identifier".into()))
+}
+
+/// The record name inside a `ShareIdentifier` (field 1 holds the Identifier).
+fn share_identifier_name(data: &[u8]) -> Option<String> {
+    let mut reader = Reader::new(data);
+    while let Some(field) = reader.next().ok()? {
+        if field.number == 1 {
+            let mut identifier = Reader::new(field.bytes().ok()?);
+            while let Some(part) = identifier.next().ok()? {
+                if part.number == 1 {
+                    return std::str::from_utf8(part.bytes().ok()?)
+                        .ok()
+                        .map(str::to_string);
+                }
+            }
+        }
+    }
+    None
 }
 
 fn parse_type(mut reader: Reader<'_>) -> Result<String> {
