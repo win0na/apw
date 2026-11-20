@@ -552,6 +552,24 @@ impl Gateway {
         Ok(outcome.record.and_then(|record| record.etag))
     }
 
+    /// Save a record as a CloudKit share (`Identifier.Type.SHARE`). This is
+    /// what makes the server register a CKShare for the zone.
+    pub async fn save_share_record(
+        &self,
+        zone: &str,
+        owner: Option<&str>,
+        record: &OutgoingRecord,
+    ) -> Result<Option<String>> {
+        let owner = owner.unwrap_or(&self.user_id);
+        let request = save_request_type(record, zone, owner, 4);
+
+        let outcome = self
+            .call(RECORD_SAVE, &self.bundle, OP_RECORD_SAVE, &request, None)
+            .await?;
+        let outcome = outcome.check()?;
+        Ok(outcome.record.and_then(|record| record.etag))
+    }
+
     /// Delete one record by name.
     pub async fn delete_record(&self, zone: &str, owner: Option<&str>, name: &str) -> Result<()> {
         let owner = owner.unwrap_or(&self.user_id);
@@ -852,9 +870,17 @@ fn zone_delete_request(zone: &str, owner: &str) -> Writer {
 
 /// `RecordIdentifier { value: Identifier { name, RECORD }, zoneIdentifier }`.
 fn record_identifier(zone: &str, owner: &str, name: &str) -> Writer {
+    record_identifier_type(zone, owner, name, 1)
+}
+
+/// A record identifier with an explicit `Identifier.Type`. A CloudKit share
+/// is a record whose identifier type is `SHARE` (4); saving it as `RECORD`
+/// stores the fields but never registers a share, which leaves the zone
+/// invisible to the keychain-sharing daemon.
+fn record_identifier_type(zone: &str, owner: &str, name: &str, id_type: u64) -> Writer {
     let mut identifier = Writer::new();
     identifier.string(1, name);
-    identifier.uint64(2, 1);
+    identifier.uint64(2, id_type);
 
     let mut record = Writer::new();
     record.message(1, &identifier);
@@ -942,11 +968,18 @@ fn record_field_writer(field: &OutgoingField, zone: &str, owner: &str) -> Writer
 }
 
 pub(crate) fn save_request(record: &OutgoingRecord, zone: &str, owner: &str) -> Writer {
+    save_request_type(record, zone, owner, 1)
+}
+
+fn save_request_type(record: &OutgoingRecord, zone: &str, owner: &str, id_type: u64) -> Writer {
     let mut record_message = Writer::new();
     if let Some(etag) = &record.etag {
         record_message.string(1, etag);
     }
-    record_message.message(2, &record_identifier(zone, owner, &record.name));
+    record_message.message(
+        2,
+        &record_identifier_type(zone, owner, &record.name, id_type),
+    );
 
     let mut record_type = Writer::new();
     record_type.string(1, &record.record_type);

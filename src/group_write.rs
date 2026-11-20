@@ -173,7 +173,7 @@ pub async fn create(
         zone_protection_tag: Some(zone_tag),
         record_protection_tag: None,
     };
-    gateway.save_record(zone, None, &record).await?;
+    gateway.save_share_record(zone, None, &record).await?;
     Ok(())
 }
 
@@ -191,7 +191,7 @@ pub async fn add_item(
 ) -> Result<String> {
     let record = item_record(zone, record_key, tag, entry, now)?;
     let name = record.name.clone();
-    gateway.save_record(zone, None, &record).await?;
+    gateway.save_share_record(zone, None, &record).await?;
     Ok(name)
 }
 
