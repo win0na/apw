@@ -9,7 +9,10 @@ use crate::cloudkit::Gateway;
 use crate::commands::join::block_on;
 use crate::config::{self, Config, Paths, State};
 use crate::error::{Error, Result};
-use crate::model::{Entry, EntryKind, OpKind, RecordMeta, Source};
+use crate::model::{
+    Entry, EntryKind, OpKind, RecordMeta, Source, TrashEntry, PASSWORD_MANAGER_AGRP,
+    RECENTLY_DELETED,
+};
 use crate::octagon::{self, keys::PeerKeys};
 use crate::output;
 use crate::pcs::ServiceKey;
@@ -70,6 +73,8 @@ fn sync_fixture(paths: &Paths, config: &mut Config, fixture: &Path, json: bool) 
         }
         snapshot.pending = existing.pending;
         snapshot.synckeys = existing.synckeys;
+        // A fixture is not a zone read, so it cannot rebuild the trash either.
+        snapshot.trash = existing.trash;
     }
     snapshot.account = config.account.clone().or(snapshot.account);
     snapshot.generated_at = Some(chrono::Utc::now());
@@ -620,6 +625,9 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Resu
     let mut logins: Vec<Entry> = Vec::new();
     let mut sidecars: Vec<Entry> = Vec::new();
     let mut passkeys: Vec<Entry> = Vec::new();
+    let mut trashed_items: Vec<TrashEntry> = Vec::new();
+    let mut trashed_sidecars: Vec<TrashEntry> = Vec::new();
+    let trashed_sidecar_agrp = format!("{PASSWORD_MANAGER_AGRP}{RECENTLY_DELETED}");
 
     for (id, value) in &decrypted.values {
         let Some(mut entry) = ckks::entry_from_plist(id, value) else {
@@ -630,28 +638,27 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Resu
             attach_record(&mut entry, info, zone, value);
         }
         let agrp = entry.agrp.clone().unwrap_or_default();
-        // Tombstones and key material are not user items.
-        if agrp.ends_with("-recently-deleted") {
+        // A trashed record keeps every key it had: only `agrp` gained the suffix
+        // and `mdat` holds the deletion time.
+        if agrp.ends_with(RECENTLY_DELETED) {
             if std::env::var_os("APW_DEBUG").is_some() {
-                eprintln!(
-                    "sync: recently deleted {} agrp {agrp} parent {}",
-                    entry.id,
-                    entry
-                        .record
-                        .as_ref()
-                        .and_then(|record| record.parent.as_deref())
-                        .unwrap_or("")
-                );
-                if std::env::var_os("APW_DEBUG_ITEMS").is_some() {
-                    eprintln!(
-                        "sync: deleted plist {}",
-                        serde_json::to_string(&crate::commands::probe::describe_plist(value))
-                            .unwrap_or_default()
-                    );
-                }
+                eprintln!("sync: recently deleted {id} agrp {agrp}");
+            }
+            let record = entry.record.clone().unwrap_or_default();
+            let trashed = TrashEntry {
+                entry,
+                record,
+                deleted_at: plist_date(value, "mdat"),
+            };
+            // Sidecars are paired with their login below, on `(srvr, acct)`.
+            if agrp == trashed_sidecar_agrp {
+                trashed_sidecars.push(trashed);
+            } else {
+                trashed_items.push(trashed);
             }
             continue;
         }
+        // Tombstones and key material are not user items.
         if agrp.starts_with("com.apple.ProtectedCloudStorage") {
             continue;
         }
@@ -768,6 +775,19 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Resu
         if let Some(info) = wifi_decrypted.records.get(id) {
             attach_record(&mut entry, info, "WiFi", value);
         }
+        if entry
+            .agrp
+            .as_deref()
+            .is_some_and(|agrp| agrp.ends_with(RECENTLY_DELETED))
+        {
+            let record = entry.record.clone().unwrap_or_default();
+            trashed_items.push(TrashEntry {
+                entry,
+                record,
+                deleted_at: plist_date(value, "mdat"),
+            });
+            continue;
+        }
         wifi.push(entry);
     }
     if std::env::var_os("APW_DEBUG").is_some() {
@@ -777,6 +797,10 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Resu
             wifi.len()
         );
     }
+
+    // Pair every trashed item with the sidecar that was trashed with it, and
+    // drop a sidecar that names no login: there is nothing to restore for it.
+    let mut trash = pair_trash(trashed_items, trashed_sidecars);
 
     // Merge the separately built lists first: a queued Wi-Fi or passkey write
     // must replace the fetched copy, not add beside it when the fetched copy
@@ -812,6 +836,9 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Resu
             None => logins.push((*local).clone()),
         }
     }
+    // A queued local write wins over the fetched copy here too: an item it is
+    // restoring is no longer in the trash, even before the push goes out.
+    trash.retain(|item| !writes.contains(item.entry.id.as_str()));
 
     logins.sort_by(|left, right| left.id.cmp(&right.id));
     if std::env::var_os("APW_DEBUG").is_some() {
@@ -837,6 +864,7 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Resu
     }
 
     snapshot.entries = logins;
+    snapshot.trash = trash;
     if !incomplete {
         snapshot.groups = group_data.into_iter().map(|data| data.group).collect();
     }
@@ -885,11 +913,12 @@ fn attach_record(entry: &mut Entry, info: &ckks::RecordInfo, zone: &str, value: 
         plist: Some(base64::engine::general_purpose::STANDARD.encode(&info.bplist)),
         ..RecordMeta::default()
     };
-    // A password-manager metadata item is the sidecar for a login. Its own
-    // record name and etag let a later edit rewrite the metadata, and the
-    // decrypted metadata dictionary is what a push has to re-seal. The outer
-    // sidecar plist is kept so an edit can preserve the keys Apple wrote.
-    if entry.agrp.as_deref() == Some("com.apple.password-manager") {
+    // A password-manager metadata item is the sidecar for a login, trashed or
+    // not. Its own record name and etag let a later edit rewrite the metadata,
+    // and the decrypted metadata dictionary is what a push has to re-seal. The
+    // outer sidecar plist is kept so an edit can preserve the keys Apple wrote.
+    let agrp = entry.agrp.as_deref().unwrap_or_default();
+    if agrp.strip_suffix(RECENTLY_DELETED).unwrap_or(agrp) == PASSWORD_MANAGER_AGRP {
         record.sidecar_name = Some(entry.id.clone());
         record.sidecar_type = Some(info.record_type.clone());
         record.sidecar_etag = info.etag.clone();
@@ -900,8 +929,77 @@ fn attach_record(entry: &mut Entry, info: &ckks::RecordInfo, zone: &str, value: 
     entry.record = Some(record);
 }
 
+/// Pair each trashed item with the sidecar that was trashed with it. Both keep
+/// their `(srvr, acct)`, so the pair still matches after the move. A sidecar
+/// with no item describes nothing restorable and is dropped.
+fn pair_trash(items: Vec<TrashEntry>, sidecars: Vec<TrashEntry>) -> Vec<TrashEntry> {
+    let mut sidecars = sidecars;
+    items
+        .into_iter()
+        .map(|mut item| {
+            let paired = trash_key(item.record.plist.as_deref()).and_then(|key| {
+                let index = sidecars.iter().position(|sidecar| {
+                    trash_key(sidecar.record.plist.as_deref()).as_ref() == Some(&key)
+                })?;
+                Some(sidecars.remove(index))
+            });
+            if let Some(sidecar) = paired {
+                if let Some(record) = item.entry.record.as_mut() {
+                    record.sidecar_name = Some(sidecar.entry.id.clone());
+                    record.sidecar_type = Some(sidecar.record.item_type.clone());
+                    record.sidecar_etag = sidecar.record.item_etag.clone();
+                    record.metadata = sidecar.record.metadata.clone();
+                    record.sidecar_plist = sidecar.record.plist.clone();
+                }
+                // The sidecar holds the stored title and notes; without them
+                // the trash row shows the label and a restore cannot be found
+                // by the name the user knows.
+                if let Some(title) = sidecar.entry.title.clone() {
+                    if !title.starts_with("Password Manager Metadata:") {
+                        item.entry.title = Some(title);
+                    }
+                }
+                if item.entry.notes.is_none() {
+                    item.entry.notes = sidecar.entry.notes.clone();
+                }
+                // The entry and the trash row must not describe different
+                // records, or a restore would queue the wrong base.
+                item.record = item.entry.record.clone().unwrap_or(item.record);
+            }
+            item
+        })
+        .collect()
+}
+
+/// The `(srvr, acct)` a record pairs on. A record that names no site is never
+/// paired: two unrelated items would match on nothing.
+fn trash_key(plist: Option<&str>) -> Option<(String, String)> {
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(plist?)
+        .ok()?;
+    let value: plist::Value = plist::from_bytes(&bytes).ok()?;
+    let dict = value.as_dictionary()?;
+    let site = dict_text(dict, "srvr")?;
+    (!site.is_empty()).then(|| (site, dict_text(dict, "acct").unwrap_or_default()))
+}
+
+/// The plist's `mdat` as a time: when the record was moved to Recently Deleted.
+fn plist_date(value: &plist::Value, key: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    let date = value.as_dictionary()?.get(key)?.as_date()?;
+    Some(chrono::DateTime::<chrono::Utc>::from(
+        std::time::SystemTime::from(date),
+    ))
+}
+
+fn dict_text(dict: &plist::Dictionary, key: &str) -> Option<String> {
+    match dict.get(key)? {
+        plist::Value::String(value) => Some(value.clone()),
+        plist::Value::Data(bytes) => String::from_utf8(bytes.clone()).ok(),
+        _ => None,
+    }
+}
+
 /// Classify a passwordless item whose site is a UUID: note, card, or stub.
-///
 /// Card titles win over note markers. A metadata `notes` value marks a note
 /// even when its title is custom; a stub with neither stays a login (an
 /// associated-domain record, for example).
@@ -1079,5 +1177,112 @@ mod tests {
         classify_stub(&mut associated);
         assert_eq!(associated.kind, EntryKind::Login);
         assert_eq!(associated.sites, vec![SITE.to_string()]);
+    }
+
+    fn b64(value: &plist::Value) -> String {
+        base64::engine::general_purpose::STANDARD.encode(ckks::plist_bytes(value).expect("bplist"))
+    }
+
+    fn trashed_login(id: &str, site: &str, username: &str) -> TrashEntry {
+        let mut item = plist::Dictionary::new();
+        item.insert(
+            "agrp".into(),
+            plist::Value::String(format!("com.apple.cfnetwork{RECENTLY_DELETED}")),
+        );
+        item.insert("srvr".into(), plist::Value::String(site.into()));
+        item.insert("acct".into(), plist::Value::String(username.into()));
+        item.insert("v_Data".into(), plist::Value::Data(b"secret".to_vec()));
+        let plist = b64(&plist::Value::Dictionary(item));
+        let record = RecordMeta {
+            zone: "Passwords".into(),
+            item_type: "item".into(),
+            item_etag: Some(format!("etag-{id}")),
+            plist: Some(plist),
+            ..RecordMeta::default()
+        };
+        TrashEntry {
+            entry: Entry {
+                id: id.into(),
+                kind: EntryKind::Login,
+                agrp: Some(format!("com.apple.cfnetwork{RECENTLY_DELETED}")),
+                title: Some(site.into()),
+                sites: vec![site.into()],
+                username: Some(username.into()),
+                record: Some(record.clone()),
+                ..Entry::default()
+            },
+            record,
+            deleted_at: None,
+        }
+    }
+
+    fn trashed_sidecar(id: &str, site: &str, username: &str) -> TrashEntry {
+        let mut metadata = plist::Dictionary::new();
+        metadata.insert("title".into(), plist::Value::Data(b"Example".to_vec()));
+        let metadata = plist::Value::Dictionary(metadata);
+        let mut outer = plist::Dictionary::new();
+        outer.insert(
+            "agrp".into(),
+            plist::Value::String(format!("{PASSWORD_MANAGER_AGRP}{RECENTLY_DELETED}")),
+        );
+        outer.insert("srvr".into(), plist::Value::String(site.into()));
+        outer.insert("acct".into(), plist::Value::String(username.into()));
+        outer.insert(
+            "v_Data".into(),
+            plist::Value::Data(ckks::plist_bytes(&metadata).expect("bplist")),
+        );
+        let plist = b64(&plist::Value::Dictionary(outer));
+        let record = RecordMeta {
+            zone: "Passwords".into(),
+            item_type: "item".into(),
+            item_etag: Some(format!("etag-{id}")),
+            plist: Some(plist.clone()),
+            sidecar_name: Some(id.into()),
+            sidecar_type: Some("item".into()),
+            sidecar_etag: Some(format!("etag-{id}")),
+            metadata: Some(b64(&metadata)),
+            sidecar_plist: Some(plist),
+            ..RecordMeta::default()
+        };
+        TrashEntry {
+            entry: Entry {
+                id: id.into(),
+                agrp: Some(format!("{PASSWORD_MANAGER_AGRP}{RECENTLY_DELETED}")),
+                record: Some(record.clone()),
+                ..Entry::default()
+            },
+            record,
+            deleted_at: None,
+        }
+    }
+
+    #[test]
+    fn a_trashed_login_pairs_with_its_trashed_sidecar() {
+        let trash = pair_trash(
+            vec![trashed_login("login-1", "example.com", "alice")],
+            vec![trashed_sidecar("side-1", "example.com", "alice")],
+        );
+
+        assert_eq!(trash.len(), 1);
+        let record = &trash[0].record;
+        assert_eq!(record.sidecar_name.as_deref(), Some("side-1"));
+        assert_eq!(record.sidecar_type.as_deref(), Some("item"));
+        assert_eq!(record.sidecar_etag.as_deref(), Some("etag-side-1"));
+        assert!(record.metadata.is_some());
+        assert!(record.sidecar_plist.is_some());
+        let entry_record = trash[0].entry.record.as_ref().expect("entry record");
+        assert_eq!(entry_record.sidecar_name.as_deref(), Some("side-1"));
+    }
+
+    #[test]
+    fn a_lone_trashed_sidecar_is_dropped() {
+        let trash = pair_trash(
+            vec![trashed_login("login-1", "example.com", "alice")],
+            vec![trashed_sidecar("side-1", "other.example", "bob")],
+        );
+
+        assert_eq!(trash.len(), 1);
+        assert_eq!(trash[0].entry.id, "login-1");
+        assert!(trash[0].record.sidecar_name.is_none());
     }
 }

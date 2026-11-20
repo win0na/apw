@@ -59,6 +59,10 @@ pub struct Vault {
     pub session: Option<Session>,
     #[serde(default)]
     pub peer: Option<PeerState>,
+    /// Items in Apple's Recently Deleted, as of the last sync. Trash is rebuilt
+    /// from the fetched records each sync and is never merged into `entries`.
+    #[serde(default)]
+    pub trash: Vec<TrashEntry>,
     /// Edits made locally that have not been pushed yet.
     #[serde(default)]
     pub pending: Vec<PendingOp>,
@@ -87,6 +91,7 @@ impl Default for Vault {
             groups: Vec::new(),
             session: None,
             peer: None,
+            trash: Vec::new(),
             pending: Vec::new(),
             synckeys: std::collections::BTreeMap::new(),
             group_ops: Vec::new(),
@@ -229,6 +234,29 @@ pub struct RecordMeta {
     pub sidecar_plist: Option<String>,
 }
 
+/// Apple's suffix on the access group of an item in Recently Deleted. Moving an
+/// item to the trash appends it to `agrp`; restoring strips it again.
+pub const RECENTLY_DELETED: &str = "-recently-deleted";
+
+/// The access group of a password-manager metadata sidecar, trashed or not.
+pub const PASSWORD_MANAGER_AGRP: &str = "com.apple.password-manager";
+
+/// One item in Apple's Recently Deleted, kept apart from `entries` so a restore
+/// can undo the move without reading the zone again.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrashEntry {
+    /// The item as it reads outside the trash, with the same fields it had
+    /// before the delete.
+    pub entry: Entry,
+    /// Addressing and payloads for the trashed record. `plist` is the trashed
+    /// item plist, and the sidecar fields describe the trashed sidecar when the
+    /// item has one.
+    pub record: RecordMeta,
+    /// The plist's `mdat`: when the item was moved to Recently Deleted.
+    #[serde(default)]
+    pub deleted_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
 /// The kind of change a pending op records.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OpKind {
@@ -285,6 +313,11 @@ pub struct PendingOp {
     /// Set by `resolve --local` to push a blocked op even if it was refused.
     #[serde(default)]
     pub force: bool,
+    /// A queued edit that undoes a move to Recently Deleted. The item step is
+    /// an ordinary edit, but the sidecar step compares and writes the outer
+    /// plist the way a trash does, because only the outer plist carries `agrp`.
+    #[serde(default)]
+    pub restore: bool,
     /// Display label captured when the op was queued, e.g.
     /// `"Scratch Login (tester)"`.
     #[serde(default)]
@@ -846,6 +879,7 @@ mod tests {
             attempts: 1,
             next_attempt: None,
             force: false,
+            restore: false,
             label: String::new(),
         });
         vault
@@ -923,6 +957,7 @@ mod tests {
             attempts: 0,
             next_attempt: next_attempt.map(str::to_string),
             force: false,
+            restore: false,
             label: String::new(),
         }
     }

@@ -563,3 +563,184 @@ fn resolve_keeps_or_drops_a_pending_op() {
     let pending = json_of(&dir, &["pending", "--json"]);
     assert!(pending["data"].as_array().unwrap().is_empty());
 }
+
+/// A login plist as Apple keeps it in Recently Deleted: `agrp` carries the
+/// suffix and every other key is unchanged.
+fn trashed_login(id: &str, title: &str, site: &str, username: &str) -> serde_json::Value {
+    let mut item = plist::Dictionary::new();
+    item.insert(
+        "agrp".into(),
+        plist::Value::String("com.apple.cfnetwork-recently-deleted".into()),
+    );
+    item.insert("srvr".into(), plist::Value::String(site.into()));
+    item.insert("acct".into(), plist::Value::String(username.into()));
+    item.insert("labl".into(), plist::Value::String(title.into()));
+    item.insert(
+        "v_Data".into(),
+        plist::Value::Data(b"old-password".to_vec()),
+    );
+    let mut bytes = Vec::new();
+    plist::to_writer_binary(&mut bytes, &plist::Value::Dictionary(item)).unwrap();
+    let plist = base64::engine::general_purpose::STANDARD.encode(bytes);
+    let record = serde_json::json!({
+        "zone": "Passwords",
+        "item_type": "item",
+        "item_etag": "etag-trash",
+        "plist": plist,
+    });
+    serde_json::json!({
+        "entry": {
+            "id": id,
+            "kind": "login",
+            "agrp": "com.apple.cfnetwork-recently-deleted",
+            "title": title,
+            "url": format!("https://{site}"),
+            "sites": [site],
+            "username": username,
+            "password": "old-password",
+            "record": record,
+        },
+        "record": record,
+        "deleted_at": "2026-01-02T03:04:05Z",
+    })
+}
+
+/// A fixture with two trashed logins; both match the query "example".
+fn trash_fixture(dir: &TempDir) -> std::path::PathBuf {
+    let fixture = serde_json::json!({
+        "version": 1,
+        "account": "user@example.com",
+        "entries": [],
+        "trash": [
+            trashed_login("trash-a", "Alpha", "example.com", "alice"),
+            trashed_login("trash-b", "Beta", "example.org", "bob"),
+        ],
+        "groups": []
+    });
+    let path = dir.path().join("trash-fixture.json");
+    std::fs::write(&path, serde_json::to_vec(&fixture).unwrap()).unwrap();
+    path
+}
+
+fn sync_trash_fixture(dir: &TempDir) {
+    let fixture = trash_fixture(dir);
+    apw(dir)
+        .args(["sync", "--fixture", fixture.to_str().unwrap()])
+        .assert()
+        .success();
+}
+
+#[test]
+fn trash_lists_recently_deleted_and_restore_queues_an_edit() {
+    let dir = TempDir::new().unwrap();
+    sync_trash_fixture(&dir);
+
+    let trash = json_of(&dir, &["trash", "--json"]);
+    let rows = trash["data"].as_array().unwrap();
+    assert_eq!(rows.len(), 2);
+    assert!(rows
+        .iter()
+        .any(|row| row["id"] == "trash-a" && row["deleted_at"] == "2026-01-02T03:04:05+00:00"));
+
+    // Trashed items are not listed as live entries.
+    let list = json_of(&dir, &["list", "--json"]);
+    assert!(list["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|entry| entry["id"] != "trash-a"));
+
+    let restored = json_of(&dir, &["restore", "--id", "trash-a", "--json"]);
+    assert_eq!(restored["data"]["id"], "trash-a");
+    assert_eq!(restored["data"]["name"], "Alpha");
+    assert_eq!(restored["data"]["username"], "alice");
+    assert_eq!(restored["data"]["restored"], true);
+
+    let list = json_of(&dir, &["list", "--json"]);
+    assert!(list["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|entry| entry["id"] == "trash-a"));
+
+    let trash = json_of(&dir, &["trash", "--json"]);
+    assert!(trash["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|row| row["id"] != "trash-a"));
+
+    let pending = json_of(&dir, &["pending", "--json"]);
+    let ops = pending["data"].as_array().unwrap();
+    assert_eq!(ops.len(), 1);
+    assert_eq!(ops[0]["kind"], "edit");
+    assert_eq!(ops[0]["item_name"], "trash-a");
+    assert_eq!(ops[0]["label"], "Alpha (alice)");
+}
+
+#[test]
+fn restore_with_two_matches_asks_for_an_id() {
+    let dir = TempDir::new().unwrap();
+    sync_trash_fixture(&dir);
+
+    apw(&dir)
+        .args(["restore", "example"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("pass --id"));
+}
+
+#[test]
+fn restore_dry_run_changes_nothing() {
+    let dir = TempDir::new().unwrap();
+    sync_trash_fixture(&dir);
+    let before_trash = json_of(&dir, &["trash", "--json"]);
+    let before_pending = json_of(&dir, &["pending", "--json"]);
+
+    apw(&dir)
+        .args(["restore", "--id", "trash-a", "--dry-run", "--json"])
+        .assert()
+        .success();
+
+    assert_eq!(before_trash, json_of(&dir, &["trash", "--json"]));
+    assert_eq!(before_pending, json_of(&dir, &["pending", "--json"]));
+    let list = json_of(&dir, &["list", "--json"]);
+    assert!(list["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|entry| entry["id"] != "trash-a"));
+}
+
+#[test]
+fn restore_before_sync_cancels_a_pending_delete() {
+    let dir = TempDir::new().unwrap();
+    let fixture = record_fixture(&dir);
+    apw(&dir)
+        .args(["sync", "--fixture", fixture.to_str().unwrap()])
+        .assert()
+        .success();
+    apw(&dir)
+        .args(["rm", "--id", "login-record", "--yes"])
+        .assert()
+        .success();
+    assert_eq!(
+        json_of(&dir, &["pending", "--json"])["data"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let restored = json_of(&dir, &["restore", "--id", "login-record", "--json"]);
+    assert_eq!(restored["data"]["restored"], true);
+
+    let pending = json_of(&dir, &["pending", "--json"]);
+    assert!(pending["data"].as_array().unwrap().is_empty());
+    let list = json_of(&dir, &["list", "--json"]);
+    assert!(list["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|entry| entry["id"] == "login-record"));
+}

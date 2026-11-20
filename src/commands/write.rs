@@ -17,16 +17,15 @@ use crate::ckks::{
 };
 use crate::config::{Config, Paths};
 use crate::error::{Error, Result};
-use crate::model::{Entry, EntryKind, OpKind, PendingOp, RecordMeta, Vault};
+use crate::model::{
+    Entry, EntryKind, OpKind, PendingOp, RecordMeta, TrashEntry, Vault, RECENTLY_DELETED,
+};
 use crate::output::{self, Style};
 use crate::totp::{self, TotpSpec};
 use crate::vault;
 
 const GENERATED_CHARSET: &[u8] =
     b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*-_=+";
-
-/// Apple's suffix on the access group of an item in Recently Deleted.
-const RECENTLY_DELETED: &str = "-recently-deleted";
 
 /// A pending queue beyond these caps is refused, so a long offline run cannot
 /// grow the vault without bound.
@@ -144,6 +143,7 @@ pub fn add_login(
         attempts: 0,
         next_attempt: None,
         force: false,
+        restore: false,
         label: label.clone(),
     };
 
@@ -264,6 +264,7 @@ pub fn add_wifi(
         attempts: 0,
         next_attempt: None,
         force: false,
+        restore: false,
         label: label.clone(),
     };
 
@@ -390,6 +391,7 @@ pub fn add_note(
         attempts: 0,
         next_attempt: None,
         force: false,
+        restore: false,
         label: label.clone(),
     };
 
@@ -680,6 +682,7 @@ pub fn edit(
         attempts: 0,
         next_attempt: None,
         force: false,
+        restore: false,
         label,
     };
 
@@ -790,6 +793,7 @@ pub fn rm(
         attempts: 0,
         next_attempt: None,
         force: false,
+        restore: false,
         label,
     };
     let name = entry.display_name();
@@ -833,6 +837,257 @@ pub fn rm(
         println!("the entry is in Recently Deleted and can be restored on any device for 30 days");
     }
     Ok(())
+}
+
+/// List the items in Recently Deleted, as of the last sync.
+pub fn trash_list(
+    paths: &Paths,
+    config: &mut Config,
+    query: Option<&str>,
+    style: Style,
+) -> Result<()> {
+    let vault = vault::load(paths, config)?;
+    let items: Vec<&TrashEntry> = vault
+        .trash
+        .iter()
+        .filter(|item| query.is_none_or(|query| item.entry.matches(query)))
+        .collect();
+
+    if style.json {
+        let rows = items
+            .iter()
+            .map(|item| {
+                json!({
+                    "id": item.entry.id,
+                    "name": item.entry.display_name(),
+                    "username": item.entry.username.clone().unwrap_or_default(),
+                    "domain": item.entry.domain(),
+                    "deleted_at": item.deleted_at.map(|at| at.to_rfc3339()),
+                })
+            })
+            .collect::<Vec<_>>();
+        output::print_json(&output::success(serde_json::Value::Array(rows)));
+        return Ok(());
+    }
+
+    let table = items
+        .iter()
+        .map(|item| {
+            vec![
+                item.entry.id.clone(),
+                item.entry.display_name(),
+                item.entry.username.clone().unwrap_or_default(),
+                item.entry.domain(),
+                item.deleted_at
+                    .map(|at| at.to_rfc3339())
+                    .unwrap_or_else(|| "-".to_string()),
+            ]
+        })
+        .collect::<Vec<_>>();
+    output::print_table_opts(
+        &["ID", "NAME", "USERNAME", "DOMAIN", "DELETED"],
+        &table,
+        style.no_header,
+        style.wide,
+    );
+    Ok(())
+}
+
+/// Undo a move to Recently Deleted.
+///
+/// Restore works only for a record that is still in the trash: either a sync
+/// saw it there, or `apw rm` queued the move and it has not been pushed yet.
+pub fn restore(
+    paths: &Paths,
+    config: &mut Config,
+    query: Option<&str>,
+    id: Option<&str>,
+    dry_run: bool,
+    style: Style,
+) -> Result<()> {
+    if query.is_some() == id.is_some() {
+        return Err(Error::Invalid("pass exactly one of a query or --id".into()));
+    }
+    let vault = vault::load(paths, config)?;
+    let found = find_trash(&vault, query, id)?;
+    let mut working = vault.clone();
+    let (entry, queued) = plan_restore(&mut working, found, Utc::now())?;
+
+    let id = entry.id.clone();
+    let name = entry.display_name();
+    let username = entry.username.clone().unwrap_or_default();
+    let label = entry_label(&entry);
+    let pending_id = queued.as_ref().map(|op| op.id.clone());
+
+    if dry_run {
+        if style.json {
+            output::print_json(&output::success(json!({
+                "dry_run": true,
+                "id": id,
+                "name": name,
+                "username": username,
+                "label": label,
+                "restored": true,
+                "pending_id": pending_id,
+            })));
+        } else {
+            println!("would restore {id} {name}");
+            match &pending_id {
+                Some(pending_id) => println!("would queue edit {pending_id}"),
+                None => println!("would cancel the pending delete"),
+            }
+        }
+        return Ok(());
+    }
+
+    working.entries.push(entry);
+    if let Some(op) = queued {
+        working.pending.push(op);
+    }
+    vault::save(paths, config, &working)?;
+
+    if style.json {
+        output::print_json(&output::success(json!({
+            "id": id,
+            "name": name,
+            "username": username,
+            "label": label,
+            "restored": true,
+            "pending_id": pending_id,
+        })));
+    } else {
+        println!("restored {id} {name}");
+        match &pending_id {
+            Some(pending_id) => println!("pending {pending_id}"),
+            None => println!("the pending delete was cancelled; nothing to push"),
+        }
+    }
+    Ok(())
+}
+
+/// The vault changes a restore makes, without saving: put the entry back and,
+/// when the record is still trashed on the server, queue the edit that undoes
+/// the move. A delete that was never pushed is cancelled instead.
+fn plan_restore(
+    working: &mut Vault,
+    found: TrashMatch,
+    now: chrono::DateTime<Utc>,
+) -> Result<(Entry, Option<PendingOp>)> {
+    match found {
+        TrashMatch::Synced(index) => {
+            ensure_queue_room(working)?;
+            let item = working.trash.remove(index);
+            let mut entry = item.entry;
+            let record = item.record;
+            let item_base = record.plist.clone().ok_or_else(|| {
+                Error::Invalid(format!(
+                    "{} has no item payload; run `apw sync` first",
+                    entry.display_name()
+                ))
+            })?;
+            // The server holds the trashed plist, so that is the base the
+            // queued edit compares against.
+            let item_new = untrashed_plist(&item_base, "item", now)?;
+            let sidecar = match record
+                .sidecar_name
+                .clone()
+                .filter(|_| record.metadata.is_some())
+            {
+                Some(name) => {
+                    let outer = match record.sidecar_plist.as_deref() {
+                        Some(outer) => untrashed_plist(outer, "sidecar", now)?,
+                        None => {
+                            let login = decode_dict(&item_new, "item")?;
+                            let metadata = match record.metadata.as_deref() {
+                                Some(value) => decode_dict(value, "metadata")?,
+                                None => new_metadata_dict(),
+                            };
+                            encode(&sidecar_plist(None, &login, &metadata)?)
+                        }
+                    };
+                    Some((name, outer))
+                }
+                None => None,
+            };
+            if let Some(record) = entry.record.as_mut() {
+                record.plist = Some(item_new.clone());
+                if let Some((_, outer)) = &sidecar {
+                    record.sidecar_plist = Some(outer.clone());
+                }
+            }
+            // `agrp` described the trashed record; the entry is live again.
+            if let Some(agrp) = entry.agrp.as_mut() {
+                if let Some(stripped) = agrp.strip_suffix(RECENTLY_DELETED) {
+                    *agrp = stripped.to_string();
+                }
+            }
+            let label = entry_label(&entry);
+            let (sidecar_name, sidecar_base, sidecar_write) = match &sidecar {
+                Some((name, outer)) => (
+                    Some(name.clone()),
+                    record.metadata.clone(),
+                    Some(outer.clone()),
+                ),
+                None => (None, None, None),
+            };
+            let op = PendingOp {
+                id: uuid(),
+                kind: OpKind::Edit,
+                entry_kind: entry.kind,
+                zone: record.zone.clone(),
+                owner: record.owner.clone(),
+                item_name: entry.id.clone(),
+                item_type: record.item_type.clone(),
+                item_base: Some(item_base),
+                item_new: Some(item_new),
+                item_etag: record.item_etag.clone(),
+                item_dirty: true,
+                sidecar_name,
+                sidecar_type: record.sidecar_type.clone(),
+                sidecar_base: sidecar_base.clone(),
+                // An edit compares the metadata dictionary, which the trash
+                // never touched; only the outer plist carries `agrp`.
+                sidecar_new: sidecar_base,
+                sidecar_write,
+                sidecar_etag: record.sidecar_etag.clone(),
+                sidecar_dirty: sidecar.is_some(),
+                blocked: None,
+                attempts: 0,
+                next_attempt: None,
+                force: false,
+                restore: true,
+                label,
+            };
+            Ok((entry, Some(op)))
+        }
+        TrashMatch::Pending(index) => {
+            // The delete was never pushed, so the server still holds the
+            // record: drop the op and put the entry back from its bases.
+            let op = working.pending.remove(index);
+            let mut entry = pending_delete_entry(&op).unwrap_or_else(|| Entry {
+                id: op.item_name.clone(),
+                kind: op.entry_kind,
+                ..Entry::default()
+            });
+            entry.record = Some(RecordMeta {
+                zone: op.zone.clone(),
+                item_type: op.item_type.clone(),
+                item_etag: op.item_etag.clone(),
+                owner: op.owner.clone(),
+                plist: op.item_base.clone(),
+                sidecar_name: op.sidecar_name.clone(),
+                sidecar_type: op.sidecar_type.clone(),
+                sidecar_etag: op.sidecar_etag.clone(),
+                metadata: op.sidecar_base.clone(),
+                sidecar_plist: match op.sidecar_write.as_deref() {
+                    Some(outer) => Some(untrashed_plist(outer, "sidecar", now)?),
+                    None => None,
+                },
+                ..RecordMeta::default()
+            });
+            Ok((entry, None))
+        }
+    }
 }
 
 pub fn pending(paths: &Paths, config: &mut Config, style: Style) -> Result<()> {
@@ -1037,6 +1292,27 @@ fn trash_dict(dict: &mut Dictionary, at: chrono::DateTime<Utc>) {
         "mdat".into(),
         Value::Date(plist::Date::from(std::time::SystemTime::from(at))),
     );
+}
+
+/// The inverse of [`trashed_plist`]: the base64 plist Apple keeps once an item
+/// leaves Recently Deleted. One `-recently-deleted` suffix is stripped from
+/// `agrp`; any other access group is left alone. `mdat` becomes `at` and every
+/// other key is preserved.
+pub(crate) fn untrashed_plist(
+    base: &str,
+    label: &str,
+    at: chrono::DateTime<Utc>,
+) -> Result<String> {
+    let mut dict = decode_dict(base, label)?;
+    let agrp = dictionary_text(&dict, "agrp")
+        .ok_or_else(|| Error::Message(format!("stored {label} payload has no agrp")))?;
+    let agrp = agrp.strip_suffix(RECENTLY_DELETED).unwrap_or(&agrp);
+    dict.insert("agrp".into(), Value::String(agrp.to_string()));
+    dict.insert(
+        "mdat".into(),
+        Value::Date(plist::Date::from(std::time::SystemTime::from(at))),
+    );
+    Ok(encode(&plist_bytes(&Value::Dictionary(dict))?))
 }
 
 fn dictionary_text(dict: &Dictionary, key: &str) -> Option<String> {
@@ -1270,6 +1546,102 @@ fn find_entry(vault: &Vault, query: Option<&str>, id: Option<&str>) -> Result<us
     }
 }
 
+/// Where a restore found its record: a sync saw it in the trash, or `apw rm`
+/// queued the move and it has not been pushed yet.
+#[derive(Debug)]
+enum TrashMatch {
+    /// Index into `vault.trash`.
+    Synced(usize),
+    /// Index into `vault.pending`, for an unpushed `OpKind::Delete`.
+    Pending(usize),
+}
+
+/// Resolve a trashed entry by id, or by a query that must match exactly one.
+/// An ambiguous query is refused rather than guessed.
+fn find_trash(vault: &Vault, query: Option<&str>, id: Option<&str>) -> Result<TrashMatch> {
+    if let Some(id) = id {
+        if let Some(index) = vault
+            .trash
+            .iter()
+            .position(|item| item.entry.id.eq_ignore_ascii_case(id))
+        {
+            return Ok(TrashMatch::Synced(index));
+        }
+        if let Some(index) = vault
+            .pending
+            .iter()
+            .position(|op| op.kind == OpKind::Delete && op.item_name.eq_ignore_ascii_case(id))
+        {
+            return Ok(TrashMatch::Pending(index));
+        }
+        return Err(Error::NoResults(format!("no trashed entry with id {id}")));
+    }
+    let query = query.ok_or_else(|| Error::Invalid("pass a query or --id".into()))?;
+    let mut matches = Vec::new();
+    for (index, item) in vault.trash.iter().enumerate() {
+        if item.entry.matches(query) {
+            matches.push(TrashMatch::Synced(index));
+        }
+    }
+    for (index, op) in vault.pending.iter().enumerate() {
+        if op.kind == OpKind::Delete && pending_delete_matches(op, query) {
+            matches.push(TrashMatch::Pending(index));
+        }
+    }
+    match matches.len() {
+        0 => Err(Error::NoResults(format!(
+            "no trashed entry matches {query}"
+        ))),
+        1 => Ok(matches.swap_remove(0)),
+        count => {
+            let ids = matches
+                .iter()
+                .map(|found| match found {
+                    TrashMatch::Synced(index) => vault.trash[*index].entry.id.clone(),
+                    TrashMatch::Pending(index) => vault.pending[*index].item_name.clone(),
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            Err(Error::Invalid(format!(
+                "{count} trashed entries match; pass --id <id> ({ids})"
+            )))
+        }
+    }
+}
+
+fn pending_delete_matches(op: &PendingOp, query: &str) -> bool {
+    pending_delete_entry(op).is_some_and(|entry| entry.matches(query))
+        || op.label.to_lowercase().contains(&query.to_lowercase())
+}
+
+/// Rebuild the entry a queued delete removed, from the payloads it recorded.
+/// The metadata dictionary supplies the name and notes it merged in.
+fn pending_delete_entry(op: &PendingOp) -> Option<Entry> {
+    let base = decode_dict(op.item_base.as_deref()?, "item").ok()?;
+    let mut entry = crate::ckks::entry_from_plist(&op.item_name, &Value::Dictionary(base))?;
+    entry.kind = op.entry_kind;
+    if let Some(metadata) = op
+        .sidecar_base
+        .as_deref()
+        .and_then(|value| decode_dict(value, "metadata").ok())
+    {
+        if let Some(title) = metadata_title(&metadata) {
+            entry.title = Some(title);
+        }
+        if let Some(notes) = dictionary_text(&metadata, "notes") {
+            entry.notes = Some(notes);
+        }
+    }
+    Some(entry)
+}
+
+fn metadata_title(metadata: &Dictionary) -> Option<String> {
+    ["customTitle", "title"]
+        .iter()
+        .find_map(|key| dictionary_text(metadata, key))
+        .filter(|title| !title.trim().is_empty())
+}
+
 /// The label shown for a queued op: the entry name, else its domain, plus the
 /// username when there is one.
 fn entry_label(entry: &Entry) -> String {
@@ -1493,6 +1865,7 @@ mod tests {
             attempts: 0,
             next_attempt: None,
             force: false,
+            restore: false,
             label: String::new(),
         }
     }
@@ -1544,5 +1917,223 @@ mod tests {
             Some(0)
         );
         assert!(metadata.get("s_hi").is_none());
+    }
+
+    #[test]
+    fn untrashing_a_login_restores_agrp_and_only_moves_mdat() {
+        let base = plist_bytes(&new_login_plist("example.com", "alice", b"hunter2")).unwrap();
+        let original = decode(&encode(&base));
+        let trashed = trashed_plist(&encode(&base), "item", at(1_800_000_000)).unwrap();
+
+        let restored = decode(&untrashed_plist(&trashed, "item", at(1_900_000_000)).unwrap());
+
+        assert_eq!(
+            restored.get("agrp").and_then(Value::as_string),
+            Some("com.apple.cfnetwork")
+        );
+        assert_eq!(
+            restored.get("mdat").and_then(Value::as_date),
+            Some(plist::Date::from(std::time::SystemTime::from(at(
+                1_900_000_000
+            ))))
+        );
+        assert_eq!(without_trash_keys(&restored), without_trash_keys(&original));
+    }
+
+    #[test]
+    fn untrashing_a_sidecar_restores_the_password_manager_group() {
+        let metadata = new_note_metadata("Example", "note");
+        let outer = new_metadata_plist("example.com", "alice", &metadata);
+        let base = encode(&plist_bytes(&outer).unwrap());
+        let trashed = trashed_plist(&base, "sidecar", at(1)).unwrap();
+
+        let restored = decode(&untrashed_plist(&trashed, "sidecar", at(2)).unwrap());
+
+        assert_eq!(
+            restored.get("agrp").and_then(Value::as_string),
+            Some("com.apple.password-manager")
+        );
+        assert_eq!(
+            without_trash_keys(&restored),
+            without_trash_keys(&decode(&base))
+        );
+    }
+
+    #[test]
+    fn untrashing_strips_one_suffix_and_is_idempotent() {
+        let base = plist_bytes(&new_login_plist("example.com", "alice", b"hunter2")).unwrap();
+        let once = untrashed_plist(
+            &trashed_plist(&encode(&base), "item", at(1)).unwrap(),
+            "item",
+            at(2),
+        )
+        .unwrap();
+
+        let twice = decode(&untrashed_plist(&once, "item", at(3)).unwrap());
+
+        assert_eq!(
+            twice.get("agrp").and_then(Value::as_string),
+            Some("com.apple.cfnetwork")
+        );
+        assert_eq!(
+            twice.get("mdat").and_then(Value::as_date),
+            Some(plist::Date::from(std::time::SystemTime::from(at(3))))
+        );
+    }
+
+    #[test]
+    fn untrashing_leaves_another_access_group_alone() {
+        let mut dict = Dictionary::new();
+        dict.insert("agrp".into(), Value::String("apple".into()));
+        let base = encode(&plist_bytes(&Value::Dictionary(dict)).unwrap());
+
+        let restored = decode(&untrashed_plist(&base, "item", at(1)).unwrap());
+
+        assert_eq!(
+            restored.get("agrp").and_then(Value::as_string),
+            Some("apple")
+        );
+    }
+
+    #[test]
+    fn untrashing_a_payload_without_agrp_fails() {
+        let base = encode(&plist_bytes(&Value::Dictionary(Dictionary::new())).unwrap());
+
+        let error = untrashed_plist(&base, "item", at(1)).expect_err("agrp is required");
+
+        assert!(error.to_string().contains("agrp"), "{error}");
+    }
+
+    fn trashed_record(plist: &str) -> RecordMeta {
+        RecordMeta {
+            zone: "Passwords".into(),
+            item_type: "item".into(),
+            item_etag: Some("etag-1".into()),
+            plist: Some(plist.into()),
+            ..RecordMeta::default()
+        }
+    }
+
+    #[test]
+    fn restore_planning_queues_an_edit_from_the_trashed_plist() {
+        let base = plist_bytes(&new_login_plist("example.com", "alice", b"hunter2")).unwrap();
+        let trashed = trashed_plist(&encode(&base), "item", at(1_000)).unwrap();
+        let record = trashed_record(&trashed);
+        let entry = Entry {
+            id: "login-1".into(),
+            kind: EntryKind::Login,
+            agrp: Some(format!("com.apple.cfnetwork{RECENTLY_DELETED}")),
+            title: Some("Example".into()),
+            sites: vec!["example.com".into()],
+            username: Some("alice".into()),
+            record: Some(record.clone()),
+            ..Entry::default()
+        };
+        let mut vault = Vault {
+            trash: vec![TrashEntry {
+                entry,
+                record,
+                deleted_at: Some(at(1_000)),
+            }],
+            ..Vault::default()
+        };
+
+        let (restored, op) = plan_restore(&mut vault, TrashMatch::Synced(0), at(2_000)).unwrap();
+
+        assert!(vault.trash.is_empty(), "the entry leaves the trash");
+        let op = op.expect("an edit is queued");
+        assert_eq!(op.kind, OpKind::Edit);
+        assert_eq!(op.item_name, "login-1");
+        assert!(op.restore);
+        assert_eq!(op.item_base.as_deref(), Some(trashed.as_str()));
+        let new = decode(op.item_new.as_deref().expect("new payload"));
+        assert_eq!(
+            new.get("agrp").and_then(Value::as_string),
+            Some("com.apple.cfnetwork")
+        );
+        assert_eq!(restored.id, "login-1");
+        assert_eq!(restored.agrp.as_deref(), Some("com.apple.cfnetwork"));
+    }
+
+    #[test]
+    fn restoring_an_unpushed_delete_cancels_it_without_queueing() {
+        let base = plist_bytes(&new_login_plist("example.com", "alice", b"hunter2")).unwrap();
+        let record = RecordMeta {
+            zone: "Passwords".into(),
+            item_type: "item".into(),
+            plist: Some(encode(&base)),
+            ..RecordMeta::default()
+        };
+        let (item_new, _) = trash_payloads(&record, at(1_000)).unwrap();
+        let op = PendingOp {
+            id: uuid(),
+            kind: OpKind::Delete,
+            entry_kind: EntryKind::Login,
+            zone: "Passwords".into(),
+            owner: None,
+            item_name: "login-1".into(),
+            item_type: "item".into(),
+            item_base: record.plist.clone(),
+            item_new,
+            item_etag: None,
+            item_dirty: true,
+            sidecar_name: None,
+            sidecar_type: None,
+            sidecar_base: None,
+            sidecar_new: None,
+            sidecar_write: None,
+            sidecar_etag: None,
+            sidecar_dirty: false,
+            blocked: None,
+            attempts: 0,
+            next_attempt: None,
+            force: false,
+            restore: false,
+            label: "Example (alice)".into(),
+        };
+        let mut vault = Vault {
+            pending: vec![op],
+            ..Vault::default()
+        };
+
+        let (entry, queued) = plan_restore(&mut vault, TrashMatch::Pending(0), at(2_000)).unwrap();
+
+        assert!(queued.is_none(), "no op is queued");
+        assert!(vault.pending.is_empty(), "the delete is cancelled");
+        assert_eq!(entry.id, "login-1");
+        assert_eq!(entry.username.as_deref(), Some("alice"));
+        assert_eq!(
+            entry
+                .record
+                .as_ref()
+                .and_then(|record| record.plist.clone()),
+            Some(encode(&base))
+        );
+    }
+
+    #[test]
+    fn an_ambiguous_restore_query_asks_for_an_id() {
+        let entry = |id: &str| Entry {
+            id: id.to_string(),
+            title: Some("Example".into()),
+            sites: vec!["example.com".into()],
+            username: Some("alice".into()),
+            ..Entry::default()
+        };
+        let mut vault = Vault::default();
+        for id in ["a", "b"] {
+            vault.trash.push(TrashEntry {
+                entry: entry(id),
+                record: trashed_record(""),
+                deleted_at: None,
+            });
+        }
+
+        let error = find_trash(&vault, Some("example"), None).expect_err("ambiguous");
+        assert!(error.to_string().contains("pass --id"), "{error}");
+        assert!(matches!(
+            find_trash(&vault, None, Some("b")),
+            Ok(TrashMatch::Synced(1))
+        ));
     }
 }

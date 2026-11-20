@@ -271,8 +271,9 @@ async fn apply_sidecar(op: &mut PendingOp, env: &PushEnv<'_>) -> Result<StepOutc
         name: op.sidecar_name.as_deref().unwrap_or_default(),
         record_type: record_type(op.sidecar_type.as_deref().unwrap_or_default()),
         base: op.sidecar_base.as_deref(),
-        // A trash rewrites the outer plist; an edit writes the metadata anew.
-        new: if op.kind == OpKind::Delete {
+        // A trash rewrites the outer plist and a restore rewrites it back, so
+        // both compare outer plists; an edit writes the metadata dictionary.
+        new: if op.kind == OpKind::Delete || op.restore {
             op.sidecar_write.as_deref()
         } else {
             op.sidecar_new.as_deref()
@@ -282,7 +283,7 @@ async fn apply_sidecar(op: &mut PendingOp, env: &PushEnv<'_>) -> Result<StepOutc
         label: &op.label,
         op_id: &op.id,
         metadata: true,
-        trash: op.kind == OpKind::Delete,
+        trash: op.kind == OpKind::Delete || op.restore,
         class: ITEM_CLASS,
     };
     apply(&spec, env).await

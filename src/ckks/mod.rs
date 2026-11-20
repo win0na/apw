@@ -594,7 +594,14 @@ pub fn plist_bytes(value: &plist::Value) -> Result<Vec<u8>> {
 /// `com.apple.password-manager` metadata item with a bplist `v_Data`.
 pub fn metadata_bytes(value: &plist::Value) -> Option<Vec<u8>> {
     let dict = value.as_dictionary()?;
-    if dict.get("agrp").and_then(Value::as_string) != Some("com.apple.password-manager") {
+    // A sidecar keeps its access group when it moves to Recently Deleted;
+    // the rest of the payload is unchanged.
+    let agrp = dict
+        .get("agrp")
+        .and_then(Value::as_string)
+        .unwrap_or_default();
+    let agrp = agrp.strip_suffix("-recently-deleted").unwrap_or(agrp);
+    if agrp != "com.apple.password-manager" {
         return None;
     }
     let data = dict.get("v_Data").and_then(Value::as_data)?;
@@ -1416,5 +1423,27 @@ mod tests {
             dict.get("originalURL").and_then(Value::as_string),
             Some("otpauth://totp/Example:alice?secret=JBSWY3DPEHPK3PXP")
         );
+    }
+}
+
+#[cfg(test)]
+mod trash_metadata_tests {
+    use super::{metadata_bytes, plist_bytes};
+    use plist::{Dictionary, Value};
+
+    #[test]
+    fn reads_metadata_from_a_trashed_sidecar() {
+        let mut metadata = Dictionary::new();
+        metadata.insert("title".into(), Value::Data(b"Stored name".to_vec()));
+        let inner = plist_bytes(&Value::Dictionary(metadata)).unwrap();
+
+        let mut outer = Dictionary::new();
+        outer.insert(
+            "agrp".into(),
+            Value::String("com.apple.password-manager-recently-deleted".into()),
+        );
+        outer.insert("v_Data".into(), Value::Data(inner));
+
+        assert!(metadata_bytes(&Value::Dictionary(outer)).is_some());
     }
 }

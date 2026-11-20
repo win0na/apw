@@ -115,7 +115,7 @@ There are no live Apple credentials in the development environment, and escrow a
 - The CloudKit gateway is internal. Its request framing and error codes can change without notice.
 - An anisette server is a hard prerequisite for login.
 - Writes limited to personal logins, Wi-Fi networks and notes. No card, passkey or shared-item writes.
-- Deletes move to Recently Deleted (30 days, no restore command).
+- Deletes move to Recently Deleted (30 days); `apw trash` lists them and `apw restore` reinstates one.
 - Shared-with-me depends on the owner's PCS key delivery in the share record. It is the least proven part of the design and the test account has no shared items.
 - Apple's iCloud terms prohibit automated access. The client stays polite: paced syncs, no retries, one login attempt per action. The contract risk is the user's.
 

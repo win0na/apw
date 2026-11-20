@@ -67,6 +67,8 @@ apw add note "Recovery codes" --body "codes go here"
 apw notes
 apw edit example.com --title "Example"
 apw rm example.com --yes
+apw trash
+apw restore example.com
 apw pending
 ```
 
@@ -82,7 +84,7 @@ Groups are read, and a login can be added to or removed from an existing group: 
 
 A login and a note are two records, the item and its metadata; a Wi-Fi entry is one. The item goes first on create and edit, and last on delete, so an interrupted write leaves a readable entry rather than an orphan.
 
-`rm` moves the entry to Recently Deleted, where Apple Passwords keeps it for 30 days before purging it. The record is re-saved with the deleted marker rather than removed, so the app can still restore it; `apw` has no restore command yet. Changing a login's site or username, or a network's SSID, is not supported in place; delete the entry and add it again.
+`rm` moves the entry to Recently Deleted, where Apple Passwords keeps it for 30 days before purging it. The record is re-saved with the deleted marker rather than removed. `apw trash` lists what is there, and `apw restore` puts an entry back, title, notes and password included. Restoring uses the copy the last sync recorded, so an entry trashed on another device appears after the next sync. Changing a login's site or username, or a network's SSID, is not supported in place; delete the entry and add it again.
 
 ## Timer
 

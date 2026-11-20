@@ -165,6 +165,29 @@ pub enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+    /// List items in Recently Deleted.
+    ///
+    /// The trash is filled by `apw sync`. An item deleted with `apw rm` appears
+    /// here once the delete has been pushed.
+    Trash {
+        /// Filter by name, domain, or username.
+        query: Option<String>,
+    },
+    /// Restore an item from Recently Deleted.
+    ///
+    /// Undoes a move to Recently Deleted. Works only for a record that is still
+    /// in the trash and was synced into the vault, or for a delete that has not
+    /// been pushed yet.
+    Restore {
+        /// Name, domain, or username. Optional when --id is given.
+        query: Option<String>,
+        /// Select the item by record id.
+        #[arg(long)]
+        id: Option<String>,
+        /// Show what would be restored without saving.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// List changes that have not been pushed yet.
     Pending,
     /// Keep or drop a pending change.
@@ -362,6 +385,7 @@ fn execute(cli: Cli) -> Result<()> {
             | Command::Add { .. }
             | Command::Edit { .. }
             | Command::Rm { .. }
+            | Command::Restore { .. }
             | Command::Resolve { .. }
             | Command::Group { .. }
             | Command::ProbeEscrow
@@ -388,6 +412,7 @@ fn execute(cli: Cli) -> Result<()> {
             | Command::Wifi { .. }
             | Command::Notes { .. }
             | Command::Otp { .. }
+            | Command::Trash { .. }
             | Command::Pending
             | Command::Group {
                 action: GroupAction::List,
@@ -562,6 +587,17 @@ fn execute(cli: Cli) -> Result<()> {
             style,
         ),
         Command::Pending => commands::write::pending(&paths, &mut config, style),
+        Command::Trash { query } => {
+            commands::write::trash_list(&paths, &mut config, query.as_deref(), style)
+        }
+        Command::Restore { query, id, dry_run } => commands::write::restore(
+            &paths,
+            &mut config,
+            query.as_deref(),
+            id.as_deref(),
+            dry_run,
+            style,
+        ),
         Command::Resolve { id, local, remote } => {
             commands::write::resolve(&paths, &mut config, &id, local, remote, style)
         }
