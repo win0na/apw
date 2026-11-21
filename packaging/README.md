@@ -27,7 +27,7 @@ The binary links `libdbus-1` for the Secret Service backend. The Debian package 
 
 ## Notes
 
-- The AUR recipe in `packaging/aur/` builds `apw-cli` but is not published on the AUR yet. The binary is `/usr/bin/apw`; the recipe declares `provides=('apw')` and `conflicts=('apw')` because an unrelated wrapper already owns that path.
+- The AUR package is `apw-cli` (`ssh://aur@aur.archlinux.org/apw-cli.git`); `packaging/aur/` holds the tracked copies of `PKGBUILD` and `.SRCINFO`. The binary is `/usr/bin/apw`; the recipe declares `provides=('apw')` and `conflicts=('apw')` because an unrelated wrapper already owns that path.
 - On a release, tag first, then run `updpkgsums` and regenerate `.SRCINFO` with `makepkg --printsrcinfo`, then push both to `ssh://aur@aur.archlinux.org/apw-cli.git`. The checksum in both files must match the `vX.Y.Z` archive.
 - Arch's `LDFLAGS` break the aws-lc static link, so `build()` and `check()` clear them for cargo. The tests are not run offline: `build()` does not fetch dev-dependencies.
 - `flake.nix` pins `nixos-unstable`; `flake.lock` is committed.
