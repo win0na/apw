@@ -177,6 +177,40 @@ fn status_reports_the_snapshot() {
 }
 
 #[test]
+fn group_show_lists_the_items_in_a_group() {
+    let dir = TempDir::new().unwrap();
+    sync(&dir);
+
+    let output = apw(&dir)
+        .args(["group", "show", "Family", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(value["data"]["name"], "Family");
+    assert_eq!(value["data"]["zone"], "group-family");
+    let items = value["data"]["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["id"], "login-github");
+    assert_eq!(items[0]["kind"], "login");
+}
+
+#[test]
+fn group_show_unknown_group_fails() {
+    let dir = TempDir::new().unwrap();
+    sync(&dir);
+
+    apw(&dir)
+        .args(["group", "show", "nowhere"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no group"));
+}
+
+#[test]
 fn pw_wifi_lists_networks_and_get_returns_the_password() {
     let dir = TempDir::new().unwrap();
     sync(&dir);

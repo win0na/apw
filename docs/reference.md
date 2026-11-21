@@ -25,6 +25,7 @@ Commands, files, configuration, output, and limits.
 | `apw pending` | List changes that have not been pushed. |
 | `apw resolve ID [--local] [--remote]` | Force or drop a blocked change. |
 | `apw group list` | List shared groups with owner and member count. |
+| `apw group show GROUP` | Show a group and the items in it. |
 | `apw group add GROUP [QUERY] [--id UUID] [--dry-run]` | Add a personal login to a group you own. |
 | `apw group remove GROUP ITEM [--yes] [--dry-run]` | Remove an item from a group you own. |
 | `apw install-units` | Write the systemd user service and timer. |

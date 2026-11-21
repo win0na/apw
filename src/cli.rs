@@ -220,9 +220,6 @@ pub enum Command {
     /// Print a zone's PCS protection sizes.
     #[command(hide = true)]
     ProbeZoneInfo { zone: String },
-    /// Probe recoverable TLK share function names.
-    #[command(hide = true)]
-    ProbeTlks,
     /// Re-fetch the service map and CloudKit token.
     #[command(hide = true)]
     ProbeRefresh,
@@ -238,13 +235,10 @@ pub enum Command {
     /// Print one CloudKit record's fields.
     #[command(hide = true)]
     ProbeRecord { zone: String, name: String },
-    /// Decode a group's participant protections with our service keys.
-    #[command(hide = true)]
-    ProbeParticipant { zone: String },
     /// Print the redacted key structure of stored item plists.
     #[command(hide = true)]
     ProbeStructure {
-        /// Limit to one kind: login, note, card, wifi, passkey.
+        /// Limit to one kind: login, note, wifi, passkey.
         kind: Option<String>,
         /// How many entries to print (default 3).
         #[arg(long, default_value_t = 3)]
@@ -256,6 +250,11 @@ pub enum Command {
 pub enum GroupAction {
     /// List the groups this account owns.
     List,
+    /// Show one group and the items in it.
+    Show {
+        /// Group name, zone, or UUID.
+        group: String,
+    },
     /// Add one personal login to a group.
     Add {
         /// Group name, zone, or UUID.
@@ -392,13 +391,11 @@ fn execute(cli: Cli) -> Result<()> {
             | Command::ProbeSettings
             | Command::ProbeZone { .. }
             | Command::ProbeZoneInfo { .. }
-            | Command::ProbeTlks
             | Command::ProbeRefresh
             | Command::ProbeZones
             | Command::ProbeGroup { .. }
             | Command::ProbeStats
             | Command::ProbeStructure { .. }
-            | Command::ProbeParticipant { .. }
     ) {
         Some(crate::config::lock_snapshot(&paths)?)
     } else {
@@ -415,7 +412,7 @@ fn execute(cli: Cli) -> Result<()> {
             | Command::Trash { .. }
             | Command::Pending
             | Command::Group {
-                action: GroupAction::List,
+                action: GroupAction::List | GroupAction::Show { .. },
             }
     );
     let mut style = Style::new(cli.json, cli.wide, cli.no_header);
@@ -603,6 +600,9 @@ fn execute(cli: Cli) -> Result<()> {
         }
         Command::Group { action } => match action {
             GroupAction::List => commands::group::list(&paths, &mut config, style),
+            GroupAction::Show { group } => {
+                commands::group::show(&paths, &mut config, &group, style)
+            }
             GroupAction::Add {
                 group,
                 query,
@@ -632,7 +632,6 @@ fn execute(cli: Cli) -> Result<()> {
         Command::ProbeZoneInfo { zone } => {
             commands::probe::zoneinfo(&paths, &mut config, &zone, style.json)
         }
-        Command::ProbeTlks => commands::probe::tlks(&paths, &mut config, style.json),
         Command::ProbeRefresh => commands::probe::refresh(&paths, &mut config, style.json),
         Command::ProbeZones => commands::probe::zones(&paths, &mut config, style.json),
         Command::ProbeGroup { zone } => {
@@ -641,9 +640,6 @@ fn execute(cli: Cli) -> Result<()> {
         Command::ProbeStats => commands::probe::stats(&paths, &mut config, style.json),
         Command::ProbeRecord { zone, name } => {
             commands::probe::record(&paths, &mut config, &zone, &name, style.json)
-        }
-        Command::ProbeParticipant { zone } => {
-            commands::probe::participant(&paths, &mut config, &zone, style.json)
         }
         Command::ProbeStructure { kind, limit } => {
             commands::probe::structure(&paths, &mut config, kind.as_deref(), limit, style.json)

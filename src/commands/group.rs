@@ -200,6 +200,80 @@ pub fn list(paths: &Paths, config: &mut Config, style: Style) -> Result<()> {
     Ok(())
 }
 
+/// Show one group and every item the last sync placed in it.
+///
+/// Reads the snapshot, so it works offline and shows the same view `list
+/// --group` filters, including notes and passkeys that `list` leaves out.
+pub fn show(paths: &Paths, config: &mut Config, group: &str, style: Style) -> Result<()> {
+    let working = vault::load(paths, config)?;
+    let zone = resolve_group_zone(&working, group)?;
+    let id = zone.trim_start_matches("group-");
+    let name = working
+        .groups
+        .iter()
+        .find(|found| found.id == id)
+        .and_then(|found| found.name.clone())
+        .or_else(|| {
+            working
+                .group_ops
+                .iter()
+                .find(|op| op.zone == zone)
+                .map(|op| op.name.clone())
+        });
+    let mut entries: Vec<&crate::model::Entry> = working
+        .entries
+        .iter()
+        .filter(|entry| entry.group.as_deref() == Some(id))
+        .collect();
+    entries.sort_by_key(|entry| entry.display_name().to_lowercase());
+
+    if style.json {
+        let items = entries
+            .iter()
+            .map(|entry| {
+                let mut item = crate::commands::login_result(entry, false);
+                item.as_object_mut()
+                    .expect("object")
+                    .insert("kind".into(), json!(kind_name(entry.kind)));
+                item
+            })
+            .collect::<Vec<_>>();
+        output::print_json(&output::success(json!({
+            "zone": zone,
+            "name": name,
+            "items": items,
+        })));
+        return Ok(());
+    }
+
+    match &name {
+        Some(name) => println!("{name} ({zone})"),
+        None => println!("{zone}"),
+    }
+    if entries.is_empty() {
+        println!("no items; run `apw sync` if the group changed");
+        return Ok(());
+    }
+    let rows = entries
+        .iter()
+        .map(|entry| {
+            vec![
+                entry.display_name(),
+                entry.username.clone().unwrap_or_default(),
+                entry.domain(),
+                kind_name(entry.kind).to_string(),
+            ]
+        })
+        .collect::<Vec<_>>();
+    output::print_table_opts(
+        &["NAME", "USERNAME", "SITE", "KIND"],
+        &rows,
+        style.no_header,
+        style.wide,
+    );
+    Ok(())
+}
+
 /// The zone a group command targets: a display name from the last sync, a zone
 /// name, or a bare UUID.
 fn resolve_group_zone(vault: &crate::model::Vault, target: &str) -> Result<String> {

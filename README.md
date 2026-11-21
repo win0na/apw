@@ -80,7 +80,7 @@ If another device changed the same entry, the push blocks instead of overwriting
 
 Writes cover personal logins, Wi-Fi networks, notes, and the contents of a group you own. Cards, shared items outside groups, and passkey creation stay read-only.
 
-Groups are read, and a login can be added to or removed from an existing group: `apw group list`, `apw group add <group> <login>`, `apw group remove <group> <item> --yes`. Creating or deleting a group is not supported. Apple Passwords lists only groups its local keychain-sharing daemon registered, and a group written straight to CloudKit never enters that list, so `apw` cannot make one any device would show.
+Groups are read, and a login can be added to or removed from an existing group: `apw group list`, `apw group show <group>`, `apw group add <group> <login>`, `apw group remove <group> <item> --yes`. `group show` prints every item the last sync placed in the group, notes and passkeys included, and works offline. Creating or deleting a group is not supported. Apple Passwords lists only groups its local keychain-sharing daemon registered, and a group written straight to CloudKit never enters that list, so `apw` cannot make one any device would show.
 
 A login and a note are two records, the item and its metadata; a Wi-Fi entry is one. The item goes first on create and edit, and last on delete, so an interrupted write leaves a readable entry rather than an orphan.
 

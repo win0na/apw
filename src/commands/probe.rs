@@ -235,61 +235,6 @@ pub fn zoneinfo(paths: &Paths, config: &mut Config, zone: &str, json: bool) -> R
     Ok(())
 }
 
-pub fn tlks(paths: &Paths, config: &mut Config, json: bool) -> Result<()> {
-    let snapshot = vault::load(paths, config)?;
-    let session = snapshot
-        .session
-        .clone()
-        .ok_or_else(|| Error::Auth("run `apw login` first".into()))?;
-    let peer = snapshot
-        .peer
-        .clone()
-        .ok_or_else(|| Error::Auth("run `apw join` first".into()))?;
-    let url = config
-        .anisette_url()
-        .ok_or_else(|| Error::Invalid("set an anisette URL in the config".into()))?;
-
-    let results = block_on(async {
-        let identity = Anisette::new(&url).identity().await?;
-        let mac = Anisette::new(&url)
-            .identity_for(Some("macos"))
-            .await
-            .unwrap_or_else(|_| identity.clone());
-        let gateway = crate::cloudkit::Gateway::bootstrap(
-            &session,
-            &mac,
-            crate::cloudkit::CONTAINER,
-            crate::cloudkit::Scope::Private,
-        )
-        .await?;
-        let mut out = Vec::new();
-        for name in [
-            "fetchRecoverableTlkshares",
-            "fetchRecoverableTLKShares",
-            "fetchRecoverableTlkShares",
-        ] {
-            let mut request = crate::wire::Writer::new();
-            request.string(1, &peer.id);
-            match gateway.invoke(name, request.as_slice()).await {
-                Ok(result) => out.push(serde_json::json!({"name": name, "bytes": result.len()})),
-                Err(error) => {
-                    out.push(serde_json::json!({"name": name, "error": error.to_string()}))
-                }
-            }
-        }
-        Ok::<_, crate::error::Error>(out)
-    })?;
-
-    if output::use_json(json) {
-        output::print_json(&output::success(serde_json::json!([results])));
-    } else {
-        for result in results {
-            println!("{result}");
-        }
-    }
-    Ok(())
-}
-
 /// Count what the snapshot actually holds, split by access group.
 pub fn stats(paths: &Paths, config: &mut Config, json: bool) -> Result<()> {
     let snapshot = vault::load(paths, config)?;
@@ -617,7 +562,7 @@ pub fn refresh(paths: &Paths, config: &mut Config, json: bool) -> Result<()> {
 }
 
 /// Print the key structure of stored item plists without values. Notes and
-/// cards keep their text in `v_Data`, so only types and lengths are shown.
+/// passkeys keep their text in `v_Data`, so only types and lengths are shown.
 pub fn structure(
     paths: &Paths,
     config: &mut Config,
@@ -631,12 +576,11 @@ pub fn structure(
         None => None,
         Some("login") => Some(crate::model::EntryKind::Login),
         Some("note") => Some(crate::model::EntryKind::Note),
-        Some("card") => Some(crate::model::EntryKind::Card),
         Some("wifi") => Some(crate::model::EntryKind::Wifi),
         Some("passkey") => Some(crate::model::EntryKind::Passkey),
         Some(other) => {
             return Err(Error::Invalid(format!(
-                "unknown kind {other}; use login, note, card, wifi or passkey"
+                "unknown kind {other}; use login, note, wifi or passkey"
             )))
         }
     };
@@ -856,83 +800,4 @@ fn protection_summary(der: &[u8]) -> serde_json::Value {
         }),
         Err(error) => serde_json::json!(format!("parse error: {error}")),
     }
-}
-
-/// Decode the participants of a group's share with our PCS service keys.
-pub fn participant(paths: &Paths, config: &mut Config, zone: &str, json: bool) -> Result<()> {
-    use p256::elliptic_curve::sec1::ToEncodedPoint;
-
-    let session = crate::commands::sync::group_session(paths, config)?;
-    let secrets: Vec<_> = session
-        .service_keys
-        .iter()
-        .map(|key| key.secret.clone())
-        .collect();
-    let rows = block_on(async {
-        let owner = session.gateway.user_id().to_string();
-        let page = session
-            .gateway
-            .record_sync(zone, Some(&owner), None)
-            .await?;
-        let mut rows = Vec::new();
-        for record in &page.records {
-            let Some(info) = &record.share_info else {
-                continue;
-            };
-            for participant in &info.participants {
-                let Some(protection) = &participant.protection_info else {
-                    continue;
-                };
-                let parsed = crate::pcs::Protection::parse(&protection.der)?;
-                let mut opened = Vec::new();
-                for secret in &secrets {
-                    if let Ok(decoded) = parsed.decode(std::slice::from_ref(secret), true) {
-                        let identities: Vec<String> = decoded
-                            .identities
-                            .iter()
-                            .map(|key| {
-                                let point = key.public_key().to_encoded_point(true);
-                                hex(&point.as_bytes()[1..])
-                            })
-                            .collect();
-                        let keys: Vec<String> = Vec::new();
-                        opened.push(serde_json::json!({
-                            "service": hex(
-                                &secret.public_key().to_encoded_point(true).as_bytes()[1..],
-                            ),
-                            "identities": identities,
-                            "keys": keys,
-                        }));
-                    }
-                }
-                rows.push(serde_json::json!({
-                    "user": participant.user_id,
-                    "public_key": participant.public_key.as_deref().map(hex),
-                    "info_len": protection.der.len(),
-                    "roll": parsed.roll_count().ok(),
-                    "opened": opened,
-                }));
-            }
-        }
-        Ok::<_, Error>(rows)
-    })?;
-
-    if output::use_json(json) {
-        output::print_json(&output::success(serde_json::Value::Array(rows)));
-    } else {
-        for row in &rows {
-            println!(
-                "{} pk={} len={} roll={}",
-                row["user"].as_str().unwrap_or(""),
-                row["public_key"].as_str().unwrap_or(""),
-                row["info_len"],
-                row["roll"]
-            );
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&row["opened"]).unwrap_or_default()
-            );
-        }
-    }
-    Ok(())
 }
