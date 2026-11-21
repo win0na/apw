@@ -1022,3 +1022,100 @@ fn passkey_import_skips_credentials_in_recently_deleted() {
     let pending = json_of(&dir, &["pending", "--json"]);
     assert_eq!(pending["data"].as_array().unwrap().len(), 0);
 }
+
+/// A fixture with one live passkey whose plist carries valid export material.
+fn passkey_export_fixture(dir: &TempDir) -> (std::path::PathBuf, Vec<u8>) {
+    use p256::elliptic_curve::sec1::ToEncodedPoint;
+
+    let key = p256::SecretKey::random(&mut rand::thread_rng());
+    let point = key.public_key().to_encoded_point(false);
+    let mut v_data = point.as_bytes().to_vec();
+    v_data.extend_from_slice(&key.to_bytes());
+
+    let credential_id = b"exported-credential".to_vec();
+    let user_handle = b"user".to_vec();
+    let mut atag = vec![0xA3];
+    atag.extend_from_slice(&[0x62, b'i', b'd', 0x40 | user_handle.len() as u8]);
+    atag.extend_from_slice(&user_handle);
+    atag.extend_from_slice(&[0x64, b'n', b'a', b'm', b'e', 0x65]);
+    atag.extend_from_slice(b"alice");
+    atag.extend_from_slice(&[0x6b]);
+    atag.extend_from_slice(b"displayName");
+    atag.extend_from_slice(&[0x65]);
+    atag.extend_from_slice(b"Alice");
+
+    let mut item = plist::Dictionary::new();
+    item.insert("labl".into(), plist::Value::String("webauthn.io".into()));
+    item.insert("alis".into(), plist::Value::Data(credential_id.clone()));
+    item.insert("atag".into(), plist::Value::Data(atag));
+    item.insert("v_Data".into(), plist::Value::Data(v_data));
+    let mut bytes = Vec::new();
+    plist::to_writer_binary(&mut bytes, &plist::Value::Dictionary(item)).unwrap();
+    let plist = base64::engine::general_purpose::STANDARD.encode(bytes);
+
+    let fixture = serde_json::json!({
+        "version": 1,
+        "account": "winnie@example.com",
+        "entries": [{
+            "id": "passkey-1",
+            "kind": "passkey",
+            "title": "webauthn.io",
+            "sites": ["webauthn.io"],
+            "passkey": {"relying_party": "webauthn.io", "username": "alice"},
+            "record": {
+                "zone": "Passwords",
+                "item_type": "item",
+                "plist": plist
+            }
+        }],
+        "groups": []
+    });
+    let path = dir.path().join("export-fixture.json");
+    std::fs::write(&path, serde_json::to_vec(&fixture).unwrap()).unwrap();
+    (path, credential_id)
+}
+
+#[test]
+fn passkey_export_writes_a_cxf_file_and_refuses_overwrite() {
+    let dir = TempDir::new().unwrap();
+    let (fixture, credential_id) = passkey_export_fixture(&dir);
+    apw(&dir)
+        .args(["sync", "--fixture", fixture.to_str().unwrap()])
+        .assert()
+        .success();
+
+    let output = dir.path().join("passkeys.json");
+    let value = json_of(
+        &dir,
+        &["passkey", "export", output.to_str().unwrap(), "--json"],
+    );
+    assert_eq!(value["data"]["exported"], 1);
+    assert_eq!(value["data"]["skipped"].as_array().unwrap().len(), 0);
+    assert!(output.exists());
+
+    let text = std::fs::read_to_string(&output).unwrap();
+    let parsed = apw::cxf::parse(&text).unwrap();
+    assert_eq!(parsed.passkeys.len(), 1);
+    assert_eq!(parsed.passkeys[0].credential_id, credential_id);
+    assert_eq!(parsed.passkeys[0].rp_id, "webauthn.io");
+    assert_eq!(parsed.passkeys[0].username, "alice");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&output).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    apw(&dir)
+        .args(["passkey", "export", output.to_str().unwrap()])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("--force"));
+
+    apw(&dir)
+        .args(["passkey", "export", output.to_str().unwrap(), "--force"])
+        .assert()
+        .success();
+}

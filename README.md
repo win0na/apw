@@ -84,7 +84,7 @@ Groups are read, and a login can be added to or removed from an existing group: 
 
 A login and a note are two records, the item and its metadata; a Wi-Fi entry is one. The item goes first on create and edit, and last on delete, so an interrupted write leaves a readable entry rather than an orphan.
 
-`apw passkey import` takes a CXF 1.0 JSON file and queues one item per passkey credential. The file has to come from a manager that exports CXF; Passwords.app's own export cannot be handed to `apw`, because Apple only offers it to another app's import extension. Each item carries the credential ID in `alis`, the public point's SHA-1 in `klbl`, and the private key and user entity in `v_Data` and `atag`, which is what Passwords.app reads. Credentials already in the account are skipped, including ones in Recently Deleted, and a passkey that carries a FIDO2 extension (`hmacCredentials`, `credBlob`, `largeBlob`, `payments`) is refused instead of imported without it.
+`apw passkey import` takes a CXF 1.0 JSON file and queues one item per passkey credential. The file has to come from a manager that exports CXF; Passwords.app's own export cannot be handed to `apw`, because Apple only offers it to another app's import extension. Each item carries the credential ID in `alis`, the public point's SHA-1 in `klbl`, and the private key and user entity in `v_Data` and `atag`, which is what Passwords.app reads. Credentials already in the account are skipped, including ones in Recently Deleted, and a passkey that carries a FIDO2 extension (`hmacCredentials`, `credBlob`, `largeBlob`, `payments`) is refused instead of imported without it. `apw passkey export` is the reverse: it writes the passkeys already in the snapshot as a CXF 1.0 file that another password manager can import.
 
 `rm` moves the entry to Recently Deleted, where Apple Passwords keeps it for 30 days before purging it. The record is re-saved with the deleted marker rather than removed. `apw trash` lists what is there, and `apw restore` puts an entry back, title, notes and password included. Restoring uses the copy the last sync recorded, so an entry trashed on another device appears after the next sync. Changing a login's site or username, or a network's SSID, is not supported in place; delete the entry and add it again.
 
@@ -123,7 +123,7 @@ secret-tool clear service apw account snapshot-key
 | CLI, snapshot, `list`, `get`, `wifi`, `otp`, `status`, `install-units` | Works; 137 unit and 25 integration tests |
 | `login`, `join`, `sync` against iCloud | Works; 383 items, 370 logins, 33 passkeys, 47 codes |
 | Shared groups | Read and list; add or remove a login in an owned group. Creating a group is not supported |
-| Passkeys, cards | Passkeys import from a CXF export with `apw passkey import`; cards are not supported |
+| Passkeys, cards | Passkeys import from and export to a CXF file with `apw passkey import` and `apw passkey export`; cards are not supported |
 | Packaging | Tarball, `.deb`, AUR recipe, Nix flake |
 
 There is no `save` command. Apple's iCloud terms prohibit automated access; `apw` stays polite with paced syncs, no automatic retries, and one escrow attempt per user action. The contract risk is yours.

@@ -8,6 +8,8 @@ use std::path::Path;
 
 use base64::Engine;
 use chrono::{DateTime, Utc};
+use p256::elliptic_curve::sec1::ToEncodedPoint;
+use p256::pkcs8::EncodePrivateKey;
 use plist::{Dictionary, Value};
 use rand::RngCore;
 use serde_json::json;
@@ -157,6 +159,256 @@ fn print_result(imported: &[serde_json::Value], skipped: &[Skipped], dry_run: bo
     }
 }
 
+/// Write every passkey in the snapshot as a CXF 1.0 document.
+///
+/// The export is offline: the item plists already hold the credential ID and
+/// `v_Data`, and sync copies them onto the entry's [`Passkey`] fields for
+/// snapshots that have been refreshed since this command existed.
+pub fn export(
+    paths: &Paths,
+    config: &mut Config,
+    file: &Path,
+    force: bool,
+    style: Style,
+) -> Result<()> {
+    if file.exists() && !force {
+        return Err(Error::Invalid(format!(
+            "{} exists; pass --force to overwrite",
+            file.display()
+        )));
+    }
+
+    let vault = vault::load(paths, config)?;
+    let (document, skipped) = export_document(&vault, Utc::now());
+    let exported = document["accounts"][0]["items"]
+        .as_array()
+        .map_or(0, Vec::len);
+
+    write_private(file, &serde_json::to_string_pretty(&document)?)?;
+
+    if style.json {
+        output::print_json(&output::success(json!({
+            "file": file.display().to_string(),
+            "exported": exported,
+            "skipped": skipped
+                .iter()
+                .map(|row| json!({"name": row.name, "reason": row.reason}))
+                .collect::<Vec<_>>(),
+        })));
+    } else {
+        println!("exported {exported} passkeys to {}", file.display());
+        for row in &skipped {
+            println!("skipped {}: {}", row.name, row.reason);
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ExportSkipped {
+    name: String,
+    reason: String,
+}
+
+struct ExportMaterial {
+    rp_id: String,
+    credential_id: Vec<u8>,
+    user_handle: Vec<u8>,
+    user_name: String,
+    user_display_name: String,
+    key_der: Vec<u8>,
+}
+
+/// Build the CXF document without touching the filesystem, so the unit tests
+/// can round-trip it through the importer.
+pub(crate) fn export_document(
+    vault: &Vault,
+    now: DateTime<Utc>,
+) -> (serde_json::Value, Vec<ExportSkipped>) {
+    let account = vault.account.clone().unwrap_or_default();
+    let mut items = Vec::new();
+    let mut skipped = Vec::new();
+
+    for entry in &vault.entries {
+        if entry.kind != EntryKind::Passkey {
+            continue;
+        }
+        match export_material(entry) {
+            Ok(material) => items.push(json!({
+                "id": b64url(&random_id()),
+                "title": material.rp_id,
+                "credentials": [{
+                    "type": "passkey",
+                    "credentialId": b64url(&material.credential_id),
+                    "rpId": material.rp_id,
+                    "username": material.user_name,
+                    "userDisplayName": material.user_display_name,
+                    "userHandle": b64url(&material.user_handle),
+                    "key": b64url(&material.key_der),
+                }],
+            })),
+            Err(reason) => skipped.push(ExportSkipped {
+                name: entry.display_name(),
+                reason,
+            }),
+        }
+    }
+
+    let document = json!({
+        "version": {"major": 1, "minor": 0},
+        "exporterRpId": "apw",
+        "exporterDisplayName": "apw",
+        "timestamp": now.timestamp(),
+        "accounts": [{
+            "id": b64url(&random_id()),
+            "username": account,
+            "email": account,
+            "collections": [],
+            "items": items,
+        }],
+    });
+    (document, skipped)
+}
+
+/// Collect one passkey's export material. Prefer the sync-populated fields,
+/// then fall back to decoding the item plist so old or fixture snapshots export
+/// without a fresh sync.
+fn export_material(entry: &Entry) -> std::result::Result<ExportMaterial, String> {
+    let passkey = entry.passkey.as_ref();
+    let stored = passkey.filter(|passkey| {
+        !passkey.credential_id.is_empty()
+            || !passkey.private_key.is_empty()
+            || !passkey.user_handle.is_empty()
+    });
+
+    let (rp_id, credential_id, v_data, user_handle, user_name, user_display_name) =
+        if let Some(passkey) = stored {
+            (
+                passkey
+                    .relying_party
+                    .clone()
+                    .or_else(|| entry.title.clone()),
+                passkey.credential_id.clone(),
+                passkey.private_key.clone(),
+                passkey.user_handle.clone(),
+                passkey
+                    .user_name
+                    .clone()
+                    .or_else(|| passkey.username.clone()),
+                passkey.user_display_name.clone(),
+            )
+        } else {
+            let dict = entry_plist(entry).ok_or("passkey item has no stored plist")?;
+            let (handle, name, display) = dict
+                .get("atag")
+                .and_then(Value::as_data)
+                .map(crate::ckks::passkey_atag)
+                .unwrap_or_default();
+            (
+                dict.get("labl")
+                    .and_then(Value::as_string)
+                    .map(str::to_string)
+                    .or_else(|| {
+                        passkey
+                            .and_then(|passkey| passkey.relying_party.clone())
+                            .or_else(|| entry.title.clone())
+                    }),
+                dict.get("alis")
+                    .and_then(Value::as_data)
+                    .map(<[u8]>::to_vec)
+                    .unwrap_or_default(),
+                dict.get("v_Data")
+                    .and_then(Value::as_data)
+                    .map(<[u8]>::to_vec)
+                    .unwrap_or_default(),
+                handle,
+                name.or_else(|| {
+                    passkey.and_then(|passkey| {
+                        passkey
+                            .user_name
+                            .clone()
+                            .or_else(|| passkey.username.clone())
+                    })
+                }),
+                display,
+            )
+        };
+
+    let rp_id = rp_id.unwrap_or_default();
+    if rp_id.is_empty() {
+        return Err("missing relying party".into());
+    }
+    if credential_id.is_empty() {
+        return Err("missing credential ID".into());
+    }
+    if v_data.len() != 97 {
+        return Err(format!(
+            "v_Data is {} bytes, expected the 97-byte point and scalar",
+            v_data.len()
+        ));
+    }
+    if v_data[0] != 0x04 {
+        return Err("v_Data is not an uncompressed P-256 point".into());
+    }
+    let secret = p256::SecretKey::from_slice(&v_data[65..])
+        .map_err(|error| format!("invalid P-256 private scalar: {error}"))?;
+    let point = secret.public_key().to_encoded_point(false);
+    if point.as_bytes() != &v_data[..65] {
+        return Err("v_Data point does not match its private scalar".into());
+    }
+    let key_der = secret
+        .to_pkcs8_der()
+        .map_err(|error| format!("cannot encode the PKCS#8 key: {error}"))?;
+
+    Ok(ExportMaterial {
+        rp_id,
+        credential_id,
+        user_handle,
+        user_name: user_name.unwrap_or_default(),
+        user_display_name: user_display_name.unwrap_or_default(),
+        key_der: key_der.as_bytes().to_vec(),
+    })
+}
+
+fn entry_plist(entry: &Entry) -> Option<Dictionary> {
+    let encoded = entry.record.as_ref()?.plist.as_deref()?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .ok()?;
+    plist::from_bytes::<Value>(&bytes)
+        .ok()?
+        .as_dictionary()
+        .cloned()
+}
+
+fn b64url(bytes: &[u8]) -> String {
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+}
+
+fn random_id() -> [u8; 16] {
+    let mut bytes = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    bytes
+}
+
+fn write_private(path: &Path, text: &str) -> Result<()> {
+    use std::io::Write;
+
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)?;
+    file.write_all(text.as_bytes())?;
+    file.write_all(b"\n")?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+}
+
 /// What the snapshot already holds, keyed for the dedupe rules. Live entries
 /// and Recently Deleted are tracked apart so the skip reason is accurate.
 #[derive(Default)]
@@ -238,6 +490,11 @@ fn item_and_op(candidate: &Candidate, item_b64: String, now: DateTime<Utc>) -> (
             relying_party: Some(candidate.rp_id.clone()),
             username: (!candidate.username.is_empty()).then(|| candidate.username.clone()),
             created_at: Some(candidate.created_at.unwrap_or(now)),
+            credential_id: candidate.credential_id.clone(),
+            private_key: passkey_v_data(&candidate.key),
+            user_handle: candidate.user_handle.clone(),
+            user_name: Some(candidate.username.clone()),
+            user_display_name: Some(candidate.user_display_name.clone()),
         }),
         record: Some(RecordMeta {
             zone: "Passwords".into(),
@@ -338,8 +595,7 @@ pub(crate) fn passkey_plist(candidate: &Candidate, now: DateTime<Utc>) -> Result
         )),
     );
     let mut v_data = Vec::with_capacity(97);
-    v_data.extend_from_slice(&candidate.key.point);
-    v_data.extend_from_slice(&candidate.key.scalar);
+    v_data.extend_from_slice(&passkey_v_data(&candidate.key));
     dict.insert("v_Data".into(), Value::Data(v_data));
     let mut sha1 = [0u8; 20];
     rand::thread_rng().fill_bytes(&mut sha1);
@@ -349,6 +605,14 @@ pub(crate) fn passkey_plist(candidate: &Candidate, now: DateTime<Utc>) -> Result
 
 fn date_value(at: DateTime<Utc>) -> Value {
     Value::Date(plist::Date::from(std::time::SystemTime::from(at)))
+}
+
+/// The 97-byte `v_Data`: the uncompressed point followed by the scalar.
+fn passkey_v_data(key: &cxf::PasskeyKey) -> Vec<u8> {
+    let mut v_data = Vec::with_capacity(97);
+    v_data.extend_from_slice(&key.point);
+    v_data.extend_from_slice(&key.scalar);
+    v_data
 }
 
 /// Encode the `atag` CBOR map Apple stores: three text keys, with the user
@@ -568,5 +832,157 @@ mod tests {
         );
         assert_eq!(cbor_map_get(atag, "name"), None);
         assert!(atag.starts_with(&[0xA3]));
+    }
+
+    fn passkey_entry(candidate: &Candidate) -> Entry {
+        Entry {
+            id: "passkey-1".into(),
+            kind: EntryKind::Passkey,
+            title: Some(candidate.rp_id.clone()),
+            sites: vec![candidate.rp_id.clone()],
+            passkey: Some(Passkey {
+                relying_party: Some(candidate.rp_id.clone()),
+                username: Some(candidate.username.clone()),
+                created_at: Some(candidate.created_at.unwrap()),
+                credential_id: candidate.credential_id.clone(),
+                private_key: passkey_v_data(&candidate.key),
+                user_handle: candidate.user_handle.clone(),
+                user_name: Some(candidate.username.clone()),
+                user_display_name: Some(candidate.user_display_name.clone()),
+            }),
+            ..Entry::default()
+        }
+    }
+
+    fn plist_entry(candidate: &Candidate) -> Entry {
+        Entry {
+            id: "passkey-1".into(),
+            kind: EntryKind::Passkey,
+            title: Some(candidate.rp_id.clone()),
+            record: Some(RecordMeta {
+                zone: "Passwords".into(),
+                item_type: "item".into(),
+                plist: Some(encode(
+                    &passkey_plist(candidate, candidate.created_at.unwrap()).unwrap(),
+                )),
+                ..RecordMeta::default()
+            }),
+            ..Entry::default()
+        }
+    }
+
+    #[test]
+    fn v_data_exports_as_pkcs8_with_the_same_scalar() {
+        use p256::pkcs8::DecodePrivateKey;
+
+        let candidate = candidate();
+        let entry = passkey_entry(&candidate);
+
+        let material = export_material(&entry).unwrap();
+        let secret = p256::SecretKey::from_pkcs8_der(&material.key_der).unwrap();
+
+        assert_eq!(
+            secret.to_bytes().as_slice(),
+            candidate.key.scalar.as_slice()
+        );
+        assert_eq!(material.credential_id, candidate.credential_id);
+        assert_eq!(material.rp_id, "webauthn.io");
+        assert_eq!(material.user_handle, candidate.user_handle);
+        assert_eq!(material.user_name, "alice");
+        assert_eq!(material.user_display_name, "Alice");
+    }
+
+    #[test]
+    fn b64url_uses_url_safe_unpadded_output() {
+        let encoded = b64url(&[0xfb, 0xff, 0x00]);
+
+        assert_eq!(encoded, "-_8A");
+        assert_eq!(
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(&encoded)
+                .unwrap(),
+            vec![0xfb, 0xff, 0x00]
+        );
+    }
+
+    #[test]
+    fn a_short_v_data_is_skipped_with_a_reason() {
+        let candidate = candidate();
+        let mut entry = passkey_entry(&candidate);
+        entry.passkey.as_mut().unwrap().private_key.truncate(96);
+        let vault = Vault {
+            entries: vec![entry],
+            ..Vault::default()
+        };
+
+        let (document, skipped) = export_document(&vault, Utc::now());
+
+        assert!(document["accounts"][0]["items"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert_eq!(skipped.len(), 1);
+        assert!(
+            skipped[0].reason.contains("96 bytes"),
+            "{}",
+            skipped[0].reason
+        );
+    }
+
+    #[test]
+    fn a_missing_credential_id_is_skipped_with_a_reason() {
+        let candidate = candidate();
+        let mut entry = passkey_entry(&candidate);
+        entry.passkey.as_mut().unwrap().credential_id.clear();
+        let vault = Vault {
+            entries: vec![entry],
+            ..Vault::default()
+        };
+
+        let (_, skipped) = export_document(&vault, Utc::now());
+
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0].reason, "missing credential ID");
+    }
+
+    #[test]
+    fn an_empty_vault_still_writes_a_valid_document() {
+        let vault = Vault::default();
+
+        let (document, skipped) = export_document(&vault, Utc::now());
+        let parsed = cxf::parse(&serde_json::to_string(&document).unwrap()).unwrap();
+
+        assert!(skipped.is_empty());
+        assert!(parsed.passkeys.is_empty());
+        assert!(document["accounts"][0]["items"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert_eq!(document["version"]["major"], 1);
+        assert_eq!(document["exporterRpId"], "apw");
+    }
+
+    #[test]
+    fn export_round_trips_through_the_cxf_parser() {
+        let candidate = candidate();
+        let vault = Vault {
+            account: Some("me@example.com".into()),
+            entries: vec![plist_entry(&candidate)],
+            ..Vault::default()
+        };
+
+        let (document, skipped) = export_document(&vault, Utc::now());
+        let parsed = cxf::parse(&serde_json::to_string(&document).unwrap()).unwrap();
+
+        assert!(skipped.is_empty());
+        assert_eq!(parsed.passkeys.len(), 1);
+        let passkey = &parsed.passkeys[0];
+        assert_eq!(passkey.credential_id, candidate.credential_id);
+        assert_eq!(passkey.rp_id, "webauthn.io");
+        assert_eq!(passkey.username, "alice");
+        assert_eq!(passkey.user_display_name, "Alice");
+        assert_eq!(passkey.user_handle, candidate.user_handle);
+        assert_eq!(passkey.key.scalar, candidate.key.scalar);
+        assert_eq!(passkey.key.point, candidate.key.point);
     }
 }

@@ -473,6 +473,22 @@ pub struct Passkey {
     pub username: Option<String>,
     #[serde(default)]
     pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Credential ID from the item plist's `alis`, when sync saw it.
+    #[serde(default)]
+    pub credential_id: Vec<u8>,
+    /// Raw `v_Data`: `0x04 || X || Y || scalar`, 97 bytes, when sync saw it.
+    /// The last 32 bytes are the P-256 private scalar the CXF export needs.
+    #[serde(default)]
+    pub private_key: Vec<u8>,
+    /// User handle from the item plist's `atag`.
+    #[serde(default)]
+    pub user_handle: Vec<u8>,
+    /// `atag.name`, the account name shown for the credential.
+    #[serde(default)]
+    pub user_name: Option<String>,
+    /// `atag.displayName`, the account's display name.
+    #[serde(default)]
+    pub user_display_name: Option<String>,
 }
 
 /// Whether a sidecar's username can be attributed to a login's username. Two

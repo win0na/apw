@@ -352,6 +352,14 @@ pub enum PasskeyAction {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Export passkeys to a CXF file.
+    Export {
+        /// CXF 1.0 JSON file to write.
+        file: PathBuf,
+        /// Overwrite an existing file.
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 pub fn run() -> i32 {
@@ -560,6 +568,9 @@ fn execute(cli: Cli) -> Result<()> {
         Command::Passkey { action } => match action {
             PasskeyAction::Import { file, dry_run } => {
                 commands::passkey::import(&paths, &mut config, &file, dry_run, style)
+            }
+            PasskeyAction::Export { file, force } => {
+                commands::passkey::export(&paths, &mut config, &file, force, style)
             }
         },
         Command::Edit {

@@ -372,11 +372,8 @@ pub fn entry_from_plist_kind(
         .and_then(Value::as_dictionary)
         .and_then(totp_from_dict);
 
-    let passkey = (kind == EntryKind::Passkey).then(|| Passkey {
-        relying_party: srvr.clone(),
-        username: acct.clone(),
-        created_at: None,
-    });
+    let passkey =
+        (kind == EntryKind::Passkey).then(|| passkey_from_dict(dict, srvr.clone(), acct.clone()));
 
     let url = srvr.as_ref().map(|domain| format!("https://{domain}"));
     let sites = if kind == EntryKind::Wifi {
@@ -405,6 +402,106 @@ pub fn entry_from_plist_kind(
         updated_at: None,
         record: None,
     })
+}
+
+/// A passkey entry plus the material a CXF export needs, read straight from
+/// the decrypted item plist.
+fn passkey_from_dict(
+    dict: &Dictionary,
+    relying_party: Option<String>,
+    username: Option<String>,
+) -> Passkey {
+    let (user_handle, user_name, user_display_name) = dict
+        .get("atag")
+        .and_then(Value::as_data)
+        .map(passkey_atag)
+        .unwrap_or_default();
+    Passkey {
+        relying_party,
+        username: username.clone(),
+        created_at: None,
+        credential_id: data(dict, "alis"),
+        private_key: data(dict, "v_Data"),
+        user_handle,
+        user_name: user_name.or(username),
+        user_display_name,
+    }
+}
+
+fn data(dict: &Dictionary, key: &str) -> Vec<u8> {
+    dict.get(key)
+        .and_then(Value::as_data)
+        .map(<[u8]>::to_vec)
+        .unwrap_or_default()
+}
+
+/// Decode the definite-length CBOR map Apple stores in `atag`. Only the three
+/// members the exporter needs are read; an odd value just stops the walk.
+pub(crate) fn passkey_atag(data: &[u8]) -> (Vec<u8>, Option<String>, Option<String>) {
+    let mut out = (Vec::new(), None, None);
+    let Some((major, count, mut rest)) = cbor_head(data) else {
+        return out;
+    };
+    if major != 5 {
+        return out;
+    }
+    for _ in 0..count {
+        let Some((key_major, key_len, next)) = cbor_head(rest) else {
+            break;
+        };
+        if key_major != 3 || next.len() < key_len {
+            break;
+        }
+        let Ok(key) = std::str::from_utf8(&next[..key_len]) else {
+            break;
+        };
+        rest = &next[key_len..];
+        let Some((value_major, value_len, next)) = cbor_head(rest) else {
+            break;
+        };
+        if next.len() < value_len {
+            break;
+        }
+        let value = &next[..value_len];
+        rest = &next[value_len..];
+        match (key, value_major) {
+            ("id", 2) => out.0 = value.to_vec(),
+            ("name", 3) => out.1 = std::str::from_utf8(value).ok().map(str::to_string),
+            ("displayName", 3) => out.2 = std::str::from_utf8(value).ok().map(str::to_string),
+            _ => {}
+        }
+    }
+    out
+}
+
+fn cbor_head(data: &[u8]) -> Option<(u8, usize, &[u8])> {
+    let (&head, rest) = data.split_first()?;
+    let major = head >> 5;
+    let additional = head & 0x1f;
+    let (length, rest) = match additional {
+        value @ 0..=23 => (value as usize, rest),
+        24 => {
+            let (&value, rest) = rest.split_first()?;
+            (value as usize, rest)
+        }
+        25 => {
+            if rest.len() < 2 {
+                return None;
+            }
+            (u16::from_be_bytes([rest[0], rest[1]]) as usize, &rest[2..])
+        }
+        26 => {
+            if rest.len() < 4 {
+                return None;
+            }
+            (
+                u32::from_be_bytes([rest[0], rest[1], rest[2], rest[3]]) as usize,
+                &rest[4..],
+            )
+        }
+        _ => return None,
+    };
+    Some((major, length, rest))
 }
 
 fn totp_from_dict(dict: &Dictionary) -> Option<Totp> {

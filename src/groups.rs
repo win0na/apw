@@ -298,6 +298,7 @@ async fn read_zone(
                     relying_party: String::from_utf8(key.application_label).ok(),
                     username: None,
                     created_at: None,
+                    ..Passkey::default()
                 }),
                 ..Entry::default()
             });
