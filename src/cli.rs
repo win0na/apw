@@ -110,6 +110,11 @@ pub enum Command {
         #[command(subcommand)]
         item: AddItem,
     },
+    /// Import passkeys from a CXF export.
+    Passkey {
+        #[command(subcommand)]
+        action: PasskeyAction,
+    },
     /// Edit a login in the local snapshot.
     ///
     /// Pass a query, or select the entry with `--id`:
@@ -340,6 +345,18 @@ pub enum AddItem {
     },
 }
 
+#[derive(Debug, Subcommand)]
+pub enum PasskeyAction {
+    /// Import passkeys from a CXF export.
+    Import {
+        /// CXF 1.0 JSON export.
+        file: PathBuf,
+        /// Show what would be imported without saving.
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
 pub fn run() -> i32 {
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
@@ -387,6 +404,7 @@ fn execute(cli: Cli) -> Result<()> {
             | Command::Restore { .. }
             | Command::Resolve { .. }
             | Command::Group { .. }
+            | Command::Passkey { .. }
             | Command::ProbeEscrow
             | Command::ProbeSettings
             | Command::ProbeZone { .. }
@@ -542,6 +560,11 @@ fn execute(cli: Cli) -> Result<()> {
                 dry_run,
                 style,
             ),
+        },
+        Command::Passkey { action } => match action {
+            PasskeyAction::Import { file, dry_run } => {
+                commands::passkey::import(&paths, &mut config, &file, dry_run, style)
+            }
         },
         Command::Edit {
             query,

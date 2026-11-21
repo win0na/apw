@@ -6,6 +6,7 @@ pub mod group;
 pub mod join;
 pub mod login;
 pub mod otp;
+pub mod passkey;
 pub mod probe;
 pub mod pw;
 pub mod status;

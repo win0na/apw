@@ -778,3 +778,247 @@ fn restore_before_sync_cancels_a_pending_delete() {
         .iter()
         .any(|entry| entry["id"] == "login-record"));
 }
+
+fn write_cxf(path: &std::path::Path, credential_id: &str, user_handle: &str, username: &str) {
+    use p256::pkcs8::EncodePrivateKey;
+
+    let key = p256::SecretKey::random(&mut rand::thread_rng());
+    let der = key.to_pkcs8_der().unwrap();
+    let encode = |bytes: &[u8]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
+    let file = serde_json::json!({
+        "version": {"major": 1, "minor": 0},
+        "exporterRpId": "webauthn.io",
+        "exporterDisplayName": "webauthn.io",
+        "timestamp": 1_700_000_000,
+        "accounts": [{
+            "id": encode(b"account"),
+            "username": "alice",
+            "email": "alice@example.com",
+            "collections": [],
+            "items": [{
+                "id": encode(b"item"),
+                "creationAt": 1_700_000_000,
+                "title": "webauthn.io",
+                "credentials": [{
+                    "type": "passkey",
+                    "credentialId": credential_id,
+                    "rpId": "webauthn.io",
+                    "username": username,
+                    "userDisplayName": "Alice",
+                    "userHandle": user_handle,
+                    "key": encode(der.as_bytes()),
+                }]
+            }]
+        }]
+    });
+    std::fs::write(path, file.to_string()).unwrap();
+}
+
+#[test]
+fn passkey_import_queues_one_create() {
+    let dir = TempDir::new().unwrap();
+    sync(&dir);
+    let file = dir.path().join("passkeys.json");
+    let credential_id = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b"credential");
+    let user_handle = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b"user");
+    write_cxf(&file, &credential_id, &user_handle, "alice");
+
+    let value = json_of(
+        &dir,
+        &["passkey", "import", file.to_str().unwrap(), "--json"],
+    );
+
+    let imported = value["data"]["imported"].as_array().unwrap();
+    assert_eq!(imported.len(), 1);
+    assert_eq!(imported[0]["name"], "webauthn.io");
+    assert_eq!(imported[0]["rp_id"], "webauthn.io");
+    assert_eq!(imported[0]["username"], "alice");
+    assert!(imported[0]["pending_id"].as_str().is_some());
+    assert_eq!(value["data"]["skipped"].as_array().unwrap().len(), 0);
+
+    let pending = json_of(&dir, &["pending", "--json"]);
+    let ops = pending["data"].as_array().unwrap();
+    assert_eq!(ops.len(), 1);
+    assert_eq!(ops[0]["kind"], "create");
+    assert_eq!(ops[0]["item_name"], imported[0]["id"]);
+    assert_eq!(ops[0]["id"], imported[0]["pending_id"]);
+}
+
+#[test]
+fn passkey_import_dry_run_writes_nothing() {
+    let dir = TempDir::new().unwrap();
+    sync(&dir);
+    let file = dir.path().join("passkeys.json");
+    let credential_id = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b"credential");
+    let user_handle = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b"user");
+    write_cxf(&file, &credential_id, &user_handle, "alice");
+
+    let value = json_of(
+        &dir,
+        &[
+            "passkey",
+            "import",
+            file.to_str().unwrap(),
+            "--dry-run",
+            "--json",
+        ],
+    );
+
+    assert_eq!(value["data"]["dry_run"], true);
+    let imported = value["data"]["imported"].as_array().unwrap();
+    assert_eq!(imported.len(), 1);
+    assert!(imported[0]["pending_id"].is_null());
+    assert_eq!(value["data"]["skipped"].as_array().unwrap().len(), 0);
+    let pending = json_of(&dir, &["pending", "--json"]);
+    assert_eq!(pending["data"].as_array().unwrap().len(), 0);
+}
+
+#[test]
+fn passkey_import_skips_duplicates_in_the_snapshot() {
+    let dir = TempDir::new().unwrap();
+    sync(&dir);
+    let first = dir.path().join("first.json");
+    let credential_id = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b"credential");
+    let user_handle = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b"user");
+    write_cxf(&first, &credential_id, &user_handle, "alice");
+    apw(&dir)
+        .args(["passkey", "import", first.to_str().unwrap(), "--json"])
+        .assert()
+        .success();
+
+    let same = json_of(
+        &dir,
+        &["passkey", "import", first.to_str().unwrap(), "--json"],
+    );
+    assert_eq!(same["data"]["imported"].as_array().unwrap().len(), 0);
+    assert_eq!(same["data"]["skipped"][0]["reason"], "already imported");
+
+    let other = dir.path().join("other.json");
+    let other_id = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b"other");
+    write_cxf(&other, &other_id, &user_handle, "alice");
+    let account = json_of(
+        &dir,
+        &["passkey", "import", other.to_str().unwrap(), "--json"],
+    );
+    assert_eq!(account["data"]["imported"].as_array().unwrap().len(), 0);
+    assert_eq!(
+        account["data"]["skipped"][0]["reason"],
+        "another passkey for this account already exists"
+    );
+
+    let pending = json_of(&dir, &["pending", "--json"]);
+    assert_eq!(pending["data"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn passkey_import_rejects_a_wrong_major_version() {
+    let dir = TempDir::new().unwrap();
+    sync(&dir);
+    let file = dir.path().join("bad.json");
+    std::fs::write(&file, r#"{"version": {"major": 2, "minor": 0}}"#).unwrap();
+
+    apw(&dir)
+        .args(["passkey", "import", file.to_str().unwrap()])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "CXF major version 2 is not supported",
+        ));
+}
+
+/// A fixture whose only passkey sits in Recently Deleted.
+fn trashed_passkey_fixture(
+    dir: &TempDir,
+    credential_id: &[u8],
+    user_handle: &[u8],
+) -> std::path::PathBuf {
+    assert!(user_handle.len() < 24);
+    let mut atag = vec![0xA1, 0x62, b'i', b'd', 0x40 | user_handle.len() as u8];
+    atag.extend_from_slice(user_handle);
+
+    let mut item = plist::Dictionary::new();
+    item.insert("labl".into(), plist::Value::String("webauthn.io".into()));
+    item.insert("alis".into(), plist::Value::Data(credential_id.to_vec()));
+    item.insert("atag".into(), plist::Value::Data(atag));
+    let mut bytes = Vec::new();
+    plist::to_writer_binary(&mut bytes, &plist::Value::Dictionary(item)).unwrap();
+    let plist = base64::engine::general_purpose::STANDARD.encode(bytes);
+
+    let fixture = serde_json::json!({
+        "version": 1,
+        "account": "user@example.com",
+        "entries": [],
+        "trash": [{
+            "entry": {
+                "id": "trashed-passkey",
+                "kind": "passkey",
+                "title": "webauthn.io",
+                "sites": ["webauthn.io"],
+                "passkey": {"relying_party": "webauthn.io"},
+                "record": {
+                    "zone": "Passwords",
+                    "item_type": "item",
+                    "plist": plist
+                }
+            },
+            "record": {
+                "zone": "Passwords",
+                "item_type": "item",
+                "plist": plist
+            }
+        }],
+        "groups": []
+    });
+    let path = dir.path().join("trash-fixture.json");
+    std::fs::write(&path, serde_json::to_vec(&fixture).unwrap()).unwrap();
+    path
+}
+
+#[test]
+fn passkey_import_skips_credentials_in_recently_deleted() {
+    let dir = TempDir::new().unwrap();
+    let credential_id = b"trashed-credential";
+    let user_handle = b"user";
+    let fixture = trashed_passkey_fixture(&dir, credential_id, user_handle);
+    apw(&dir)
+        .args(["sync", "--fixture", fixture.to_str().unwrap()])
+        .assert()
+        .success();
+
+    let same = dir.path().join("same.json");
+    write_cxf(
+        &same,
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(credential_id),
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(user_handle),
+        "alice",
+    );
+    let value = json_of(
+        &dir,
+        &["passkey", "import", same.to_str().unwrap(), "--json"],
+    );
+    assert_eq!(value["data"]["imported"].as_array().unwrap().len(), 0);
+    assert_eq!(
+        value["data"]["skipped"][0]["reason"],
+        "already in Recently Deleted"
+    );
+
+    let account = dir.path().join("account.json");
+    write_cxf(
+        &account,
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b"new-credential"),
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(user_handle),
+        "alice",
+    );
+    let value = json_of(
+        &dir,
+        &["passkey", "import", account.to_str().unwrap(), "--json"],
+    );
+    assert_eq!(value["data"]["imported"].as_array().unwrap().len(), 0);
+    assert_eq!(
+        value["data"]["skipped"][0]["reason"],
+        "already in Recently Deleted"
+    );
+
+    let pending = json_of(&dir, &["pending", "--json"]);
+    assert_eq!(pending["data"].as_array().unwrap().len(), 0);
+}

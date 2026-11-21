@@ -17,9 +17,10 @@ Commands, files, configuration, output, and limits.
 | `apw add login URL [--username NAME] [--title TEXT] [--notes TEXT] [--totp URI\|BASE32] [--password-stdin] [--generate] [--dry-run]` | Add a personal login and queue it. |
 | `apw add wifi SSID [--password-stdin] [--generate] [--dry-run]` | Add a Wi-Fi network and queue it. |
 | `apw add note TITLE [--body TEXT] [--body-stdin] [--dry-run]` | Add a note and queue it. |
+| `apw passkey import FILE [--dry-run]` | Import passkeys from a CXF 1.0 JSON export and queue one item per credential. |
 | `apw notes [QUERY]` | List notes. |
 | `apw edit QUERY [--id UUID] [--title TEXT] [--notes TEXT] [--clear-notes] [--totp URI\|BASE32] [--clear-totp] [--password-stdin] [--generate] [--dry-run]` | Change a login, note or Wi-Fi network and queue the change. |
-| `apw rm QUERY [--id UUID] [--yes] [--dry-run]` | Move a login, note or Wi-Fi network to Recently Deleted and queue it. |
+| `apw rm QUERY [--id UUID] [--yes] [--dry-run]` | Move a login, note, Wi-Fi network or imported passkey to Recently Deleted and queue it. |
 | `apw trash [QUERY]` | List Recently Deleted entries from the last sync. |
 | `apw restore QUERY \| --id UUID [--dry-run]` | Move a Recently Deleted entry back, title, notes and password included. |
 | `apw pending` | List changes that have not been pushed. |
@@ -44,9 +45,11 @@ Hidden `probe` subcommands exist for development. They are not part of the stabl
 
 A queued change stores the base it was made from. On push, `apw` reads the server record, decrypts it, and compares it with that base. A record that still matches is written with a fresh item key under the same class key. A record that changed elsewhere blocks the operation: the change stays queued with its reason and id. `apw resolve <id> --local` pushes the local copy anyway; `--remote` drops it and keeps the server copy.
 
-Writes cover personal logins, Wi-Fi networks and notes. Cards, shared entries and passkey creation stay read-only.
+Writes cover personal logins, Wi-Fi networks, notes and passkeys imported from a CXF export. Cards are not supported; shared items can only be added to or removed from a group.
 
 Logins and notes live in the Passwords zone; Wi-Fi networks live in the WiFi zone and are sealed under its classC key. A login is an item plus password-manager metadata. A note is an empty item plus metadata that carries the title and body. A Wi-Fi entry is one item with the network name in `acct` and `labl` and no metadata. A create or edit writes the item first and the metadata second; a delete removes the metadata first. If the second write fails, the next sync sees the first one already done and writes only the rest.
+
+`apw passkey import` reads a CXF 1.0 document and takes every credential whose type is `passkey`; other credential types are counted and skipped. The private key must be PKCS#8 DER for P-256, and the public point is derived from it. The item goes into the Passwords zone under the classC key: `alis` is the credential ID, `klbl` is the SHA-1 of the 65-byte public point, `atag` is CBOR holding the user handle, name and display name, and `v_Data` is the point followed by the private scalar. A passkey that carries a FIDO2 extension is refused rather than imported without it. A credential whose ID, or whose (rpId, user handle) pair, already exists is skipped, whether that record is live or in Recently Deleted.
 
 `rm` re-saves the record with the `-recently-deleted` access group and a fresh modification date. Apple Passwords keeps it in Recently Deleted for 30 days. `apw trash` lists those entries and `apw restore` queues the inverse edit, stripping the marker and refreshing the modification date for the item and its metadata sidecar. A delete queued but not yet pushed is cancelled instead, so the record never leaves the account.
 

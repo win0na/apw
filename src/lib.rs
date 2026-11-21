@@ -4,6 +4,7 @@ pub mod cli;
 pub mod cloudkit;
 pub mod commands;
 pub mod config;
+pub mod cxf;
 pub mod error;
 pub mod group_write;
 pub mod groups;

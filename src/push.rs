@@ -39,13 +39,13 @@ const MAX_ATTEMPTS: u32 = 5;
 /// The synckey class login items and password-manager metadata live under.
 /// `inet` is the plist's `class` key, not the synckey class.
 const ITEM_CLASS: &str = "classA";
-/// Wi-Fi items are generic passwords in the `WiFi` zone under `classC`.
+/// Wi-Fi and passkey items are generic passwords sealed under `classC`.
 const WIFI_CLASS: &str = "classC";
 
 /// The synckey class a record of `kind` is sealed under.
 fn item_class(kind: EntryKind) -> &'static str {
     match kind {
-        EntryKind::Wifi => WIFI_CLASS,
+        EntryKind::Wifi | EntryKind::Passkey => WIFI_CLASS,
         _ => ITEM_CLASS,
     }
 }
@@ -612,6 +612,13 @@ mod tests {
             share_id: None,
             stable_url: None,
         }
+    }
+
+    #[test]
+    fn passkeys_are_sealed_under_the_class_c_key() {
+        assert_eq!(item_class(EntryKind::Passkey), "classC");
+        assert_eq!(item_class(EntryKind::Wifi), "classC");
+        assert_eq!(item_class(EntryKind::Login), "classA");
     }
 
     #[test]

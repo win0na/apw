@@ -1644,7 +1644,7 @@ fn metadata_title(metadata: &Dictionary) -> Option<String> {
 
 /// The label shown for a queued op: the entry name, else its domain, plus the
 /// username when there is one.
-fn entry_label(entry: &Entry) -> String {
+pub(crate) fn entry_label(entry: &Entry) -> String {
     if entry.kind == EntryKind::Wifi {
         return entry.display_name();
     }
