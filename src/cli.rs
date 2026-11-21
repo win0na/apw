@@ -219,9 +219,6 @@ pub enum Command {
     /// Probe the account service map.
     #[command(hide = true)]
     ProbeSettings,
-    /// Probe one CloudKit zone.
-    #[command(hide = true)]
-    ProbeZone { zone: String },
     /// Print a zone's PCS protection sizes.
     #[command(hide = true)]
     ProbeZoneInfo { zone: String },
@@ -407,7 +404,6 @@ fn execute(cli: Cli) -> Result<()> {
             | Command::Passkey { .. }
             | Command::ProbeEscrow
             | Command::ProbeSettings
-            | Command::ProbeZone { .. }
             | Command::ProbeZoneInfo { .. }
             | Command::ProbeRefresh
             | Command::ProbeZones
@@ -649,9 +645,6 @@ fn execute(cli: Cli) -> Result<()> {
         },
         Command::ProbeEscrow => commands::probe::escrow(&paths, &mut config, style.json),
         Command::ProbeSettings => commands::probe::settings(&paths, &mut config, style.json),
-        Command::ProbeZone { zone } => {
-            commands::probe::zone(&paths, &mut config, &zone, style.json)
-        }
         Command::ProbeZoneInfo { zone } => {
             commands::probe::zoneinfo(&paths, &mut config, &zone, style.json)
         }

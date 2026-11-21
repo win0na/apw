@@ -747,12 +747,14 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Resu
     } else {
         for data in &group_data {
             for entry in &data.entries {
-                let duplicate = logins.iter().any(|personal| {
-                    personal.domain().eq_ignore_ascii_case(&entry.domain())
-                        && personal.username == entry.username
-                        && personal.password == entry.password
-                });
-                if !duplicate {
+                // The same zone can be read from more than one scope; a record
+                // name is unique inside a zone, so that is the identity to
+                // dedupe on. A group copy that matches a personal login is a
+                // distinct item and stays.
+                let seen = logins
+                    .iter()
+                    .any(|found| found.id == entry.id && found.group == entry.group);
+                if !seen {
                     logins.push(entry.clone());
                 }
             }
