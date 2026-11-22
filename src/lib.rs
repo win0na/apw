@@ -16,6 +16,8 @@ pub mod pcs;
 pub mod push;
 pub mod store;
 pub mod totp;
+#[cfg(feature = "tui")]
+pub mod tui;
 pub mod vault;
 pub mod wire;
 

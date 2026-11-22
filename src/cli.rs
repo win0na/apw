@@ -363,6 +363,16 @@ pub enum PasskeyAction {
 }
 
 pub fn run() -> i32 {
+    #[cfg(feature = "tui")]
+    if wants_tui() {
+        return match crate::tui::run() {
+            Ok(()) => 0,
+            Err(error) => {
+                eprintln!("apw: {}", error.message());
+                error.status()
+            }
+        };
+    }
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(error) => {
@@ -391,6 +401,16 @@ pub fn run() -> i32 {
             error.status()
         }
     }
+}
+
+#[cfg(feature = "tui")]
+fn wants_tui() -> bool {
+    use std::io::IsTerminal;
+
+    std::env::args_os().len() == 1
+        && std::io::stdin().is_terminal()
+        && std::io::stdout().is_terminal()
+        && std::env::var("TERM").map_or(true, |term| term != "dumb")
 }
 
 fn execute(cli: Cli) -> Result<()> {

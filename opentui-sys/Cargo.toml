@@ -1,0 +1,14 @@
+[package]
+name = "opentui-sys"
+version = "0.9.7"
+edition = "2021"
+rust-version = "1.88"
+license = "MIT AND LGPL-2.1-or-later"
+links = "opentui"
+build = "build.rs"
+description = "apw's thin shim over OpenTUI's raw C ABI: builds the native library, then delegates to upstream's linker checks"
+publish = false
+
+[features]
+default = ["static"]
+static = []

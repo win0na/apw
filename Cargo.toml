@@ -13,8 +13,9 @@ name = "apw"
 path = "src/main.rs"
 
 [features]
-default = ["keyring"]
+default = ["keyring", "tui"]
 keyring = ["dep:keyring"]
+tui = ["dep:opentui"]
 
 [dependencies]
 aes-gcm = "0.10"
@@ -48,6 +49,10 @@ aes-siv = "0.7.0"
 hkdf = "0.12.4"
 prost = "0.13.5"
 flate2 = "1.1"
+opentui = { version = "0.9.7", optional = true }
+
+[patch.crates-io]
+opentui-sys = { path = "opentui-sys" }
 
 [dev-dependencies]
 assert_cmd = "2"

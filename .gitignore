@@ -25,3 +25,6 @@ apw
 
 # Serena tool state
 .serena/
+
+# OpenTUI native build stamp
+.opentui-native.stamp
