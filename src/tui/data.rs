@@ -13,6 +13,7 @@ pub struct VaultView {
     pub vault: Vault,
     pub state: State,
     pub config: Config,
+    pub paths: Paths,
 }
 
 impl VaultView {
@@ -25,7 +26,16 @@ impl VaultView {
             vault,
             state,
             config,
+            paths: paths.clone(),
         })
+    }
+
+    /// Re-read the snapshot and state after a sync or a write.
+    pub fn reload(&mut self) -> Result<()> {
+        self.config = Config::load(&self.paths)?;
+        self.vault = vault::load(&self.paths, &mut self.config)?;
+        self.state = load_state(&self.paths)?;
+        Ok(())
     }
 
     pub fn account(&self) -> Option<&str> {
@@ -521,6 +531,7 @@ mod tests {
             },
             state: State::default(),
             config: Config::default(),
+            paths: crate::config::Paths::resolve().unwrap(),
         }
     }
 

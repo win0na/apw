@@ -28,6 +28,8 @@ enum Command {
     Groups,
     Trash,
     Pending,
+    Sync,
+    SyncForce,
     Status,
     Get,
     Help,
@@ -42,6 +44,8 @@ const COMMANDS: &[Command] = &[
     Command::Groups,
     Command::Trash,
     Command::Pending,
+    Command::Sync,
+    Command::SyncForce,
     Command::Status,
     Command::Get,
     Command::Help,
@@ -58,6 +62,8 @@ impl Command {
             Command::Groups => "groups",
             Command::Trash => "trash",
             Command::Pending => "pending",
+            Command::Sync => "sync",
+            Command::SyncForce => "sync --force",
             Command::Status => "status",
             Command::Get => "get",
             Command::Help => "help",
@@ -74,6 +80,8 @@ impl Command {
             Command::Groups => "browse groups",
             Command::Trash => "browse deleted items",
             Command::Pending => "browse queued changes",
+            Command::Sync => "sync with iCloud now",
+            Command::SyncForce => "sync and override the 5 minute floor",
             Command::Status => "account and sync status",
             Command::Get => "open the selected item",
             Command::Help => "keys and commands",
@@ -107,10 +115,13 @@ Keys
 
 Commands
   list     notes     wifi      passkeys
-  groups   trash     pending   status
-  get      help      quit
+  groups   trash     pending   sync
+  status   get       help      quit
 
 Every command works from the palette. Type to filter.";
+
+#[derive(Clone)]
+struct SyncFinished(std::result::Result<crate::commands::sync::SyncOutcome, String>);
 
 struct UiState {
     view: VaultView,
@@ -125,12 +136,14 @@ struct UiState {
     palette_open: bool,
     palette_commands: Vec<Command>,
     revealed: bool,
+    syncing: bool,
 }
 
 #[derive(Clone)]
 struct Ui {
     state: Rc<RefCell<UiState>>,
     app: App,
+    chrome: Chrome,
     dashboard: View,
     browser: View,
     wordmark: Text,
@@ -151,6 +164,7 @@ struct Ui {
     help: View,
     palette: View,
     palette_select: Select,
+    banner: Text,
     composer: Input,
     breadcrumb: Text,
     hints: Text,
@@ -196,6 +210,7 @@ impl Ui {
             palette_open: false,
             palette_commands: Vec::new(),
             revealed: false,
+            syncing: false,
         }));
 
         let dashboard = View::new(&app).column().grow(1.0).padding(1).gap(1);
@@ -288,6 +303,11 @@ impl Ui {
             .wrap(WrapMode::Word);
         help.add(&help_text);
 
+        let banner = Text::new(&app, "")
+            .fg(chrome.warning)
+            .padding_x(1)
+            .visible(false);
+
         let footer = View::new(&app).row().height(1).padding_x(1);
         let breadcrumb = Text::new(&app, "")
             .fg(chrome.muted)
@@ -308,12 +328,14 @@ impl Ui {
         root.add(&browser);
         root.add(&help);
         root.add(&palette);
+        root.add(&banner);
         root.add(&composer_box);
         root.add(&footer);
 
         let ui = Self {
             state,
             app,
+            chrome,
             dashboard,
             browser,
             wordmark,
@@ -334,6 +356,7 @@ impl Ui {
             help,
             palette,
             palette_select,
+            banner,
             composer,
             breadcrumb,
             hints,
@@ -410,6 +433,9 @@ impl Ui {
         let ui = self.clone();
         self.app
             .on_resize(move |_cx, width, height| ui.resize(width, height));
+        let ui = self.clone();
+        self.app
+            .on_message(move |_cx, message: &SyncFinished| ui.finish_sync(message.0.clone()));
         self.composer.focus();
     }
 
@@ -501,7 +527,11 @@ impl Ui {
             (Screen::Browser, _) => "↑↓  enter  /  esc",
             (Screen::Help, _) => "esc back",
         };
-        let sync = sync_label(state.view.last_sync());
+        let sync = if state.syncing {
+            "syncing".to_string()
+        } else {
+            sync_label(state.view.last_sync())
+        };
         drop(state);
         self.breadcrumb.set_text(breadcrumb);
         self.hints.set_text(hints);
@@ -586,7 +616,10 @@ impl Ui {
         }
         self.palette.visible(false);
         self.composer.set_value("");
+        self.set_notice(None, false);
         match command {
+            Command::Sync => self.start_sync(false),
+            Command::SyncForce => self.start_sync(true),
             Command::Help => {
                 self.state.borrow_mut().screen = Screen::Help;
                 self.refresh();
@@ -702,6 +735,69 @@ impl Ui {
             ui.state.borrow_mut().revealed = false;
             ui.refresh_rows();
         });
+    }
+
+    fn start_sync(&self, force: bool) {
+        if self.state.borrow().syncing {
+            return;
+        }
+        let (paths, config) = {
+            let state = self.state.borrow();
+            (state.view.paths.clone(), state.view.config.clone())
+        };
+        self.state.borrow_mut().syncing = true;
+        self.refresh_footer();
+        let proxy = self.app.proxy();
+        std::thread::spawn(move || {
+            let mut config = config;
+            let result = crate::commands::sync::run_quiet(&paths, &mut config, force, None)
+                .map_err(|error| error.message().to_string());
+            let _ = proxy.send(SyncFinished(result));
+        });
+    }
+
+    fn finish_sync(&self, result: std::result::Result<crate::commands::sync::SyncOutcome, String>) {
+        self.state.borrow_mut().syncing = false;
+        match result {
+            Ok(outcome) => {
+                let reload = self.state.borrow_mut().view.reload();
+                self.refresh();
+                match reload {
+                    Ok(()) => self.set_notice(
+                        Some(format!(
+                            "synced {} logins ({})",
+                            outcome.logins, outcome.note
+                        )),
+                        false,
+                    ),
+                    Err(error) => self.set_notice(
+                        Some(format!("synced, but reload failed: {}", error.message())),
+                        true,
+                    ),
+                }
+            }
+            Err(error) => {
+                self.refresh_footer();
+                self.set_notice(Some(error), true);
+            }
+        }
+    }
+
+    fn set_notice(&self, text: Option<String>, error: bool) {
+        match text {
+            Some(text) => {
+                self.banner.set_text(text);
+                self.banner.fg(if error {
+                    self.chrome.error
+                } else {
+                    self.chrome.accent
+                });
+                self.banner.visible(true);
+            }
+            None => {
+                self.banner.visible(false);
+            }
+        }
     }
 
     fn open_recent(&self, index: usize) {
@@ -958,6 +1054,7 @@ mod tests {
             },
             state: State::default(),
             config: Config::default(),
+            paths: crate::config::Paths::resolve().unwrap(),
         }
     }
 

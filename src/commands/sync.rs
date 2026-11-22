@@ -19,6 +19,14 @@ use crate::pcs::ServiceKey;
 use crate::push;
 use crate::vault;
 
+#[derive(Clone, Debug)]
+pub struct SyncOutcome {
+    pub logins: usize,
+    pub entries: usize,
+    pub partial: bool,
+    pub note: String,
+}
+
 pub fn run(
     paths: &Paths,
     config: &mut Config,
@@ -26,39 +34,73 @@ pub fn run(
     fixture: Option<PathBuf>,
     json: bool,
 ) -> Result<()> {
-    if !force {
-        let state = config::load_state(paths)?;
-        if let Some(last) = state.last_sync {
-            let elapsed = chrono::Utc::now().signed_duration_since(last).num_seconds();
-            if elapsed >= 0 && (elapsed as u64) < config.sync.min_interval_seconds {
-                // A pending queue is work the floor must not starve: allow the
-                // run so a queued write can be pushed.
-                let has_pending = vault::load(paths, config)
-                    .map(|vault| !vault.pending.is_empty())
-                    .unwrap_or(false);
-                if !has_pending {
-                    return Err(Error::Message(format!(
-                        "last sync was {elapsed}s ago; the floor is {}s (use --force)",
-                        config.sync.min_interval_seconds
-                    )));
-                }
-            }
+    check_floor(paths, config, force)?;
+    match resolve_fixture(fixture) {
+        Some(fixture) => {
+            sync_fixture(paths, config, &fixture, json, true)?;
+        }
+        None => {
+            sync_live(paths, config, json, true)?;
         }
     }
+    Ok(())
+}
 
-    let fixture = fixture.or_else(|| {
-        std::env::var_os("APW_FIXTURE")
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from)
-    });
-
-    match fixture {
-        Some(fixture) => sync_fixture(paths, config, &fixture, json),
-        None => sync_live(paths, config, json, true),
+/// Sync for the interface: no terminal output, and an outcome the caller can show.
+pub fn run_quiet(
+    paths: &Paths,
+    config: &mut Config,
+    force: bool,
+    fixture: Option<PathBuf>,
+) -> Result<SyncOutcome> {
+    check_floor(paths, config, force)?;
+    match resolve_fixture(fixture) {
+        Some(fixture) => sync_fixture(paths, config, &fixture, false, false),
+        None => sync_live(paths, config, false, false),
     }
 }
 
-fn sync_fixture(paths: &Paths, config: &mut Config, fixture: &Path, json: bool) -> Result<()> {
+fn check_floor(paths: &Paths, config: &mut Config, force: bool) -> Result<()> {
+    if force {
+        return Ok(());
+    }
+    let state = config::load_state(paths)?;
+    let Some(last) = state.last_sync else {
+        return Ok(());
+    };
+    let elapsed = chrono::Utc::now().signed_duration_since(last).num_seconds();
+    if elapsed < 0 || (elapsed as u64) >= config.sync.min_interval_seconds {
+        return Ok(());
+    }
+    // A pending queue is work the floor must not starve: allow the
+    // run so a queued write can be pushed.
+    let has_pending = vault::load(paths, config)
+        .map(|vault| !vault.pending.is_empty())
+        .unwrap_or(false);
+    if has_pending {
+        return Ok(());
+    }
+    Err(Error::Message(format!(
+        "last sync was {elapsed}s ago; the floor is {}s (use force to override)",
+        config.sync.min_interval_seconds
+    )))
+}
+
+fn resolve_fixture(fixture: Option<PathBuf>) -> Option<PathBuf> {
+    fixture.or_else(|| {
+        std::env::var_os("APW_FIXTURE")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+    })
+}
+
+fn sync_fixture(
+    paths: &Paths,
+    config: &mut Config,
+    fixture: &Path,
+    json: bool,
+    emit: bool,
+) -> Result<SyncOutcome> {
     let mut snapshot = vault::fixture::read(fixture)?;
     // A fixture has no session or peer. Keep the ones a live snapshot already
     // holds so testing does not orphan the trust peer. Pending edits and the
@@ -91,14 +133,15 @@ fn sync_fixture(paths: &Paths, config: &mut Config, fixture: &Path, json: bool) 
         json,
         &format!("fixture {}", fixture.display()),
         false,
-        true,
+        emit,
     )
 }
 
 /// Sync without printing. `login` calls this so one command produces one
 /// envelope.
 pub fn run_silent(paths: &Paths, config: &mut Config) -> Result<()> {
-    sync_live(paths, config, false, false)
+    sync_live(paths, config, false, false)?;
+    Ok(())
 }
 
 /// The live material the `group` commands need.
@@ -274,7 +317,7 @@ pub fn group_session(paths: &Paths, config: &mut Config) -> Result<GroupSession>
     })
 }
 
-fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Result<()> {
+fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Result<SyncOutcome> {
     if !paths.snapshot_file.exists() {
         return Err(Error::Auth("run `apw login` first".into()));
     }
@@ -1043,7 +1086,7 @@ fn finish(
     note: &str,
     partial: bool,
     emit: bool,
-) -> Result<()> {
+) -> Result<SyncOutcome> {
     let state = State {
         last_sync: snapshot.generated_at,
         last_status: Some(if partial { "partial" } else { "ok" }.into()),
@@ -1083,7 +1126,12 @@ fn finish(
             println!("synced {} logins from {note}", snapshot.login_count());
         }
     }
-    Ok(())
+    Ok(SyncOutcome {
+        logins: snapshot.login_count(),
+        entries: snapshot.item_count(),
+        partial,
+        note: note.to_string(),
+    })
 }
 
 /// The PCS service keys are ordinary Manatee items; collect every candidate and
