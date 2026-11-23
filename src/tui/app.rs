@@ -595,6 +595,9 @@ impl Ui {
         let tabs = TabSelect::new(&app)
             .options(CATEGORIES.iter().map(|category| category.label()))
             .tab_width(12)
+            // The composer is the only text target on this screen. A focusable
+            // tab bar takes the keyboard on Tab or a click and swallows typing.
+            .focusable(false)
             .selected_colors(chrome.selected_fg, chrome.selected_bg)
             .description_color(chrome.muted);
         let split = View::new(&app).row().gap(2).grow(1.0);
@@ -3199,7 +3202,10 @@ impl Ui {
                     && !key.modifiers.contains(Modifiers::ALT)
                     && character != '/'
                     && character != 'q'
-                    && self.state.borrow().screen == Screen::Dashboard
+                    && matches!(
+                        self.state.borrow().screen,
+                        Screen::Dashboard | Screen::Browser
+                    )
                 {
                     self.state.borrow_mut().screen = Screen::Browser;
                     self.composer.focus();
@@ -3659,6 +3665,15 @@ mod tests {
         app.press("enter");
         assert_eq!(ui.state.borrow().screen, Screen::Browser);
         assert_eq!(ui.state.borrow().query, "exam");
+    }
+
+    #[test]
+    fn typing_returns_focus_to_the_composer() {
+        let app = TestApp::new(53, 34);
+        let ui = ui_sized(&app, 53, 34);
+        ui.list.focus();
+        app.type_text("abc");
+        assert_eq!(ui.state.borrow().query, "abc");
     }
 
     #[test]
