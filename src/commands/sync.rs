@@ -7,7 +7,7 @@ use crate::auth::anisette::Anisette;
 use crate::ckks;
 use crate::cloudkit::Gateway;
 use crate::commands::join::block_on;
-use crate::config::{self, Config, Paths, State};
+use crate::config::{self, Config, Paths};
 use crate::error::{Error, Result};
 use crate::model::{
     Entry, EntryKind, OpKind, RecordMeta, Source, TrashEntry, PASSWORD_MANAGER_AGRP,
@@ -53,6 +53,7 @@ pub fn run_quiet(
     force: bool,
     fixture: Option<PathBuf>,
 ) -> Result<SyncOutcome> {
+    let _lock = crate::config::lock_snapshot(paths)?;
     check_floor(paths, config, force)?;
     match resolve_fixture(fixture) {
         Some(fixture) => sync_fixture(paths, config, &fixture, false, false),
@@ -1087,24 +1088,23 @@ fn finish(
     partial: bool,
     emit: bool,
 ) -> Result<SyncOutcome> {
-    let state = State {
-        last_sync: snapshot.generated_at,
-        last_status: Some(if partial { "partial" } else { "ok" }.into()),
-        account: snapshot.account.clone(),
-        source: Some(snapshot.source.to_string()),
-        entries: snapshot.item_count() as u32,
-        logins: snapshot.login_count() as u32,
-        passkeys: snapshot.passkey_count() as u32,
-        wifi: snapshot.wifi_count() as u32,
-        groups: snapshot.groups.len() as u32,
-        shared_entries: snapshot
-            .entries
-            .iter()
-            .filter(|entry| entry.group.is_some())
-            .count() as u32,
-        failures: 0,
-        next_attempt: None,
-    };
+    let mut state = config::load_state(paths)?;
+    state.last_sync = snapshot.generated_at;
+    state.last_status = Some(if partial { "partial" } else { "ok" }.into());
+    state.account = snapshot.account.clone().or(state.account);
+    state.source = Some(snapshot.source.to_string());
+    state.entries = snapshot.item_count() as u32;
+    state.logins = snapshot.login_count() as u32;
+    state.passkeys = snapshot.passkey_count() as u32;
+    state.wifi = snapshot.wifi_count() as u32;
+    state.groups = snapshot.groups.len() as u32;
+    state.shared_entries = snapshot
+        .entries
+        .iter()
+        .filter(|entry| entry.group.is_some())
+        .count() as u32;
+    state.failures = 0;
+    state.next_attempt = None;
     config::save_state(paths, &state)?;
 
     let result = serde_json::json!({

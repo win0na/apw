@@ -55,7 +55,14 @@ pub fn run(
     // early. The escrow passcode is independent of it.
     vault::prepare(paths, config)?;
 
-    config.save(paths)?;
+    let anisette = config.anisette_url.clone();
+    let saved_account = config.account.clone();
+    let salt = config.kdf_salt.clone();
+    *config = Config::update(paths, |disk| {
+        disk.anisette_url = anisette;
+        disk.account = saved_account;
+        disk.kdf_salt = salt;
+    })?;
 
     if refresh {
         return refresh_services(paths, config, &account, json);
@@ -110,6 +117,11 @@ pub fn run(
     }
 
     let state = config::load_state(paths)?;
+    if session.escrow_proxy_url.is_none() {
+        eprintln!(
+            "warning: Apple returned no keychainsync service, so this session cannot join the \ntrust (see docs/troubleshooting.md)"
+        );
+    }
     let result = serde_json::json!({
         "account": account,
         "dsid": session.dsid,
@@ -158,18 +170,56 @@ fn refresh_services(paths: &Paths, config: &mut Config, account: &str, json: boo
         .anisette_url()
         .ok_or_else(|| Error::Invalid("set an anisette URL in the config".into()))?;
 
+    // The macOS client info carries the full service map. When Apple refuses
+    // it, the default identity still answers with a reduced one, so merge
+    // rather than give up on the whole refresh.
     let services = crate::commands::join::block_on(async {
         let anisette = crate::auth::anisette::Anisette::new(&url);
-        let identity = match anisette.identity_for(Some("macos")).await {
-            Ok(identity) => identity,
-            Err(_) => anisette.identity().await?,
-        };
-        crate::auth::icloud::account_settings(&identity, &session.dsid, &session.mme_auth_token)
+        let mut services = crate::auth::icloud::Webservices::default();
+        let mut first_error = None;
+        if let Ok(identity) = anisette.identity_for(Some("macos")).await {
+            match crate::auth::icloud::account_settings(
+                &identity,
+                &session.dsid,
+                &session.mme_auth_token,
+            )
             .await
+            {
+                Ok(found) => services = found,
+                Err(error) => first_error = Some(error),
+            }
+        }
+        if services.escrow_proxy_url.is_none() {
+            let identity = anisette.identity().await?;
+            match crate::auth::icloud::account_settings(
+                &identity,
+                &session.dsid,
+                &session.mme_auth_token,
+            )
+            .await
+            {
+                Ok(found) => services.fill_from(found),
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                }
+            }
+        }
+        match first_error {
+            Some(error) if services.names.is_empty() => Err(error),
+            _ => Ok(services),
+        }
     })?;
 
-    session.ckdatabasews_url = services.ckdatabasews_url.clone();
-    session.escrow_proxy_url = services.escrow_proxy_url.clone();
+    // Keep a URL the new map omits; a reduced map answers successfully with
+    // fewer services.
+    session.ckdatabasews_url = services
+        .ckdatabasews_url
+        .clone()
+        .or_else(|| session.ckdatabasews_url.clone());
+    session.escrow_proxy_url = services
+        .escrow_proxy_url
+        .clone()
+        .or_else(|| session.escrow_proxy_url.clone());
     snapshot.session = Some(session.clone());
     vault::save(paths, config, &snapshot)?;
 

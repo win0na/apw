@@ -40,5 +40,7 @@ pub const WORDMARK: &str = "\
 █   █ █     ██ ██
 █   █ █     █   █";
 
+pub const WORDMARK_COMPACT: &str = "apw";
+
 pub const HINTS_DASHBOARD: &str = "type to search   / commands   tab focus   ctrl+c quit";
 pub const HINTS_BROWSER: &str = "↑↓ move   enter open   / commands   esc back   ctrl+c quit";

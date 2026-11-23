@@ -26,6 +26,20 @@ use crate::vault;
 /// The 2001-01-01 UTC epoch keychain plists use for `edat` and `sdat`.
 const KEYCHAIN_EPOCH: i64 = 978_307_200;
 
+pub struct ImportedRow {
+    pub id: String,
+    pub name: String,
+    pub username: String,
+    pub rp_id: String,
+    pub pending_id: Option<String>,
+}
+
+pub struct ImportReport {
+    pub imported: Vec<ImportedRow>,
+    pub skipped: Vec<Skipped>,
+    pub dry_run: bool,
+}
+
 /// Import every passkey in a CXF file. File-level problems fail the command;
 /// a bad credential is reported as one skipped row.
 pub fn import(
@@ -35,6 +49,18 @@ pub fn import(
     dry_run: bool,
     style: Style,
 ) -> Result<()> {
+    let report = import_file(paths, config, file, dry_run)?;
+    print_result(&report, style.json);
+    Ok(())
+}
+
+/// Import a CXF file without printing, so the TUI can show a dry-run summary.
+pub fn import_file(
+    paths: &Paths,
+    config: &mut Config,
+    file: &Path,
+    dry_run: bool,
+) -> Result<ImportReport> {
     let text = std::fs::read_to_string(file)
         .map_err(|error| Error::Invalid(format!("cannot read {}: {error}", file.display())))?;
     let parsed = cxf::parse(&text)?;
@@ -74,13 +100,13 @@ pub fn import(
 
         let item_b64 = encode(&passkey_plist(&candidate, now)?);
         let (entry, op) = item_and_op(&candidate, item_b64, now);
-        imported.push(json!({
-            "id": entry.id,
-            "name": entry.display_name(),
-            "username": candidate.username,
-            "rp_id": candidate.rp_id,
-            "pending_id": if dry_run { serde_json::Value::Null } else { json!(op.id) },
-        }));
+        imported.push(ImportedRow {
+            id: entry.id.clone(),
+            name: entry.display_name(),
+            username: candidate.username,
+            rp_id: candidate.rp_id,
+            pending_id: if dry_run { None } else { Some(op.id.clone()) },
+        });
         planned.push((entry, op));
     }
 
@@ -92,20 +118,20 @@ pub fn import(
         });
     }
 
-    if dry_run {
-        print_result(&imported, &skipped, true, style.json);
-        return Ok(());
+    if !dry_run {
+        for (entry, op) in planned {
+            working.entries.push(entry);
+            working.pending.push(op);
+            ensure_queue_room(&working)?;
+        }
+        vault::save(paths, config, &working)?;
     }
 
-    for (entry, op) in planned {
-        working.entries.push(entry);
-        working.pending.push(op);
-        ensure_queue_room(&working)?;
-    }
-    vault::save(paths, config, &working)?;
-
-    print_result(&imported, &skipped, false, style.json);
-    Ok(())
+    Ok(ImportReport {
+        imported,
+        skipped,
+        dry_run,
+    })
 }
 
 fn skipped_row(candidate: &Candidate, reason: &str) -> Skipped {
@@ -116,11 +142,25 @@ fn skipped_row(candidate: &Candidate, reason: &str) -> Skipped {
     }
 }
 
-fn print_result(imported: &[serde_json::Value], skipped: &[Skipped], dry_run: bool, json: bool) {
+fn print_result(report: &ImportReport, json: bool) {
     if json {
+        let imported = report
+            .imported
+            .iter()
+            .map(|row| {
+                json!({
+                    "id": row.id,
+                    "name": row.name,
+                    "username": row.username,
+                    "rp_id": row.rp_id,
+                    "pending_id": row.pending_id,
+                })
+            })
+            .collect::<Vec<_>>();
         let mut data = json!({
             "imported": imported,
-            "skipped": skipped
+            "skipped": report
+                .skipped
                 .iter()
                 .map(|row| json!({
                     "rp_id": row.rp_id,
@@ -129,31 +169,27 @@ fn print_result(imported: &[serde_json::Value], skipped: &[Skipped], dry_run: bo
                 }))
                 .collect::<Vec<_>>(),
         });
-        if dry_run {
+        if report.dry_run {
             data["dry_run"] = json!(true);
         }
         output::print_json(&output::success(data));
         return;
     }
 
-    if imported.is_empty() {
+    if report.imported.is_empty() {
         println!("no passkeys imported");
     }
-    for row in imported {
-        println!(
-            "{}  {}",
-            row["rp_id"].as_str().unwrap_or(""),
-            row["username"].as_str().unwrap_or("")
-        );
+    for row in &report.imported {
+        println!("{}  {}", row.rp_id, row.username);
     }
-    if !skipped.is_empty() {
+    if !report.skipped.is_empty() {
         println!();
         println!("skipped:");
-        for row in skipped {
+        for row in &report.skipped {
             println!("{}  {}  {}", row.rp_id, row.username, row.reason);
         }
     }
-    if dry_run {
+    if report.dry_run {
         println!();
         println!("dry run: nothing queued");
     }
@@ -164,6 +200,12 @@ fn print_result(imported: &[serde_json::Value], skipped: &[Skipped], dry_run: bo
 /// The export is offline: the item plists already hold the credential ID and
 /// `v_Data`, and sync copies them onto the entry's [`Passkey`] fields for
 /// snapshots that have been refreshed since this command existed.
+pub struct ExportReport {
+    pub file: std::path::PathBuf,
+    pub exported: usize,
+    pub skipped: Vec<ExportSkipped>,
+}
+
 pub fn export(
     paths: &Paths,
     config: &mut Config,
@@ -171,6 +213,37 @@ pub fn export(
     force: bool,
     style: Style,
 ) -> Result<()> {
+    let report = export_file(paths, config, file, force)?;
+    if style.json {
+        output::print_json(&output::success(json!({
+            "file": report.file.display().to_string(),
+            "exported": report.exported,
+            "skipped": report
+                .skipped
+                .iter()
+                .map(|row| json!({"name": row.name, "reason": row.reason}))
+                .collect::<Vec<_>>(),
+        })));
+    } else {
+        println!(
+            "exported {} passkeys to {}",
+            report.exported,
+            report.file.display()
+        );
+        for row in &report.skipped {
+            println!("skipped {}: {}", row.name, row.reason);
+        }
+    }
+    Ok(())
+}
+
+/// Write the CXF export without printing.
+pub fn export_file(
+    paths: &Paths,
+    config: &mut Config,
+    file: &Path,
+    force: bool,
+) -> Result<ExportReport> {
     if file.exists() && !force {
         return Err(Error::Invalid(format!(
             "{} exists; pass --force to overwrite",
@@ -185,29 +258,17 @@ pub fn export(
         .map_or(0, Vec::len);
 
     write_private(file, &serde_json::to_string_pretty(&document)?)?;
-
-    if style.json {
-        output::print_json(&output::success(json!({
-            "file": file.display().to_string(),
-            "exported": exported,
-            "skipped": skipped
-                .iter()
-                .map(|row| json!({"name": row.name, "reason": row.reason}))
-                .collect::<Vec<_>>(),
-        })));
-    } else {
-        println!("exported {exported} passkeys to {}", file.display());
-        for row in &skipped {
-            println!("skipped {}: {}", row.name, row.reason);
-        }
-    }
-    Ok(())
+    Ok(ExportReport {
+        file: file.to_path_buf(),
+        exported,
+        skipped,
+    })
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct ExportSkipped {
-    name: String,
-    reason: String,
+pub struct ExportSkipped {
+    pub name: String,
+    pub reason: String,
 }
 
 struct ExportMaterial {
@@ -392,21 +453,9 @@ fn random_id() -> [u8; 16] {
 }
 
 fn write_private(path: &Path, text: &str) -> Result<()> {
-    use std::io::Write;
-
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(path)?;
-    file.write_all(text.as_bytes())?;
-    file.write_all(b"\n")?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-    }
-    Ok(())
+    let mut text = text.to_string();
+    text.push('\n');
+    crate::config::write_private(path, text.as_bytes())
 }
 
 /// What the snapshot already holds, keyed for the dedupe rules. Live entries

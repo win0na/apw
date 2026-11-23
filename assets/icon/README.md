@@ -44,5 +44,3 @@ The logo in the repository README swaps with the page theme:
 ```
 
 Both files are 512 px, so they stay sharp on a high-density display at 70 CSS px.
-
-[The icon design notes](../../docs/icon.md) cover the mark, the appearances, and the engine's limits.

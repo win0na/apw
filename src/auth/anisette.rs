@@ -62,6 +62,13 @@ impl Identity {
     }
 }
 
+/// Apple's edge answers HTTP 503 to the literal `<macOS;` platform token and
+/// accepts `<Mac OS X;` for the same machine. Servers built from recent assets
+/// emit the rejected spelling, so rewrite it before any request leaves.
+pub fn normalize_client_info(client_info: &str) -> String {
+    client_info.replace("<macOS;", "<Mac OS X;")
+}
+
 pub struct Anisette {
     base: String,
     // Building the client fails on systems without a CA store. Keep the error
@@ -117,12 +124,21 @@ impl Anisette {
         }
 
         let info = self.client_info(&query).await.unwrap_or_default();
-        Ok(Identity {
-            headers,
-            client_info: info
+        let client_info = normalize_client_info(
+            &info
                 .client_info
                 .filter(|value| !value.is_empty())
                 .unwrap_or_else(|| FALLBACK_CLIENT_INFO.to_string()),
+        );
+        let mut headers = headers;
+        for (name, value) in headers.iter_mut() {
+            if name.eq_ignore_ascii_case("X-MMe-Client-Info") {
+                *value = normalize_client_info(value);
+            }
+        }
+        Ok(Identity {
+            headers,
+            client_info,
             user_agent: info
                 .user_agent
                 .filter(|value| !value.is_empty())
@@ -181,5 +197,30 @@ impl Anisette {
             .await?
             .error_for_status()?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_client_info;
+
+    #[test]
+    fn the_macos_platform_token_is_relabelled() {
+        assert_eq!(
+            normalize_client_info(
+                "<MacBookPro16,2> <macOS;26.7.1;25G241> <com.apple.AuthKit/1 (com.apple.akd/1.0)>"
+            ),
+            "<MacBookPro16,2> <Mac OS X;26.7.1;25G241> <com.apple.AuthKit/1 (com.apple.akd/1.0)>"
+        );
+    }
+
+    #[test]
+    fn other_platforms_are_left_alone() {
+        let windows =
+            "<PC> <Windows;6.2(0,0);9200> <com.apple.AuthKit/1 (com.apple.iTunes/12.12.4.1)>";
+        assert_eq!(normalize_client_info(windows), windows);
+        let old =
+            "<MacBookPro13,2> <Mac OS X;13.1;22C65> <com.apple.AuthKit/1 (com.apple.akd/1.0)>";
+        assert_eq!(normalize_client_info(old), old);
     }
 }

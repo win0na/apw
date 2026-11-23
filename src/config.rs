@@ -17,6 +17,32 @@ pub struct Config {
     pub kdf_salt: Option<String>,
     #[serde(default)]
     pub sync: SyncConfig,
+    #[serde(default)]
+    pub tui: TuiConfig,
+    /// Keys written by a newer apw. A save keeps them instead of deleting them.
+    #[serde(flatten)]
+    pub extra: toml::Table,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TuiConfig {
+    /// Category to open on the next launch: logins, notes, wifi, passkeys, groups, trash, pending.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_category: Option<String>,
+    /// Force the list/detail split (`true`) or the stacked layout (`false`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub split: Option<bool>,
+    /// Keep the block wordmark on the dashboard.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub show_wordmark: Option<bool>,
+    /// Start with mouse reporting on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mouse: Option<bool>,
+    /// Clear the filter when the interface opens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clear_query_on_launch: Option<bool>,
+    #[serde(flatten)]
+    pub extra: toml::Table,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -25,6 +51,8 @@ pub struct SyncConfig {
     pub min_interval_seconds: u64,
     #[serde(default = "SyncConfig::max_backoff_default")]
     pub max_backoff_seconds: u64,
+    #[serde(flatten)]
+    pub extra: toml::Table,
 }
 
 impl Default for SyncConfig {
@@ -32,6 +60,7 @@ impl Default for SyncConfig {
         Self {
             min_interval_seconds: Self::min_interval_default(),
             max_backoff_seconds: Self::max_backoff_default(),
+            extra: toml::Table::new(),
         }
     }
 }
@@ -137,6 +166,22 @@ impl Config {
         write_private(&paths.config_file, text.as_bytes())
     }
 
+    /// Read, change, and write the config under the snapshot lock.
+    ///
+    /// Callers that only change one field must use this instead of saving a
+    /// stale in-memory copy: the load fails closed, so a malformed file is
+    /// never replaced by a default.
+    pub fn update<F>(paths: &Paths, change: F) -> Result<Self>
+    where
+        F: FnOnce(&mut Self),
+    {
+        let _lock = lock_config(paths)?;
+        let mut config = Self::load(paths)?;
+        change(&mut config);
+        config.save(paths)?;
+        Ok(config)
+    }
+
     pub fn anisette_url(&self) -> Option<String> {
         std::env::var("APW_ANISETTE_URL")
             .ok()
@@ -172,6 +217,27 @@ pub fn lock_snapshot(paths: &Paths) -> Result<SnapshotLock> {
     use std::os::unix::fs::OpenOptionsExt;
     paths.ensure()?;
     let path = paths.data_dir.join("snapshot.lock");
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(&path)?;
+    let fd = std::os::unix::io::AsRawFd::as_raw_fd(&file);
+    // SAFETY: fd is open for the lifetime of `file`.
+    if unsafe { libc::flock(fd, libc::LOCK_EX) } != 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Ok(SnapshotLock { _file: file })
+}
+
+/// Serialize config read-modify-write across processes. Separate from the
+/// snapshot lock so a long sync does not block a tab change.
+pub fn lock_config(paths: &Paths) -> Result<SnapshotLock> {
+    use std::os::unix::fs::OpenOptionsExt;
+    paths.ensure()?;
+    let path = paths.config_dir.join("config.lock");
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -266,6 +332,38 @@ mod tests {
             let config = Config::default();
             assert_eq!(config.anisette_url().as_deref(), Some(DEFAULT_ANISETTE_URL));
         }
+    }
+
+    #[test]
+    fn update_preserves_unknown_keys_and_the_salt() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = super::Paths {
+            config_dir: dir.path().join("config"),
+            config_file: dir.path().join("config/config.toml"),
+            data_dir: dir.path().join("data"),
+            snapshot_file: dir.path().join("data/snapshot.bin"),
+            state_dir: dir.path().join("state"),
+            state_file: dir.path().join("state/state.json"),
+        };
+        std::fs::create_dir_all(&paths.config_dir).unwrap();
+        std::fs::write(
+            &paths.config_file,
+            "kdf_salt = \"c2FsdA==\"\nfuture_key = \"keep me\"\n",
+        )
+        .unwrap();
+        Config::update(&paths, |config| {
+            config.account = Some("me@example.com".into());
+        })
+        .unwrap();
+        let saved = Config::load(&paths).unwrap();
+        assert_eq!(saved.kdf_salt.as_deref(), Some("c2FsdA=="));
+        assert_eq!(
+            saved
+                .extra
+                .get("future_key")
+                .and_then(|value| value.as_str()),
+            Some("keep me")
+        );
     }
 
     #[test]

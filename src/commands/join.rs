@@ -42,7 +42,29 @@ pub struct Joined {
 }
 
 pub fn perform(paths: &Paths, config: &mut Config) -> Result<Joined> {
-    match perform_inner(paths, config) {
+    let passcode = match std::env::var("APW_ESCROW_PASSCODE")
+        .ok()
+        .filter(|value| !value.is_empty())
+    {
+        Some(passcode) => passcode,
+        None => {
+            if !std::io::stdin().is_terminal() {
+                return Err(Error::Invalid(
+                    "set APW_ESCROW_PASSCODE or run this command in a terminal".into(),
+                ));
+            }
+            rpassword::prompt_password("Escrow passcode: ")?
+        }
+    };
+    perform_with_passcode(paths, config, &passcode)
+}
+
+/// Join with an explicit escrow passcode, for callers that collect it themselves.
+pub fn perform_with_passcode(paths: &Paths, config: &mut Config, passcode: &str) -> Result<Joined> {
+    if passcode.is_empty() {
+        return Err(Error::Invalid("the escrow passcode is empty".into()));
+    }
+    match perform_inner(paths, config, passcode) {
         Ok(joined) => {
             let mut state = config::load_state(paths)?;
             state.failures = 0;
@@ -63,7 +85,7 @@ pub fn perform(paths: &Paths, config: &mut Config) -> Result<Joined> {
     }
 }
 
-fn perform_inner(paths: &Paths, config: &mut Config) -> Result<Joined> {
+fn perform_inner(paths: &Paths, config: &mut Config, passcode: &str) -> Result<Joined> {
     if !paths.snapshot_file.exists() {
         return Err(Error::Auth("run `apw login` first".into()));
     }
@@ -80,28 +102,13 @@ fn perform_inner(paths: &Paths, config: &mut Config) -> Result<Joined> {
     let anisette_url = config
         .anisette_url()
         .ok_or_else(|| Error::Invalid("set an anisette URL in the config".into()))?;
-    let escrow_url = session
-        .escrow_proxy_url
-        .clone()
-        .ok_or_else(|| Error::Message("the session has no escrow URL".into()))?;
-
-    let passcode = match std::env::var("APW_ESCROW_PASSCODE")
-        .ok()
-        .filter(|value| !value.is_empty())
-    {
-        Some(passcode) => passcode,
-        None => {
-            if !std::io::stdin().is_terminal() {
-                return Err(Error::Invalid(
-                    "set APW_ESCROW_PASSCODE or run this command in a terminal".into(),
-                ));
-            }
-            rpassword::prompt_password("Escrow passcode: ")?
-        }
-    };
-    if passcode.is_empty() {
-        return Err(Error::Invalid("the escrow passcode is empty".into()));
-    }
+    let escrow_url = session.escrow_proxy_url.clone().ok_or_else(|| {
+        Error::Message(
+            "the session has no escrow URL; run `apw login --refresh` to re-read the \
+                 service map"
+                .into(),
+        )
+    })?;
 
     let (peer, trust, sponsor) = block_on(async {
         let identity = Anisette::new(&anisette_url).identity().await?;

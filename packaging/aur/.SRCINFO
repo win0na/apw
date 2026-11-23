@@ -1,6 +1,6 @@
 pkgbase = apw-cli
 	pkgdesc = Read Apple Passwords on Linux
-	pkgver = 0.3.0
+	pkgver = 0.4.0
 	pkgrel = 1
 	url = https://github.com/win0na/apw
 	arch = x86_64
@@ -11,12 +11,13 @@ pkgbase = apw-cli
 	makedepends = cmake
 	makedepends = perl
 	makedepends = dbus
+	makedepends = zig
 	depends = gcc-libs
 	depends = glibc
 	depends = dbus
 	conflicts = apw
 	provides = apw
-	source = apw-0.3.0.tar.gz::https://github.com/win0na/apw/archive/v0.3.0.tar.gz
-	sha256sums = 9a3c3e09e79f4e1bf2360cf8b5b4266b22083f5d1bb9d7b86be1ef393e70cb31
+	source = git+https://github.com/win0na/apw.git#tag=v0.4.0
+	sha256sums = SKIP
 
 pkgname = apw-cli

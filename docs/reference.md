@@ -1,178 +1,204 @@
 # Reference
 
-Commands, files, configuration, output, and limits.
+This page lists commands, files, environment variables, and output formats.
 
 ## Commands
 
-| Command | Does |
+Global options apply to every command:
+
+| Option | Effect |
 | --- | --- |
-| `apw login [--anisette-url URL] [--account EMAIL] [--refresh] [--join] [--no-join]` | Sign in. On the first run it joins the trust and syncs. `--refresh` re-reads the service URLs from the stored session. |
-| `apw join` | Join the trust again with a new peer. Spends one escrow attempt. |
-| `apw sync [--force] [--fixture PATH]` | Refresh the snapshot and push queued changes. |
-| `apw status` | Print account, counts, last sync, snapshot path, and size. |
-| `apw list [QUERY] [--personal] [--group UUID]` | List logins by name. |
-| `apw get QUERY [--username NAME] [--group UUID] [--personal] [--password-only]` | Print every match, including Wi-Fi networks. |
-| `apw wifi [QUERY]` | List saved Wi-Fi networks. |
-| `apw otp [QUERY]` | List current codes, or print the code for a query. |
-| `apw add login URL [--username NAME] [--title TEXT] [--notes TEXT] [--totp URI\|BASE32] [--password-stdin] [--generate] [--dry-run]` | Add a personal login and queue it. |
-| `apw add wifi SSID [--password-stdin] [--generate] [--dry-run]` | Add a Wi-Fi network and queue it. |
-| `apw add note TITLE [--body TEXT] [--body-stdin] [--dry-run]` | Add a note and queue it. |
-| `apw passkey import FILE [--dry-run]` | Import passkeys from a CXF 1.0 JSON export and queue one item per credential. |
-| `apw passkey export FILE [--force]` | Export the snapshot's passkeys as a CXF 1.0 JSON file, mode 0600. |
-| `apw notes [QUERY]` | List notes. |
-| `apw edit QUERY [--id UUID] [--title TEXT] [--notes TEXT] [--clear-notes] [--totp URI\|BASE32] [--clear-totp] [--password-stdin] [--generate] [--dry-run]` | Change a login, note or Wi-Fi network and queue the change. |
-| `apw rm QUERY [--id UUID] [--yes] [--dry-run]` | Move a login, note, Wi-Fi network or imported passkey to Recently Deleted and queue it. |
-| `apw trash [QUERY]` | List Recently Deleted entries from the last sync. |
-| `apw restore QUERY \| --id UUID [--dry-run]` | Move a Recently Deleted entry back, title, notes and password included. |
-| `apw pending` | List changes that have not been pushed. |
-| `apw resolve ID [--local] [--remote]` | Force or drop a blocked change. |
-| `apw group list` | List shared groups with owner and member count. |
-| `apw group show GROUP` | Show a group and the items in it. |
-| `apw group add GROUP [QUERY] [--id UUID] [--dry-run]` | Add a personal login to a group you own. |
-| `apw group remove GROUP ITEM [--yes] [--dry-run]` | Remove an item from a group you own. |
-| `apw install-units` | Write the systemd user service and timer. |
+| `--json` | Print JSON even on a terminal |
+| `--wide` | Do not truncate tables to the terminal width |
+| `--no-header` | Omit table headers |
 
-`--json`, `--wide`, and `--no-header` are global. Tables are the default on a terminal; a pipe or a redirect gets JSON. `--wide` and `--no-header` keep the text form through a pipe.
+### Account and sync
 
-`QUERY` matches a substring of the name, domain, URL, or username, case-insensitive. `get` prints all matches as labeled blocks, best match first; `--password-only` prints one password per line and always stays text. `otp` with a query prints only the code, so `$(apw otp github.com)` works.
+```sh
+apw login [--account EMAIL] [--anisette-url URL] [--refresh] [--join|--no-join]
+apw join
+apw sync [--force] [--fixture FILE]
+apw status
+apw install-units
+```
 
-`--id` selects one entry by record id instead of by query.
+`login` signs in and writes the first snapshot. `join` spends one escrow
+attempt. `sync` refreshes the snapshot and pushes queued writes. `status` prints
+the account, source, counts, last sync, and snapshot path.
 
-Hidden `probe` subcommands exist for development. They are not part of the stable interface.
+### Read
 
-## Writes
+```sh
+apw list [QUERY] [--personal] [--group GROUP]
+apw get QUERY [--username USER] [--group GROUP] [--personal] [--password-only]
+apw wifi [QUERY]
+apw notes [QUERY]
+apw otp [QUERY]
+apw pending
+apw trash [QUERY]
+```
 
-`add`, `edit`, and `rm` write the encrypted snapshot and append a pending operation. Nothing goes to Apple until `apw sync`, which pushes the queue after the read and before saving. The sync interval does not hold back a queued change.
+`get` accepts a login or Wi-Fi network. An exact match wins over a partial match.
+`--password-only` prints one password per match, with no JSON and no labels.
+`otp QUERY` prints one code. `otp` without a query lists every code. The TUI
+shows the remaining seconds next to the code.
 
-A queued change stores the base it was made from. On push, `apw` reads the server record, decrypts it, and compares it with that base. A record that still matches is written with a fresh item key under the same class key. A record that changed elsewhere blocks the operation: the change stays queued with its reason and id. `apw resolve <id> --local` pushes the local copy anyway; `--remote` drops it and keeps the server copy.
+### Write
 
-Writes cover personal logins, Wi-Fi networks, notes and passkeys imported from a CXF export. Cards are not supported; shared items can only be added to or removed from a group.
+```sh
+apw add login URL [--username USER] [--title NAME] [--notes TEXT]
+                  [--totp URI] [--password-stdin|--generate] [--dry-run]
+apw add wifi SSID [--password-stdin|--generate] [--dry-run]
+apw add note TITLE [--body TEXT|--body-stdin] [--dry-run]
+apw edit [QUERY] [--id ID] [--title NAME] [--notes TEXT|--clear-notes]
+         [--totp URI|--clear-totp] [--password-stdin|--generate] [--dry-run]
+apw rm [QUERY] [--id ID] --yes [--dry-run]
+apw restore [QUERY] [--id ID] [--dry-run]
+apw resolve ID [--local|--remote]
+```
 
-Logins and notes live in the Passwords zone; Wi-Fi networks live in the WiFi zone and are sealed under its classC key. A login is an item plus password-manager metadata. A note is an empty item plus metadata that carries the title and body. A Wi-Fi entry is one item with the network name in `acct` and `labl` and no metadata. A create or edit writes the item first and the metadata second; a delete removes the metadata first. If the second write fails, the next sync sees the first one already done and writes only the rest.
+`--generate` writes a 20-character password and prints it on stderr. `--password-stdin` reads one line. An empty
+`--title` clears the title. `rm` requires `--yes`; the item moves to Recently
+Deleted for 30 days.
 
-`apw passkey import` reads a CXF 1.0 document and takes every credential whose type is `passkey`; other credential types are counted and skipped. `apw passkey export` writes the snapshot's passkeys back to the same format, with the private key as PKCS#8 DER and the file mode set to 0600. The private key must be PKCS#8 DER for P-256, and the public point is derived from it. The item goes into the Passwords zone under the classC key: `alis` is the credential ID, `klbl` is the SHA-1 of the 65-byte public point, `atag` is CBOR holding the user handle, name and display name, and `v_Data` is the point followed by the private scalar. A passkey that carries a FIDO2 extension is refused rather than imported without it. A credential whose ID, or whose (rpId, user handle) pair, already exists is skipped, whether that record is live or in Recently Deleted.
+`resolve --local` clears a blocked pending operation and marks it forced.
+`resolve --remote` drops the operation without pushing it. A sync with queued
+work is allowed even inside the floor.
 
-`rm` re-saves the record with the `-recently-deleted` access group and a fresh modification date. Apple Passwords keeps it in Recently Deleted for 30 days. `apw trash` lists those entries and `apw restore` queues the inverse edit, stripping the marker and refreshing the modification date for the item and its metadata sidecar. A delete queued but not yet pushed is cancelled instead, so the record never leaves the account.
+### Groups
 
-A push that fails for a transient reason stays queued with a retry time: 30 seconds after the first failure, doubling to an hour. After five failures it blocks until `apw resolve`. The queue is capped at 200 operations or 16 MiB of stored payload; `add`, `edit` and `rm` refuse to enqueue past that.
+```sh
+apw group list
+apw group show GROUP
+apw group add GROUP [QUERY] [--id ID] [--dry-run]
+apw group remove GROUP ITEM --yes [--dry-run]
+```
 
-Passwords enter through `--password-stdin` (one line, trailing newline removed), `--generate` (20 characters, printed once), or a prompt that asks twice. There is no `--password` flag. A password edit appends the old value to Apple's password history.
+`GROUP` accepts a name from the last sync, a `group-` zone name, or a UUID.
+`group add` moves one personal login into the group and seals it with the group
+record key. `group remove` permanently removes a shared item; it does not use
+Recently Deleted.
 
-`--totp` accepts an `otpauth://` URI or a bare base32 secret. It is stored in the login's metadata the way Apple stores it: raw secret bytes, algorithm, digits, period, and the original URI when one was given. `--clear-totp` removes the key. A note's body is metadata `notes`; `apw edit` changes it with `--notes` or `--body-stdin`. A Wi-Fi edit accepts only a password, because the SSID is the join key.
+### Passkeys
 
-Changing a site or username is refused, because the item and its metadata join on both. Delete the entry and add a new login instead.
+```sh
+apw passkey import FILE [--dry-run]
+apw passkey export FILE [--force]
+```
 
-Groups are read, and their items can be added and removed. `apw` cannot create or delete a group: Apple Passwords renders groups from a local mirror kept by the keychain-sharing daemon, and a group written straight to CloudKit never enters that mirror. Create the group on an Apple device first.
+`import` reads a Credential Exchange Format 1.0 JSON file. `export` writes one.
+Export refuses to overwrite without `--force`. Passkey import is local and queues
+creates; export reads the snapshot only.
 
 ## Files
 
 | Path | Contents |
 | --- | --- |
-| `$XDG_CONFIG_HOME/apw/config.toml` | Anisette URL, account, KDF salt |
+| `$XDG_CONFIG_HOME/apw/config.toml` | Anisette URL, account, sync floor, interface preferences |
+| `$XDG_CONFIG_HOME/apw/sync.env` | Optional environment for the systemd timer, mode 0600 |
 | `$XDG_DATA_HOME/apw/snapshot.bin` | Encrypted snapshot |
-| `$XDG_DATA_HOME/apw/snapshot.bin.prev` | Copy of the snapshot before the last replace |
-| `$XDG_DATA_HOME/apw/snapshot.lock` | Advisory lock held by write commands |
-| `$XDG_STATE_HOME/apw/state.json` | Last sync, source, counts, failures |
-| `$XDG_CONFIG_HOME/systemd/user/apw-sync.{service,timer}` | Timer units |
+| `$XDG_DATA_HOME/apw/snapshot.lock` | Per-operation lock file |
+| `$XDG_STATE_HOME/apw/state.json` | Last sync, source, counts, failures, retry time |
+| `$XDG_CONFIG_HOME/apw/config.lock` | Config read-modify-write lock |
 
-Defaults are `~/.config/apw`, `~/.local/share/apw`, and `~/.local/state/apw`.
+The snapshot is written with a mode 0600 temporary file and renamed into place.
 
 ## Configuration
 
 ```toml
 anisette_url = "http://127.0.0.1:6969"
 account = "you@example.com"
-kdf_salt = "..."          # written on the first passphrase key derivation
+kdf_salt = "..."       # written by apw; leave it alone
 
 [sync]
 min_interval_seconds = 300
+max_backoff_seconds = 21600
+
+[tui]
+last_category = "logins"
+split = true
+show_wordmark = true
 ```
 
-`kdf_salt` is the base64 salt for the Argon2id passphrase key. Leave it alone. Losing it makes a passphrase snapshot unreadable; changing it does the same.
+`[tui].last_category` accepts `logins`, `notes`, `wifi`, `passkeys`, `groups`,
+`trash`, or `pending`. `split = true` requests the list/detail split on screens
+wide enough for it; `split = false` requests the stacked layout. `show_wordmark =
+false` hides the dashboard wordmark. Unknown keys are ignored, so an older
+binary can read a newer file.
 
 ## Environment
 
-| Variable | Effect |
+| Variable | Use |
 | --- | --- |
-| `APW_ANISETTE_URL` | Overrides `anisette_url`. |
-| `APW_PASSPHRASE` | Uses the Argon2id key instead of Secret Service. Also the non-interactive passphrase input. |
-| `APW_ESCROW_PASSCODE` | Escrow passcode for a non-interactive `login` or `join`. |
-| `APW_PASSWORD` | Apple ID password for a non-interactive `login`. |
-| `APW_2FA_CODE` | Two-factor code for a non-interactive `login`. |
-| `APW_ALLOW_PARTIAL` | Set to `1` to write a snapshot after a partial decrypt. |
-| `APW_SKIP_ESCROW_BUDGET` | Set to `1` to join when the escrow attempt count cannot be read. |
-| `APW_FIXTURE` | Fixture path when `--fixture` is absent. |
-| `APW_CONFIG_DIR` | Replaces `$XDG_CONFIG_HOME/apw`. |
-| `APW_DATA_DIR` | Replaces `$XDG_DATA_HOME/apw`. |
-| `APW_STATE_DIR` | Replaces `$XDG_STATE_HOME/apw`. |
-| `APW_DEBUG` | Prints protocol and sync diagnostics to stderr. Never prints secrets. |
+| `APW_ANISETTE_URL` | Anisette server URL |
+| `APW_PASSPHRASE` | Derive the snapshot key from this passphrase |
+| `APW_PASSWORD` | Apple ID password for `login` |
+| `APW_2FA_CODE` | Trusted-device code |
+| `APW_ESCROW_PASSCODE` | Escrow passcode for `join` |
+| `APW_FIXTURE` | Fixture file for `sync` |
+| `APW_CONFIG_DIR` | Override the config directory |
+| `APW_DATA_DIR` | Override the data directory |
+| `APW_STATE_DIR` | Override the state directory |
+| `APW_DEBUG` | Print PET source diagnostics to stderr |
 
-The three directory variables exist for tests and for running from a removable volume.
+Explicit flags win over environment variables.
 
 ## JSON output
 
-Every command prints one object. Lists put an array in `data`; single results put an object:
+Success:
 
 ```json
-{"status":0,"data":[{"id":"login-example","name":"Example","username":"alice","domain":"example.com","url":"https://example.com","sites":["example.com"]}]}
+{"status":0,"data":{}}
 ```
 
-Failure goes to stderr, and the process exits with the same status:
+Failure:
 
 ```json
-{"status":3,"error":{"code":"not_found","message":"no entry matches example.org"}}
+{"status":2,"error":{"code":"usage","message":"a note title is required"}}
 ```
 
-| Status | Meaning |
+`data` is an object for status, add, edit, delete, and restore. Query commands
+return an array, including one match. Error codes are
+`usage`, `not_found`, `auth`, `network`, `locked`, `cloudkit`, and `error`.
+
+Exit codes:
+
+| Code | Meaning |
 | --- | --- |
 | 0 | Success |
-| 1 | Generic error |
-| 2 | Invalid parameter |
-| 3 | No results |
-| 4 | Not signed in, or the session expired |
-| 5 | Network or Apple service failure |
-| 6 | Locked: wrong snapshot key, or an undecryptable item |
+| 1 | General failure |
+| 2 | Invalid arguments |
+| 3 | No matching record |
+| 4 | Authentication required |
+| 5 | Network failure |
+| 6 | Snapshot locked or cannot decrypt |
 
-`error.code` is one of `usage`, `not_found`, `auth`, `network`, `locked`, or `error`.
-
-`list` and `wifi` results carry `id`, `name`, `url`, `username`, `domain`, `sites`, and `title`, `notes`, or `group` when present. `name` is the title Apple Passwords stores for the entry, or an empty string when Apple stored none; a host is never used as a name. `url` is the stored site URL, and `domain` is its host. `get` adds `password`. `otp` results carry `id`, `name`, `username`, `domain`, `source`, and `code`. `sync` adds `partial`.
+When stdout is a pipe, JSON is the default. `--wide`, `--no-header`,
+`--password-only`, a bare `apw otp QUERY`, and a terminal keep text output.
 
 ## Snapshot format
 
-The snapshot is one AES-256-GCM message:
+The snapshot starts with the ASCII header `APWSNAP` and a version byte. The body
+is AES-256-GCM over the serialized vault. The key is 32 random bytes, held in
+Secret Service or derived from a passphrase with Argon2id at 64 MiB, three
+iterations, and one lane.
 
-| Field | Size | Contents |
-| --- | --- | --- |
-| Magic | 8 bytes | `APWSNAP\0` |
-| Version | 1 byte | `1` |
-| Nonce | 12 bytes | Random per write |
-| Ciphertext | rest | JSON vault, authenticated with the header as AAD |
-
-Writes use a unique temporary file, fsync, and rename, with mode `0600`. A reader sees the old snapshot or the new one, never a partial file. Write commands also take an advisory lock on `snapshot.lock`, so a manual sync and the timer do not interleave.
-
-## Vault model
-
-| Field | Contents |
-| --- | --- |
-| `account` | Apple ID |
-| `generated_at` | Snapshot time, RFC 3339 |
-| `source` | `fixture` or `icloud` |
-| `entries` | Logins, notes, passkey metadata, Wi-Fi networks |
-| `groups` | Shared groups |
-
-An entry has `id`, `kind` (`login`, `note`, `passkey`, `card`, `wifi`, `other`), `title`, `url`, `sites`, `username`, `password`, `notes`, `totp`, `passkey`, `group`, and `updated_at`.
-
-A TOTP seed has `secret` (base32), `algorithm` (`SHA1`, `SHA256`, `SHA512`), `digits` (default 6), `period` (default 30), `issuer`, and `account_name`.
+The vault stores entries, groups, session tokens, the peer, Recently Deleted,
+pending operations, sync keys, and group operations. Entries keep the original
+CloudKit plist payload beside the parsed fields so a write can preserve unknown
+Apple keys.
 
 ## Limits
 
 | Limit | Value |
 | --- | --- |
+| Pending operations | 200 |
+| Pending payload | 16 MiB |
 | Sync floor | 300 seconds |
-| Escrow attempts | About 10, then the recovery record is destroyed |
-| Snapshot key | 32 bytes |
-| Argon2id | 64 MiB, 3 iterations, 1 lane |
-| HTTP connect timeout | 10 to 15 seconds |
-| HTTP request timeout | 30 to 120 seconds |
-
-Apple's iCloud terms prohibit automated access. `apw` stays polite: paced syncs, no automatic retries, one escrow attempt per user action. The contract risk is yours.
+| Escrow attempts | About 10 |
+| Recently Deleted retention | 30 days |
+| Password generator | 20 characters |
+| Generated password alphabet | `A-Z a-z 0-9 !@#$%^&*-_=+` |
+| TOTP digits | 6, 7, or 8 |
+| TOTP default period | 30 seconds |
+| TOTP algorithms | SHA-1, SHA-256, SHA-512 |

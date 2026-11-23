@@ -27,6 +27,8 @@ pub fn escrow(paths: &Paths, config: &mut Config, json: bool) -> Result<()> {
         .ok_or_else(|| Error::Message("the session has no escrow URL".into()))?;
 
     let records = block_on(async {
+        // The escrow PET is minted by the Windows chain, so the request must
+        // carry that machine's identity.
         let identity = Anisette::new(&url).identity().await?;
         let escrow = Escrow::new(
             &escrow_url,

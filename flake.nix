@@ -2,8 +2,14 @@
   description = "Read Apple Passwords on Linux";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  # Flake sources drop git submodules, so fetch the pinned OpenTUI tree and
+  # place it back before Cargo builds the native library.
+  inputs.opentui = {
+    url = "git+https://github.com/anomalyco/opentui?rev=4ea9c4035286e6d6eb75784ed21c52a9375c7035";
+    flake = false;
+  };
 
-  outputs = { self, nixpkgs }:
+  outputs = { self, nixpkgs, opentui }:
     let
       systems = [ "x86_64-linux" "aarch64-linux" ];
       eachSystem = f:
@@ -16,14 +22,19 @@
         pname = "apw";
         inherit version;
 
-        src = ./.;
+        src = pkgs.runCommandLocal "apw-src-${version}" { } ''
+          cp -r ${./.} $out
+          chmod -R u+w $out
+          rm -rf $out/opentui
+          cp -r ${opentui} $out/opentui
+        '';
 
         cargoLock.lockFile = ./Cargo.lock;
 
         # nixpkgs asks aws-lc-sys to link a system AWS-LC that this closure
         # does not provide. Build it from source instead.
         AWS_LC_SYS_USE_SYSTEM = "0";
-        nativeBuildInputs = with pkgs; [ cmake perl pkg-config ];
+        nativeBuildInputs = with pkgs; [ cmake perl pkg-config zig ];
         buildInputs = with pkgs; [ dbus ];
         preBuild = ''
           export AWS_LC_SYS_USE_SYSTEM=0
@@ -66,6 +77,7 @@
             perl
             pkg-config
             dbus
+            zig
           ];
         };
       });

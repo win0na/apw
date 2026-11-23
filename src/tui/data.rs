@@ -14,19 +14,29 @@ pub struct VaultView {
     pub state: State,
     pub config: Config,
     pub paths: Paths,
+    pub has_snapshot: bool,
 }
 
 impl VaultView {
     /// Load the snapshot and the state file before the terminal is taken over.
     pub fn load(paths: &Paths) -> Result<Self> {
         let mut config = Config::load(paths)?;
-        let vault = vault::load(paths, &mut config)?;
+        let has_snapshot = paths.snapshot_file.is_file();
+        let vault = if has_snapshot {
+            vault::load(paths, &mut config)?
+        } else {
+            Vault {
+                source: Source::Icloud,
+                ..Vault::default()
+            }
+        };
         let state = load_state(paths)?;
         Ok(Self {
             vault,
             state,
             config,
             paths: paths.clone(),
+            has_snapshot,
         })
     }
 
@@ -35,6 +45,7 @@ impl VaultView {
         self.config = Config::load(&self.paths)?;
         self.vault = vault::load(&self.paths, &mut self.config)?;
         self.state = load_state(&self.paths)?;
+        self.has_snapshot = true;
         Ok(())
     }
 
@@ -51,7 +62,23 @@ impl VaultView {
     }
 
     pub fn dashboard(&self, now: DateTime<Utc>) -> Dashboard {
+        let phase = if !self.has_snapshot {
+            DashboardPhase::NoSnapshot
+        } else if self.vault.session.is_none() {
+            DashboardPhase::SignedOut
+        } else if self.vault.entries.is_empty() {
+            DashboardPhase::Empty
+        } else {
+            DashboardPhase::Ready
+        };
         let mut warnings = Vec::new();
+        if phase == DashboardPhase::NoSnapshot {
+            warnings.push("no local vault on disk; run login or sync".into());
+        } else if phase == DashboardPhase::SignedOut {
+            warnings.push("signed out; run login".into());
+        } else if phase == DashboardPhase::Empty {
+            warnings.push("vault is empty; run sync or add a login".into());
+        }
         if !self.vault.pending.is_empty() {
             warnings.push(format!(
                 "{} change{} waiting to sync",
@@ -67,13 +94,14 @@ impl VaultView {
             ));
         }
         match self.last_sync() {
-            None => warnings.push("never synced".into()),
+            None if phase != DashboardPhase::NoSnapshot => warnings.push("never synced".into()),
             Some(at) => {
                 let age = now.signed_duration_since(at);
                 if age.num_hours() >= 24 {
                     warnings.push(format!("snapshot is {}", relative(at, now)));
                 }
             }
+            None => {}
         }
         if self.vault.source == Source::Fixture {
             warnings.push("fixture data, not iCloud".into());
@@ -117,6 +145,7 @@ impl VaultView {
         }
 
         Dashboard {
+            phase,
             account: self.account().map(str::to_string),
             last_sync: self.last_sync(),
             counts: vec![
@@ -143,7 +172,16 @@ impl VaultView {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DashboardPhase {
+    NoSnapshot,
+    SignedOut,
+    Empty,
+    Ready,
+}
+
 pub struct Dashboard {
+    pub phase: DashboardPhase,
     pub account: Option<String>,
     pub last_sync: Option<DateTime<Utc>>,
     pub counts: Vec<(&'static str, usize)>,
@@ -184,6 +222,25 @@ impl Category {
             Category::Trash => "Trash",
             Category::Pending => "Pending",
         }
+    }
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Category::Logins => "logins",
+            Category::Notes => "notes",
+            Category::Wifi => "wifi",
+            Category::Passkeys => "passkeys",
+            Category::Groups => "groups",
+            Category::Trash => "trash",
+            Category::Pending => "pending",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        CATEGORIES
+            .iter()
+            .copied()
+            .find(|category| category.key() == key)
     }
 
     pub fn index(self) -> usize {
@@ -518,6 +575,18 @@ mod tests {
         }
     }
 
+    fn test_paths() -> crate::config::Paths {
+        let dir = tempfile::tempdir().unwrap().keep();
+        crate::config::Paths {
+            config_dir: dir.join("config"),
+            config_file: dir.join("config/config.toml"),
+            data_dir: dir.join("data"),
+            snapshot_file: dir.join("data/snapshot.bin"),
+            state_dir: dir.join("state"),
+            state_file: dir.join("state/state.json"),
+        }
+    }
+
     fn view() -> VaultView {
         VaultView {
             vault: Vault {
@@ -531,7 +600,8 @@ mod tests {
             },
             state: State::default(),
             config: Config::default(),
-            paths: crate::config::Paths::resolve().unwrap(),
+            paths: test_paths(),
+            has_snapshot: true,
         }
     }
 

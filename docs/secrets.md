@@ -1,67 +1,88 @@
 # Secrets
 
-`apw` keeps one secret: the key that opens the snapshot. Everything else lives inside it.
+This page describes what `apw` stores, how it protects the snapshot, and which
+secrets it handles.
 
 ## Snapshot key
 
-The snapshot is encrypted with a random 256-bit key. The key comes from one of two places:
+The snapshot uses AES-256-GCM with a 32-byte key. The key comes from one of two
+places:
 
-| Source | When | How |
-| --- | --- | --- |
-| Secret Service | A session bus and a provider are available | Entry `service=apw`, `account=snapshot-key`, with a keyutils cache |
-| Passphrase | No usable Secret Service, or `APW_PASSPHRASE` is set | Argon2id, 64 MiB, 3 iterations, 1 lane |
+- Secret Service on the session bus, stored under the `apw` service and the
+  `snapshot-key` account.
+- A passphrase, derived with Argon2id at 64 MiB, three iterations, and one lane.
+  The KDF salt is in `config.toml`; the derived key is cached for the process.
 
-On first write the key is created in Secret Service. A read never creates a key, so a missing entry cannot produce a key that fails to open an existing snapshot.
+`APW_PASSPHRASE` selects passphrase mode. Without it, `apw` uses Secret Service
+when available, then asks for a new passphrase on a first write or an existing
+passphrase on a read. The key cache lasts for one process, so each command that
+touches the snapshot resolves it again.
 
-The passphrase is not written to disk by `apw`. Its 16-byte salt is `kdf_salt` in `config.toml`, and the derived key exists only in memory. A timer that uses `APW_PASSPHRASE` reads the value from wherever you put it; `sync.env` is one option, and it protects nothing beyond file permissions.
-
-`APW_PASSPHRASE` forces the passphrase path. Without the variable and without a usable Secret Service, `apw` prompts on the terminal.
+The snapshot and the key are separate. Copying `snapshot.bin` to another machine
+without the key or the passphrase yields ciphertext.
 
 ## What the snapshot holds
 
-| Data | Why it is sensitive |
-| --- | --- |
-| Passwords, notes, TOTP secrets | The vault itself |
-| Passkey metadata | Which sites have passkeys, and under which account |
-| Session tokens | Access to the iCloud account until they expire |
-| Peer signing and encryption keys | Identity in the trust circle |
-| Shared group keys | Access to shared items |
+- Login passwords, usernames, sites, notes, and one-time-code secrets.
+- Wi-Fi passwords.
+- Secure note titles and bodies.
+- Passkey credential IDs, user handles, and private keys.
+- Session tokens for iCloud and CloudKit.
+- The Octagon peer keys and sponsor keys.
+- Pending operations, including their item payloads.
+- Recently Deleted items.
 
-Treat the snapshot as a password database. It is one file, and one key opens all of it.
+Everything except the passphrase and Secret Service entry is inside the encrypted
+snapshot. `state.json` holds counts, timestamps, the account, the source, and
+failure counters, but no item secrets.
+
+## Interface masking
+
+The interface masks passwords with bullets. Press `r` to reveal the selected
+password for 20 seconds. Moving the selection hides it again. Press `y` to copy
+the password or `o` to copy the current one-time code.
+
+`apw` does not write passwords, one-time codes, or passkey material to logs,
+command history, or error text. JSON output only includes a password when the
+command explicitly asks for it, such as `apw get --json` or `apw otp --json`.
 
 ## Escrow
 
-The device passcode or iCloud Security Code unlocks the keychain keys once, during `apw login` or `apw join`. `apw` does not store it, cache it, or send it anywhere except the escrow request. It is never used as the snapshot passphrase.
+The escrow passcode unlocks the Octagon recovery record. It is the device
+passcode or the iCloud Security Code. `apw` sends it to Apple, keeps it in memory
+for the join, and does not store it.
 
-Apple allows about ten attempts before the recovery record is destroyed. Each join makes one attempt. It does not retry on failure and does not loop. A wrong code ends the command.
+Each join spends one attempt. Apple allows about ten attempts before destroying
+the record. A failed join increments the failure count in `state.json` and
+automatic logins stop retrying until you run `apw join` again.
 
 ## Anisette
 
-The anisette server holds a device identity that Apple ties to the account. It does not see the Apple ID password or the keychain, but a hostile server can impersonate the device. Self-host it or use a host you trust.
+The anisette server holds a device identity that Apple associates with account
+requests. It can link requests from every client that uses the same identity.
+Run your own server, restrict who can reach it, and treat its data directory as
+sensitive.
 
 ## Threat model
 
-| Adversary | Protected | Why |
-| --- | --- | --- |
-| Disk theft, key in Secret Service | Yes | The snapshot is AES-256-GCM, and the key is in the login keyring, not the snapshot file. |
-| Disk theft, passphrase stored beside the snapshot | No | A `sync.env` or shell file with `APW_PASSPHRASE` gives the thief both halves. |
-| Another local user | Yes | Keyring entries are per user, and the snapshot and state files are mode `0600`. |
-| A process running as you | No | It can read the keyring and the snapshot. |
-| Root | No | It can read process memory and the keyring. |
-| Network, or Apple | No | Apple holds the account and the server-side data; TLS protects transit only. |
+`apw` protects the snapshot at rest and keeps secrets out of its own output. It
+does not protect against:
 
-Advanced Data Protection changes what Apple can read on its side. `apw` has not been tested against an ADP account.
+- A compromised user session that can read process memory or the unlocked
+  Secret Service entry.
+- A malicious anisette server.
+- Apple account compromise.
+- A modified binary.
+- A snapshot copied together with its key.
+
+The snapshot is local. `apw` does not run a daemon and does not listen on a
+socket.
 
 ## Recovery
 
-A lost key means a lost snapshot. Delete `snapshot.bin` and sign in again. Escrow attempts apply to the new login.
+If the snapshot cannot decrypt, the key changed or the file is damaged. Keep a
+copy of the key or the passphrase before changing passphrase mode.
 
-If an entry from an older release holds the wrong key, `apw` prompts for the snapshot passphrase and opens the file. A readable entry is never overwritten, because it may belong to another snapshot; clear the stale one once and the next passphrase unlock caches the derived key:
-
-```sh
-secret-tool clear service apw account snapshot-key
-```
-
-In Secret Service mode the key is not portable. Copying `snapshot.bin` to another machine does not make it readable. In passphrase mode, the snapshot moves with `APW_PASSPHRASE` and the same `kdf_salt`.
-
-There is no key rotation command. Re-running `apw login` writes a new snapshot but keeps the same snapshot key.
+If the escrow record is exhausted, sign in on an Apple device and reset the
+iCloud Security Code, then join again. If the snapshot is lost, run `apw login`
+and `apw sync` to rebuild it from iCloud.

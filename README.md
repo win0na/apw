@@ -1,139 +1,164 @@
-<h1>
-<picture>
-<source media="(prefers-color-scheme: dark)" srcset="./assets/icon/renders/icon-512-dark.png">
-<img alt="apw" src="./assets/icon/renders/icon-512.png" width="70" valign="middle">
-</picture>
-&nbsp;apw
-</h1>
+# apw
 
-`apw` reads and writes Apple Passwords on Linux. It is one Rust binary with an encrypted local snapshot: queries work offline, and edits wait for the next sync.
+Read Apple Passwords on Linux from an encrypted local snapshot.
 
-Apple has no Linux client and no public API for iCloud Keychain. `apw` signs in with an Apple ID, joins the device trust circle, decrypts keychain records through escrow, and stores them locally. Queries never touch the network. Writes change the snapshot first and go back through CloudKit on `sync`.
+`apw` signs in to your Apple ID, joins the keychain trust with your escrow
+passcode, and keeps a snapshot of logins, notes, Wi-Fi networks, passkeys, and
+groups on disk. Bare `apw` opens a terminal interface. Every subcommand keeps
+the command-line contract, so scripts and the systemd timer continue to work.
+
+## Features
+
+- **Terminal interface:** browse, search, add, edit, delete, restore, and sync
+  without leaving the terminal.
+- **Full vault view:** logins, secure notes, Wi-Fi networks, passkeys, groups,
+  Recently Deleted, and pending changes.
+- **Offline reads:** `apw get`, `apw list`, and `apw otp` answer from the
+  snapshot without a network call.
+- **Local-first writes:** changes are encrypted into the snapshot and queued,
+  then pushed by the next sync.
+- **Machine output:** JSON on a pipe, stable exit codes, and `--password-only`
+  for shell use.
+- **One binary:** the native OpenTUI library is linked into the executable.
 
 ## Requirements
 
-- Linux on x86_64 or aarch64 with glibc.
-- An Apple ID with two-factor authentication.
+- Linux on x86_64 or aarch64.
 - An anisette server. See [Install](docs/install.md#set-up-anisette).
-- A Secret Service provider (GNOME Keyring, KWallet) or `APW_PASSPHRASE`.
+- Rust 1.88 or newer and Zig 0.17.1 to build from source.
+- `cmake`, `perl`, `libdbus-1-dev`, and `pkg-config` to build with the keyring backend.
+- An Apple ID with iCloud Passwords enabled.
 
-Rust 1.88 or later, `cmake`, `perl`, and `libdbus-1` are needed only to build. On Debian and Ubuntu install `libdbus-1-dev`; on Arch install `dbus`.
+The built binary does not need Rust, Zig, or the OpenTUI sources at runtime.
 
 ## Install
 
+Build from source, or use the packaging scripts in `packaging/`.
+
+To build from source:
+
 ```sh
-cargo install --git https://github.com/win0na/apw
+git clone --recurse-submodules https://github.com/win0na/apw
+cd apw
+cargo build --release --locked
+./target/release/apw --version
 ```
 
-The binary lands in `~/.cargo/bin/apw`. [Install](docs/install.md) covers the anisette server, packages, and a build from a checkout.
+`cargo install --git https://github.com/win0na/apw --locked` also fetches the
+OpenTUI submodule. Zig must be on `PATH`; the build uses it once for the native
+library and reuses the result.
 
-## First run
+Install the binary somewhere on `PATH`:
 
 ```sh
-apw login --account you@example.com
+install -m 0755 target/release/apw ~/.local/bin/apw
 ```
 
-`apw login` asks for the Apple ID password, a two-factor code, and the escrow passcode. It joins the trust and writes the first snapshot, so one command leaves you with a usable vault.
+Package-specific steps are in [Install](docs/install.md).
 
-The snapshot key goes to Secret Service on first write. Without it, `apw` asks for a new apw passphrase. The escrow passcode is the device passcode or iCloud Security Code; it is used once, never stored, and never reused as the snapshot passphrase.
+## Sign in
 
-Escrow allows about ten attempts before Apple destroys the recovery record. Read [Troubleshooting](docs/troubleshooting.md) before retrying a failed sign-in.
-
-## Query
+Start the interface and choose `login` from the command palette, or run:
 
 ```sh
+apw login
 apw sync
-apw list example.com
-apw get example.com
-apw wifi
-apw otp example.com
 ```
 
-`apw sync` decrypts iCloud records into the snapshot. `list`, `get`, `wifi`, and `otp` never touch the network.
+The first sign-in may ask for a two-factor code and an escrow passcode. The
+escrow passcode spends one of ten attempts. A successful join makes the
+keychain readable; later sign-ins usually need only the password.
 
-`--json` works on every command. A pipe or redirect gets JSON too; `--wide` and `--no-header` keep the table form.
+Bare `apw` requires a terminal. When stdin or stdout is not a terminal, apw uses
+the command line instead.
 
-```json
-{"status":0,"data":[{"id":"login-example","name":"Example","username":"alice","domain":"example.com","url":"https://example.com","sites":["example.com"],"password":"hunter2"}]}
-```
+## Use the interface
 
-## Write
+Run `apw` with no arguments.
 
-```sh
-apw add login https://example.com --username alice --password-stdin
-apw add login https://example.com --username alice --totp 'otpauth://totp/...' --password-stdin
-apw add wifi "Home" --password-stdin
-apw add note "Recovery codes" --body "codes go here"
-apw notes
-apw edit example.com --title "Example"
-apw rm example.com --yes
-apw trash
-apw restore example.com
-apw pending
-```
+- Type to filter the current list.
+- Type `/` to open the command palette.
+- Press `enter` to open the selected item.
+- Press `tab` to move between panes.
+- Press `esc` to go back.
+- Press `ctrl+z` to suspend and `fg` to return.
+- Press `ctrl+c` to quit.
 
-`add`, `edit`, and `rm` change the snapshot and queue the change. `apw sync` pushes queued changes after it reads, so an edit made offline goes out on the next sync. `apw pending` lists the queue, including when a failed push will be retried. A transient failure backs off from 30 seconds up to an hour; five failures block the change until you resolve it. The queue holds at most 200 changes or 16 MiB.
+The item pane shows the fields and the actions available for that kind of item.
+Common keys:
 
-A password comes from `--password-stdin`, from `--generate`, or from a prompt that asks twice. There is no `--password` flag, so a password does not land in shell history. `--totp` takes an `otpauth://` URI or a base32 secret, and `apw edit` also takes `--clear-totp`. `--dry-run` prints the queued change without writing it.
-
-If another device changed the same entry, the push blocks instead of overwriting it and prints the pending id. `apw resolve <id> --local` pushes the local version; `--remote` drops it and takes the server copy.
-
-Writes cover personal logins, Wi-Fi networks, notes, passkeys imported from a CXF export, and the contents of a group you own. Cards are not supported, and shared items outside a group stay read-only.
-
-Groups are read, and a login can be added to or removed from an existing group: `apw group list`, `apw group show <group>`, `apw group add <group> <login>`, `apw group remove <group> <item> --yes`. `group show` prints every item the last sync placed in the group, notes and passkeys included, and works offline. Creating or deleting a group is not supported. Apple Passwords lists only groups its local keychain-sharing daemon registered, and a group written straight to CloudKit never enters that list, so `apw` cannot make one any device would show.
-
-A login and a note are two records, the item and its metadata; a Wi-Fi entry is one. The item goes first on create and edit, and last on delete, so an interrupted write leaves a readable entry rather than an orphan.
-
-`apw passkey import` takes a CXF 1.0 JSON file and queues one item per passkey credential. The file has to come from a manager that exports CXF; Passwords.app's own export cannot be handed to `apw`, because Apple only offers it to another app's import extension. Each item carries the credential ID in `alis`, the public point's SHA-1 in `klbl`, and the private key and user entity in `v_Data` and `atag`, which is what Passwords.app reads. Credentials already in the account are skipped, including ones in Recently Deleted, and a passkey that carries a FIDO2 extension (`hmacCredentials`, `credBlob`, `largeBlob`, `payments`) is refused instead of imported without it. `apw passkey export` is the reverse: it writes the passkeys already in the snapshot as a CXF 1.0 file that another password manager can import.
-
-`rm` moves the entry to Recently Deleted, where Apple Passwords keeps it for 30 days before purging it. The record is re-saved with the deleted marker rather than removed. `apw trash` lists what is there, and `apw restore` puts an entry back, title, notes and password included. Restoring uses the copy the last sync recorded, so an entry trashed on another device appears after the next sync. Changing a login's site or username, or a network's SSID, is not supported in place; delete the entry and add it again.
-
-## Timer
-
-```sh
-apw install-units
-systemctl --user enable --now apw-sync.timer
-```
-
-The timer runs `apw sync` hourly. It also pushes queued edits. Sync refuses to run more often than every five minutes unless you pass `--force`, or a queued change is waiting.
-
-## Upgrade or uninstall
-
-```sh
-cargo install --git https://github.com/win0na/apw --force
-```
-
-To remove `apw`, stop the timer before the binary:
-
-```sh
-systemctl --user disable --now apw-sync.timer
-rm -f ~/.config/systemd/user/apw-sync.service ~/.config/systemd/user/apw-sync.timer
-systemctl --user daemon-reload
-cargo uninstall apw
-rm -rf ~/.config/apw ~/.local/share/apw ~/.local/state/apw
-secret-tool clear service apw account snapshot-key
-```
-
-`secret-tool` is part of `libsecret`. Skip the last line if you never used Secret Service.
-
-## Status
-
-| Area | State |
+| Key | Action |
 | --- | --- |
-| CLI, snapshot, `list`, `get`, `wifi`, `otp`, `status`, `install-units` | Works; 137 unit and 25 integration tests |
-| `login`, `join`, `sync` against iCloud | Works; 383 items, 370 logins, 33 passkeys, 47 codes |
-| Shared groups | Read and list; add or remove a login in an owned group. Creating a group is not supported |
-| Passkeys, cards | Passkeys import from and export to a CXF file with `apw passkey import` and `apw passkey export`; cards are not supported |
-| Packaging | Tarball, `.deb`, AUR recipe, Nix flake |
+| `y` | Copy the password |
+| `o` | Copy the current one-time code |
+| `r` | Reveal the password for 20 seconds |
+| `e` | Edit the item |
+| `t` | Move the item to Recently Deleted |
+| `s` | Restore a trashed item |
+| `g` | Add a login to a group, or leave its group |
+| `u` | Undo the last move to Recently Deleted |
+| `l` / `v` | Keep the local change or take the remote version of a pending op |
 
-There is no `save` command. Apple's iCloud terms prohibit automated access; `apw` stays polite with paced syncs, no automatic retries, and one escrow attempt per user action. The contract risk is yours.
+Slash commands mirror the CLI names: `/list`, `/notes`, `/wifi`, `/passkeys`,
+`/groups`, `/trash`, `/pending`, `/add`, `/add wifi`, `/add note`, `/edit`,
+`/rm`, `/restore`, `/sync`, `/sync --force`, `/resolve --local`,
+`/resolve --remote`, `/passkey import`, `/passkey export`, `/otp`, `/group`,
+`/login`,
+`/login --refresh`, `/join`, `/status`, `/help`, and `/quit`.
 
-The Deno implementation for macOS stays under `legacy/` as reference. It is not built.
+The interface reads the snapshot on launch. If another process changes the
+snapshot, the interface reloads it within a few seconds.
+
+## Use the CLI
+
+The CLI keeps the existing arguments, output, and exit codes.
+
+```sh
+apw list github
+apw get github
+apw get github --password-only
+apw otp github
+apw add login github.com --username you --generate
+apw sync --force
+```
+
+JSON is the default when stdout is a pipe, unless `--wide`, `--no-header`,
+`--password-only`, or a bare `apw otp QUERY` asks for text:
+
+```sh
+apw get github --json
+```
+
+Human-readable tables are used on a terminal. JSON errors use
+`{"status":1,"error":{"code":"...","message":"..."}}`.
+
+## Configuration
+
+Configuration lives in `$XDG_CONFIG_HOME/apw/config.toml` and state in
+`$XDG_STATE_HOME/apw/state.json`. The snapshot and its lock live in
+`$XDG_DATA_HOME/apw/`.
+
+Environment variables override the anisette URL, account, directories, and the
+snapshot passphrase. See [Reference](docs/reference.md).
+
+The `[tui]` table remembers interface preferences:
+
+```toml
+[tui]
+last_category = "logins"
+split = true
+show_wordmark = true
+```
 
 ## Docs
 
-[Install](docs/install.md) · [Operate](docs/operate.md) · [Reference](docs/reference.md) · [Secrets](docs/secrets.md) · [Troubleshooting](docs/troubleshooting.md) · [Design](docs/design.md) · [Icon](docs/icon.md) · [Contributing](CONTRIBUTING.md)
+- [Install](docs/install.md)
+- [Operate](docs/operate.md)
+- [Reference](docs/reference.md)
+- [Secrets](docs/secrets.md)
+- [Troubleshooting](docs/troubleshooting.md)
+- [Design](docs/design.md)
 
 ## License
 
-GPL-3.0-only. See `LICENSE`.
+GPL-3.0-only.

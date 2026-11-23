@@ -63,6 +63,35 @@ impl Peer {
     }
 }
 
+/// The first integer stored under a key that names the attempt budget, at the
+/// top level or one dictionary down.
+fn remaining_attempts(dict: &plist::Dictionary) -> Option<i64> {
+    fn lookup(dict: &plist::Dictionary) -> Option<i64> {
+        for (key, value) in dict {
+            let lower = key.to_lowercase();
+            let names_budget = lower.contains("remaining")
+                || lower.contains("attempts")
+                || lower.contains("budget");
+            if names_budget {
+                if let Some(number) = value.as_signed_integer() {
+                    return Some(number);
+                }
+                if let Some(text) = value.as_string() {
+                    if let Ok(number) = text.parse::<i64>() {
+                        return Some(number);
+                    }
+                }
+            }
+        }
+        None
+    }
+    lookup(dict).or_else(|| {
+        dict.values()
+            .filter_map(plist::Value::as_dictionary)
+            .find_map(lookup)
+    })
+}
+
 /// Read the trust changes and the restore point.
 pub async fn fetch_changes(gateway: &Gateway) -> Result<Trust> {
     let request = Writer::new();
@@ -118,26 +147,24 @@ pub async fn join(
         }
     };
     {
+        // Apple has moved the field between record labels and nesting depths,
+        // so read every record for anything that counts remaining attempts.
         let mut budget: Option<i64> = None;
         for (record_label, metadata) in &records {
-            if record_label != label {
-                continue;
-            }
             let Some(dict) = metadata.as_dictionary() else {
+                if std::env::var_os("APW_DEBUG").is_some() {
+                    eprintln!("escrow record {record_label}: not a dictionary");
+                }
                 continue;
             };
             if std::env::var_os("APW_DEBUG").is_some() {
-                eprintln!("escrow metadata: {:?}", dict.keys().collect::<Vec<_>>());
+                eprintln!(
+                    "escrow record {record_label}: {:?}",
+                    dict.keys().collect::<Vec<_>>()
+                );
             }
-            if let Some(remaining) = dict
-                .iter()
-                .find(|(key, _)| key.to_lowercase().contains("remaining"))
-                .and_then(|(_, value)| match value {
-                    plist::Value::Integer(number) => number.as_signed(),
-                    _ => None,
-                })
-            {
-                budget = Some(remaining);
+            if budget.is_none() {
+                budget = remaining_attempts(dict);
             }
         }
         match budget {
@@ -151,17 +178,9 @@ pub async fn join(
                     eprintln!("escrow attempts remaining: {remaining}");
                 }
             }
-            None => {
-                if skip_escrow_budget() {
-                    eprintln!(
-                        "escrow budget unavailable; continuing because APW_SKIP_ESCROW_BUDGET=1"
-                    );
-                } else {
-                    return Err(Error::Message(
-                        "cannot read the escrow attempt budget; refusing to recover (set APW_SKIP_ESCROW_BUDGET=1 to join anyway)".into(),
-                    ));
-                }
-            }
+            None => eprintln!(
+                "escrow attempts remaining: not reported by Apple; continuing (this spends one)"
+            ),
         }
     }
 
@@ -385,5 +404,25 @@ mod tests {
         assert_eq!(trust.peers[0].stable_clock, 4);
         assert_eq!(trust.peers[0].dynamic_clock, 7);
         assert_eq!(trust.peers[0].included, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn the_budget_is_read_from_whichever_key_apple_uses() {
+        let mut flat = plist::Dictionary::new();
+        flat.insert("remainingAttempts".into(), plist::Value::Integer(7.into()));
+        assert_eq!(remaining_attempts(&flat), Some(7));
+
+        let mut nested_inner = plist::Dictionary::new();
+        nested_inner.insert("attemptsRemaining".into(), plist::Value::String("4".into()));
+        let mut nested = plist::Dictionary::new();
+        nested.insert(
+            "escrowRecord".into(),
+            plist::Value::Dictionary(nested_inner),
+        );
+        assert_eq!(remaining_attempts(&nested), Some(4));
+
+        let mut unrelated = plist::Dictionary::new();
+        unrelated.insert("label".into(), plist::Value::String("x".into()));
+        assert_eq!(remaining_attempts(&unrelated), None);
     }
 }

@@ -32,6 +32,308 @@ const GENERATED_CHARSET: &[u8] =
 pub(crate) const MAX_PENDING_OPS: usize = 200;
 pub(crate) const MAX_PENDING_BYTES: usize = 16 * 1024 * 1024;
 
+/// An add prepared from explicit values, before it touches the vault.
+///
+/// The terminal commands and the TUI both build one of these, show what it
+/// would create, then call [`commit_add`].
+pub struct PendingAdd {
+    pub entry: Entry,
+    pub op: PendingOp,
+}
+
+/// A vault add that has been saved and queued.
+#[derive(Debug, Clone)]
+pub struct Added {
+    pub id: String,
+    pub name: String,
+    pub label: String,
+    pub pending_id: String,
+}
+
+/// Fields an edit may change. `None` leaves a field alone; `Some(None)`
+/// clears it; `Some(Some(..))` sets it.
+#[derive(Default)]
+pub struct EditRequest {
+    pub title: Option<Option<String>>,
+    pub notes: Option<Option<String>>,
+    pub password: Option<String>,
+    pub totp: Option<Option<TotpSpec>>,
+}
+
+/// An edit prepared against the current snapshot, before it is saved.
+pub struct PendingEdit {
+    pub entry_id: String,
+    pub name: String,
+    pub label: String,
+    pub op: PendingOp,
+    pub note: bool,
+    pub title: Option<String>,
+    pub notes: Option<String>,
+    pub password: Option<String>,
+    pub totp: Option<crate::model::Totp>,
+    pub changed: bool,
+}
+
+/// An edit that has been saved and queued.
+#[derive(Debug, Clone)]
+pub struct Edited {
+    pub id: String,
+    pub name: String,
+    pub label: String,
+    pub pending_id: String,
+    pub changed: bool,
+}
+
+/// A delete prepared against the current snapshot.
+pub struct PendingRemove {
+    pub id: String,
+    pub name: String,
+    pub label: String,
+    pub op: PendingOp,
+}
+
+/// A delete that has been saved and queued.
+#[derive(Debug, Clone)]
+pub struct Removed {
+    pub id: String,
+    pub name: String,
+    pub label: String,
+    pub pending_id: String,
+}
+
+/// A restore that has been saved and queued.
+#[derive(Debug, Clone)]
+pub struct Restored {
+    pub id: String,
+    pub name: String,
+    pub username: String,
+    pub label: String,
+    pub pending_id: Option<String>,
+    pub cancelled: bool,
+}
+
+/// Build a login item and its queued create from explicit values.
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_login(
+    url: &str,
+    username: &str,
+    title: Option<&str>,
+    notes: Option<&str>,
+    totp_spec: Option<&TotpSpec>,
+    password: &str,
+) -> Result<PendingAdd> {
+    let (url, host) = normalize_url(url)?;
+    let login = new_login_plist(&host, username, password.as_bytes());
+    let login_bytes = plist_bytes(&login)?;
+
+    let mut metadata = new_metadata_dict();
+    // Apple writes an empty `s_as` array into every metadata record it creates.
+    metadata.insert("s_as".into(), Value::Array(Vec::new()));
+    if let Some(title) = title {
+        set_metadata_text(&mut metadata, "title", title);
+    }
+    if let Some(notes) = notes {
+        set_metadata_text(&mut metadata, "notes", notes);
+    }
+    if let Some(spec) = totp_spec {
+        set_metadata_totp(&mut metadata, spec, Utc::now());
+    }
+    // The outer sidecar item CloudKit receives carries the metadata dictionary
+    // in `v_Data`; `metadata_bytes` is the dictionary alone.
+    let sidecar_write = encode(&plist_bytes(&new_metadata_plist(
+        &host, username, &metadata,
+    ))?);
+    let metadata_bytes = plist_bytes(&Value::Dictionary(metadata))?;
+
+    let id = uuid();
+    let sidecar = uuid();
+    let login_b64 = encode(&login_bytes);
+    let metadata_b64 = encode(&metadata_bytes);
+    let entry = Entry {
+        id: id.clone(),
+        kind: EntryKind::Login,
+        agrp: Some("com.apple.cfnetwork".into()),
+        title: title.map(str::to_string),
+        url: Some(url),
+        sites: vec![host],
+        username: Some(username.to_string()),
+        password: Some(password.to_string()),
+        notes: notes.map(str::to_string),
+        totp: totp_spec.map(TotpSpec::to_totp),
+        record: Some(RecordMeta {
+            zone: "Passwords".into(),
+            item_type: "item".into(),
+            plist: Some(login_b64.clone()),
+            sidecar_name: Some(sidecar.clone()),
+            sidecar_type: Some("item".into()),
+            metadata: Some(metadata_b64.clone()),
+            ..RecordMeta::default()
+        }),
+        ..Entry::default()
+    };
+    let op = PendingOp {
+        id: uuid(),
+        kind: OpKind::Create,
+        entry_kind: EntryKind::Login,
+        zone: "Passwords".into(),
+        owner: None,
+        item_name: id,
+        item_type: "item".into(),
+        item_base: None,
+        item_new: Some(login_b64),
+        item_etag: None,
+        item_dirty: true,
+        sidecar_name: Some(sidecar),
+        sidecar_type: Some("item".into()),
+        sidecar_base: None,
+        sidecar_new: Some(metadata_b64),
+        sidecar_write: Some(sidecar_write),
+        sidecar_etag: None,
+        sidecar_dirty: true,
+        blocked: None,
+        attempts: 0,
+        next_attempt: None,
+        force: false,
+        restore: false,
+        label: entry_label(&entry),
+    };
+    Ok(PendingAdd { entry, op })
+}
+
+/// Build a Wi-Fi item and its queued create from explicit values.
+pub fn prepare_wifi(ssid: &str, password: &str) -> Result<PendingAdd> {
+    let ssid = ssid.trim();
+    if ssid.is_empty() {
+        return Err(Error::Invalid("a network name is required".into()));
+    }
+    let item_b64 = encode(&plist_bytes(&new_wifi_plist(ssid, password.as_bytes()))?);
+    let id = uuid();
+    let entry = Entry {
+        id: id.clone(),
+        kind: EntryKind::Wifi,
+        agrp: Some("apple".into()),
+        title: Some(ssid.to_string()),
+        sites: vec![ssid.to_string()],
+        username: Some(ssid.to_string()),
+        password: Some(password.to_string()),
+        record: Some(RecordMeta {
+            zone: "WiFi".into(),
+            item_type: "item".into(),
+            plist: Some(item_b64.clone()),
+            ..RecordMeta::default()
+        }),
+        ..Entry::default()
+    };
+    let label = entry_label(&entry);
+    let op = PendingOp {
+        id: uuid(),
+        kind: OpKind::Create,
+        entry_kind: EntryKind::Wifi,
+        zone: "WiFi".into(),
+        owner: None,
+        item_name: id,
+        item_type: "item".into(),
+        item_base: None,
+        item_new: Some(item_b64),
+        item_etag: None,
+        item_dirty: true,
+        sidecar_name: None,
+        sidecar_type: None,
+        sidecar_base: None,
+        sidecar_new: None,
+        sidecar_write: None,
+        sidecar_etag: None,
+        sidecar_dirty: false,
+        blocked: None,
+        attempts: 0,
+        next_attempt: None,
+        force: false,
+        restore: false,
+        label,
+    };
+    Ok(PendingAdd { entry, op })
+}
+
+/// Build a note and its queued create from explicit values.
+pub fn prepare_note(title: &str, body: &str) -> Result<PendingAdd> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Err(Error::Invalid("a note title is required".into()));
+    }
+    let site = uuid();
+    let item_b64 = encode(&plist_bytes(&new_note_item_plist(&site))?);
+
+    let metadata = new_note_metadata(title, body);
+    let metadata_b64 = encode(&plist_bytes(&Value::Dictionary(metadata.clone()))?);
+    let sidecar_id = uuid();
+    let sidecar_plist = new_metadata_plist(&site, "", &metadata);
+    let sidecar_b64 = encode(&plist_bytes(&sidecar_plist)?);
+
+    let entry = Entry {
+        id: site.clone(),
+        kind: EntryKind::Note,
+        agrp: Some("com.apple.cfnetwork".into()),
+        title: Some(title.to_string()),
+        notes: Some(body.to_string()),
+        sites: vec![title.to_string()],
+        record: Some(RecordMeta {
+            zone: "Passwords".into(),
+            item_type: "item".into(),
+            plist: Some(item_b64.clone()),
+            sidecar_name: Some(sidecar_id.clone()),
+            sidecar_type: Some("item".into()),
+            metadata: Some(metadata_b64.clone()),
+            sidecar_plist: Some(sidecar_b64.clone()),
+            ..RecordMeta::default()
+        }),
+        ..Entry::default()
+    };
+    let label = entry_label(&entry);
+    let op = PendingOp {
+        id: uuid(),
+        kind: OpKind::Create,
+        entry_kind: EntryKind::Note,
+        zone: "Passwords".into(),
+        owner: None,
+        item_name: site,
+        item_type: "item".into(),
+        item_base: None,
+        item_new: Some(item_b64),
+        item_etag: None,
+        item_dirty: true,
+        sidecar_name: Some(sidecar_id),
+        sidecar_type: Some("item".into()),
+        sidecar_base: None,
+        sidecar_new: Some(metadata_b64),
+        sidecar_write: Some(sidecar_b64),
+        sidecar_etag: None,
+        sidecar_dirty: true,
+        blocked: None,
+        attempts: 0,
+        next_attempt: None,
+        force: false,
+        restore: false,
+        label,
+    };
+    Ok(PendingAdd { entry, op })
+}
+
+/// Save and queue a prepared add.
+pub fn commit_add(paths: &Paths, config: &mut Config, add: PendingAdd) -> Result<Added> {
+    let mut working = vault::load(paths, config)?;
+    ensure_queue_room(&working)?;
+    let added = Added {
+        id: add.entry.id.clone(),
+        name: add.entry.display_name(),
+        label: add.op.label.clone(),
+        pending_id: add.op.id.clone(),
+    };
+    working.entries.push(add.entry);
+    working.pending.push(add.op);
+    vault::save(paths, config, &working)?;
+    Ok(added)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn add_login(
     paths: &Paths,
@@ -52,7 +354,6 @@ pub fn add_login(
         ));
     }
     let totp_spec = totp.map(totp::parse_spec).transpose()?;
-    let (url, host) = normalize_url(url)?;
     let password = match (password_stdin, generate) {
         (true, _) => read_stdin_line()?,
         (_, true) => {
@@ -62,94 +363,19 @@ pub fn add_login(
         }
         _ => prompt_to_make_password()?,
     };
-    let username = username.unwrap_or("");
+    let add = prepare_login(
+        url,
+        username.unwrap_or(""),
+        title,
+        notes,
+        totp_spec.as_ref(),
+        &password,
+    )?;
+    let name = add.entry.display_name();
+    let id = add.entry.id.clone();
+    let label = add.op.label.clone();
+    let pending_id = add.op.id.clone();
 
-    let login = new_login_plist(&host, username, password.as_bytes());
-    let login_bytes = plist_bytes(&login)?;
-
-    let mut metadata = new_metadata_dict();
-    // Apple writes an empty `s_as` array into every metadata record it creates.
-    metadata.insert("s_as".into(), Value::Array(Vec::new()));
-    if let Some(title) = title {
-        set_metadata_text(&mut metadata, "title", title);
-    }
-    if let Some(notes) = notes {
-        set_metadata_text(&mut metadata, "notes", notes);
-    }
-    if let Some(spec) = &totp_spec {
-        set_metadata_totp(&mut metadata, spec, Utc::now());
-    }
-    // The outer sidecar item CloudKit receives carries the metadata dictionary
-    // in `v_Data`; `metadata_bytes` is the dictionary alone.
-    let sidecar_write = encode(&plist_bytes(&new_metadata_plist(
-        &host, username, &metadata,
-    ))?);
-    let metadata_bytes = plist_bytes(&Value::Dictionary(metadata))?;
-
-    let id = uuid();
-    let sidecar = uuid();
-    let login_b64 = encode(&login_bytes);
-    let metadata_b64 = encode(&metadata_bytes);
-    let label = entry_label(&Entry {
-        title: title.map(str::to_string),
-        sites: vec![host.clone()],
-        username: Some(username.to_string()),
-        ..Entry::default()
-    });
-
-    let entry = Entry {
-        id: id.clone(),
-        kind: EntryKind::Login,
-        agrp: Some("com.apple.cfnetwork".into()),
-        title: title.map(str::to_string),
-        url: Some(url.clone()),
-        sites: vec![host.clone()],
-        username: Some(username.to_string()),
-        password: Some(password.clone()),
-        notes: notes.map(str::to_string),
-        totp: totp_spec.as_ref().map(TotpSpec::to_totp),
-        record: Some(RecordMeta {
-            zone: "Passwords".into(),
-            item_type: "item".into(),
-            plist: Some(login_b64.clone()),
-            sidecar_name: Some(sidecar.clone()),
-            sidecar_type: Some("item".into()),
-            metadata: Some(metadata_b64.clone()),
-            ..RecordMeta::default()
-        }),
-        ..Entry::default()
-    };
-
-    let op = PendingOp {
-        id: uuid(),
-        kind: OpKind::Create,
-        entry_kind: EntryKind::Login,
-        zone: "Passwords".into(),
-        owner: None,
-        item_name: id.clone(),
-        item_type: "item".into(),
-        item_base: None,
-        item_new: Some(login_b64),
-        item_etag: None,
-        item_dirty: true,
-        sidecar_name: Some(sidecar),
-        sidecar_type: Some("item".into()),
-        sidecar_base: None,
-        sidecar_new: Some(metadata_b64),
-        sidecar_write: Some(sidecar_write),
-        sidecar_etag: None,
-        sidecar_dirty: true,
-        blocked: None,
-        attempts: 0,
-        next_attempt: None,
-        force: false,
-        restore: false,
-        label: label.clone(),
-    };
-
-    let mut working = vault::load(paths, config)?;
-    ensure_queue_room(&working)?;
-    let name = entry.display_name();
     if dry_run {
         if style.json {
             let mut data = json!({
@@ -157,7 +383,7 @@ pub fn add_login(
                 "id": id,
                 "name": name,
                 "label": label,
-                "pending_id": op.id,
+                "pending_id": pending_id,
             });
             if generate {
                 data["password"] = json!(password);
@@ -165,29 +391,26 @@ pub fn add_login(
             output::print_json(&output::success(data));
         } else {
             println!("would add {id} {name}");
-            println!("would queue create {}", op.id);
+            println!("would queue create {pending_id}");
         }
         return Ok(());
     }
 
-    working.entries.push(entry);
-    working.pending.push(op.clone());
-    vault::save(paths, config, &working)?;
-
+    let added = commit_add(paths, config, add)?;
     if style.json {
         let mut data = json!({
-            "id": id,
-            "name": name,
-            "label": label,
-            "pending_id": op.id,
+            "id": added.id,
+            "name": added.name,
+            "label": added.label,
+            "pending_id": added.pending_id,
         });
         if generate {
             data["password"] = json!(password);
         }
         output::print_json(&output::success(data));
     } else {
-        println!("added {id} {name}");
-        println!("pending {}", op.id);
+        println!("added {} {}", added.id, added.name);
+        println!("pending {}", added.pending_id);
     }
     Ok(())
 }
@@ -207,10 +430,6 @@ pub fn add_wifi(
             "pass only one of --password-stdin or --generate".into(),
         ));
     }
-    let ssid = ssid.trim();
-    if ssid.is_empty() {
-        return Err(Error::Invalid("a network name is required".into()));
-    }
     let password = match (password_stdin, generate) {
         (true, _) => read_stdin_line()?,
         (_, true) => {
@@ -220,57 +439,12 @@ pub fn add_wifi(
         }
         _ => prompt_to_make_password()?,
     };
+    let add = prepare_wifi(ssid, &password)?;
+    let name = add.entry.display_name();
+    let id = add.entry.id.clone();
+    let label = add.op.label.clone();
+    let pending_id = add.op.id.clone();
 
-    let item_b64 = encode(&plist_bytes(&new_wifi_plist(ssid, password.as_bytes()))?);
-    let id = uuid();
-    let entry = Entry {
-        id: id.clone(),
-        kind: EntryKind::Wifi,
-        agrp: Some("apple".into()),
-        title: Some(ssid.to_string()),
-        sites: vec![ssid.to_string()],
-        username: Some(ssid.to_string()),
-        password: Some(password.clone()),
-        record: Some(RecordMeta {
-            zone: "WiFi".into(),
-            item_type: "item".into(),
-            plist: Some(item_b64.clone()),
-            ..RecordMeta::default()
-        }),
-        ..Entry::default()
-    };
-    let label = entry_label(&entry);
-
-    let op = PendingOp {
-        id: uuid(),
-        kind: OpKind::Create,
-        entry_kind: EntryKind::Wifi,
-        zone: "WiFi".into(),
-        owner: None,
-        item_name: id.clone(),
-        item_type: "item".into(),
-        item_base: None,
-        item_new: Some(item_b64),
-        item_etag: None,
-        item_dirty: true,
-        sidecar_name: None,
-        sidecar_type: None,
-        sidecar_base: None,
-        sidecar_new: None,
-        sidecar_write: None,
-        sidecar_etag: None,
-        sidecar_dirty: false,
-        blocked: None,
-        attempts: 0,
-        next_attempt: None,
-        force: false,
-        restore: false,
-        label: label.clone(),
-    };
-
-    let mut working = vault::load(paths, config)?;
-    ensure_queue_room(&working)?;
-    let name = entry.display_name();
     if dry_run {
         if style.json {
             let mut data = json!({
@@ -278,7 +452,7 @@ pub fn add_wifi(
                 "id": id,
                 "name": name,
                 "label": label,
-                "pending_id": op.id,
+                "pending_id": pending_id,
             });
             if generate {
                 data["password"] = json!(password);
@@ -286,29 +460,26 @@ pub fn add_wifi(
             output::print_json(&output::success(data));
         } else {
             println!("would add wifi {id} {name}");
-            println!("would queue create {}", op.id);
+            println!("would queue create {pending_id}");
         }
         return Ok(());
     }
 
-    working.entries.push(entry);
-    working.pending.push(op.clone());
-    vault::save(paths, config, &working)?;
-
+    let added = commit_add(paths, config, add)?;
     if style.json {
         let mut data = json!({
-            "id": id,
-            "name": name,
-            "label": label,
-            "pending_id": op.id,
+            "id": added.id,
+            "name": added.name,
+            "label": added.label,
+            "pending_id": added.pending_id,
         });
         if generate {
             data["password"] = json!(password);
         }
         output::print_json(&output::success(data));
     } else {
-        println!("added {id} {name}");
-        println!("pending {}", op.id);
+        println!("added {} {}", added.id, added.name);
+        println!("pending {}", added.pending_id);
     }
     Ok(())
 }
@@ -328,142 +499,58 @@ pub fn add_note(
             "pass only one of --body or --body-stdin".into(),
         ));
     }
-    let title = title.trim();
-    if title.is_empty() {
-        return Err(Error::Invalid("a note title is required".into()));
-    }
     let body = if body_stdin {
         read_stdin_all()?
     } else {
         body.unwrap_or("").to_string()
     };
+    let add = prepare_note(title, &body)?;
+    let name = add.entry.display_name();
+    let id = add.entry.id.clone();
+    let label = add.op.label.clone();
+    let pending_id = add.op.id.clone();
 
-    let site = uuid();
-    let item_b64 = encode(&plist_bytes(&new_note_item_plist(&site))?);
-
-    let metadata = new_note_metadata(title, &body);
-    let metadata_b64 = encode(&plist_bytes(&Value::Dictionary(metadata.clone()))?);
-    let sidecar_id = uuid();
-    let sidecar_plist = new_metadata_plist(&site, "", &metadata);
-    let sidecar_b64 = encode(&plist_bytes(&sidecar_plist)?);
-
-    let entry = Entry {
-        id: site.clone(),
-        kind: EntryKind::Note,
-        agrp: Some("com.apple.cfnetwork".into()),
-        title: Some(title.to_string()),
-        notes: Some(body.clone()),
-        sites: vec![title.to_string()],
-        record: Some(RecordMeta {
-            zone: "Passwords".into(),
-            item_type: "item".into(),
-            plist: Some(item_b64.clone()),
-            sidecar_name: Some(sidecar_id.clone()),
-            sidecar_type: Some("item".into()),
-            metadata: Some(metadata_b64.clone()),
-            sidecar_plist: Some(sidecar_b64.clone()),
-            ..RecordMeta::default()
-        }),
-        ..Entry::default()
-    };
-    let label = entry_label(&entry);
-
-    let op = PendingOp {
-        id: uuid(),
-        kind: OpKind::Create,
-        entry_kind: EntryKind::Note,
-        zone: "Passwords".into(),
-        owner: None,
-        item_name: site.clone(),
-        item_type: "item".into(),
-        item_base: None,
-        item_new: Some(item_b64),
-        item_etag: None,
-        item_dirty: true,
-        sidecar_name: Some(sidecar_id),
-        sidecar_type: Some("item".into()),
-        sidecar_base: None,
-        sidecar_new: Some(metadata_b64),
-        sidecar_write: Some(sidecar_b64),
-        sidecar_etag: None,
-        sidecar_dirty: true,
-        blocked: None,
-        attempts: 0,
-        next_attempt: None,
-        force: false,
-        restore: false,
-        label: label.clone(),
-    };
-
-    let mut working = vault::load(paths, config)?;
-    ensure_queue_room(&working)?;
-    let name = entry.display_name();
     if dry_run {
         if style.json {
             output::print_json(&output::success(json!({
                 "dry_run": true,
-                "id": site,
+                "id": id,
                 "name": name,
                 "label": label,
-                "pending_id": op.id,
+                "pending_id": pending_id,
             })));
         } else {
-            println!("would add note {site} {name}");
-            println!("would queue create {}", op.id);
+            println!("would add note {id} {name}");
+            println!("would queue create {pending_id}");
         }
         return Ok(());
     }
 
-    working.entries.push(entry);
-    working.pending.push(op.clone());
-    vault::save(paths, config, &working)?;
-
+    let added = commit_add(paths, config, add)?;
     if style.json {
         output::print_json(&output::success(json!({
-            "id": site,
-            "name": name,
-            "label": label,
-            "pending_id": op.id,
+            "id": added.id,
+            "name": added.name,
+            "label": added.label,
+            "pending_id": added.pending_id,
         })));
     } else {
-        println!("added {site} {name}");
-        println!("pending {}", op.id);
+        println!("added {} {}", added.id, added.name);
+        println!("pending {}", added.pending_id);
     }
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn edit(
+/// Prepare an edit against the current snapshot without saving it.
+///
+/// Returns `Ok(None)` when the request changes nothing.
+pub fn prepare_edit(
     paths: &Paths,
     config: &mut Config,
     query: Option<&str>,
     id: Option<&str>,
-    title_flag: Option<&str>,
-    notes_flag: Option<&str>,
-    clear_notes: bool,
-    password_stdin: bool,
-    generate: bool,
-    totp_flag: Option<&str>,
-    clear_totp: bool,
-    dry_run: bool,
-    style: Style,
-) -> Result<()> {
-    if password_stdin && generate {
-        return Err(Error::Invalid(
-            "pass only one of --password-stdin or --generate".into(),
-        ));
-    }
-    if notes_flag.is_some() && clear_notes {
-        return Err(Error::Invalid(
-            "pass only one of --notes or --clear-notes".into(),
-        ));
-    }
-    if totp_flag.is_some() && clear_totp {
-        return Err(Error::Invalid(
-            "pass only one of --totp or --clear-totp".into(),
-        ));
-    }
-
+    request: &EditRequest,
+) -> Result<Option<PendingEdit>> {
     let vault = vault::load(paths, config)?;
     let index = find_entry(&vault, query, id)?;
     let entry = vault.entries[index].clone();
@@ -498,26 +585,18 @@ pub fn edit(
 
     let wifi = entry.kind == EntryKind::Wifi;
     let note = entry.kind == EntryKind::Note;
-    if wifi
-        && (title_flag.is_some()
-            || notes_flag.is_some()
-            || clear_notes
-            || totp_flag.is_some()
-            || clear_totp)
-    {
+    if wifi && (request.title.is_some() || request.notes.is_some() || request.totp.is_some()) {
         return Err(Error::Invalid(format!(
             "{} is a Wi-Fi network; only its password can change (the SSID is the join key)",
             entry.display_name()
         )));
     }
-    if note && (password_stdin || generate || totp_flag.is_some() || clear_totp) {
+    if note && (request.password.is_some() || request.totp.is_some()) {
         return Err(Error::Invalid(format!(
             "{} is a note; it has a title and body, not a password or one-time code",
             entry.display_name()
         )));
     }
-
-    let totp_spec = totp_flag.map(totp::parse_spec).transpose()?;
 
     let mut new_title = entry.title.clone();
     let mut new_notes = entry.notes.clone();
@@ -529,110 +608,60 @@ pub fn edit(
     let mut totp_changed = false;
 
     if !wifi {
-        if let Some(value) = title_flag {
+        if let Some(value) = &request.title {
             title_changed = true;
-            if value.is_empty() {
-                metadata.remove("title");
-                new_title = None;
-            } else {
-                set_metadata_text(&mut metadata, "title", value);
-                new_title = Some(value.to_string());
+            match value {
+                None => {
+                    metadata.remove("title");
+                    new_title = None;
+                }
+                Some(value) => {
+                    set_metadata_text(&mut metadata, "title", value);
+                    new_title = Some(value.clone());
+                }
             }
         }
-        if clear_notes {
+        if let Some(value) = &request.notes {
             notes_changed = true;
-            metadata.remove("notes");
-            new_notes = None;
-        } else if let Some(value) = notes_flag {
-            notes_changed = true;
-            set_metadata_text(&mut metadata, "notes", value);
-            new_notes = Some(value.to_string());
+            match value {
+                None => {
+                    metadata.remove("notes");
+                    new_notes = None;
+                }
+                Some(value) => {
+                    set_metadata_text(&mut metadata, "notes", value);
+                    new_notes = Some(value.clone());
+                }
+            }
         }
     }
     if !note {
-        if password_stdin {
-            let value = read_stdin_line()?;
+        if let Some(value) = &request.password {
             if wifi {
                 item.insert("v_Data".into(), Value::Data(value.as_bytes().to_vec()));
             } else {
-                apply_password(&mut item, &mut metadata, &value);
+                apply_password(&mut item, &mut metadata, value);
             }
-            new_password = Some(value);
-            password_changed = true;
-        } else if generate {
-            let value = generate_password();
-            eprintln!("generated password: {value}");
-            if wifi {
-                item.insert("v_Data".into(), Value::Data(value.as_bytes().to_vec()));
-            } else {
-                apply_password(&mut item, &mut metadata, &value);
-            }
-            new_password = Some(value);
+            new_password = Some(value.clone());
             password_changed = true;
         }
     }
-    if let Some(spec) = &totp_spec {
-        set_metadata_totp(&mut metadata, spec, Utc::now());
-        new_totp = Some(spec.to_totp());
+    if let Some(spec) = &request.totp {
         totp_changed = true;
-    }
-    if clear_totp {
-        metadata.remove("totp");
-        new_totp = None;
-        totp_changed = true;
-    }
-
-    let interactive = title_flag.is_none()
-        && notes_flag.is_none()
-        && !clear_notes
-        && !password_stdin
-        && !generate
-        && totp_flag.is_none()
-        && !clear_totp
-        && !dry_run;
-    if interactive {
-        if !wifi {
-            if let Some(value) = prompt_text("Title", entry.title.as_deref())? {
-                title_changed = true;
-                set_metadata_text(&mut metadata, "title", &value);
-                new_title = Some(value);
+        match spec {
+            Some(spec) => {
+                set_metadata_totp(&mut metadata, spec, Utc::now());
+                new_totp = Some(spec.to_totp());
             }
-            if let Some(value) = prompt_text("Notes", entry.notes.as_deref())? {
-                notes_changed = true;
-                set_metadata_text(&mut metadata, "notes", &value);
-                new_notes = Some(value);
-            }
-        }
-        if !note {
-            let entered =
-                rpassword::prompt_password("Password (Enter keeps the current password): ")?;
-            if !entered.is_empty() {
-                let again = rpassword::prompt_password("Password again: ")?;
-                if entered != again {
-                    return Err(Error::Invalid("passwords do not match".into()));
-                }
-                if wifi {
-                    item.insert("v_Data".into(), Value::Data(entered.as_bytes().to_vec()));
-                } else {
-                    apply_password(&mut item, &mut metadata, &entered);
-                }
-                new_password = Some(entered);
-                password_changed = true;
+            None => {
+                metadata.remove("totp");
+                new_totp = None;
             }
         }
     }
 
     if !title_changed && !notes_changed && !password_changed && !totp_changed {
-        if style.json {
-            output::print_json(&output::success(json!({
-                "id": entry.id,
-                "name": entry.name(),
-                "changed": false,
-            })));
-        } else {
-            println!("no changes for {}", entry.display_name());
-        }
-        return Ok(());
+        return Ok(None);
     }
 
     let sidecar_changed = title_changed || notes_changed || totp_changed;
@@ -658,7 +687,6 @@ pub fn edit(
         password: new_password.clone(),
         ..entry.clone()
     });
-
     let op = PendingOp {
         id: uuid(),
         kind: OpKind::Edit,
@@ -683,66 +711,206 @@ pub fn edit(
         next_attempt: None,
         force: false,
         restore: false,
-        label,
+        label: label.clone(),
     };
 
-    let mut working = vault.clone();
+    Ok(Some(PendingEdit {
+        entry_id: entry.id.clone(),
+        name: entry.display_name(),
+        label,
+        op,
+        note,
+        title: new_title,
+        notes: new_notes,
+        password: new_password,
+        totp: new_totp,
+        changed: true,
+    }))
+}
+
+/// Save a prepared edit and fold its op into any queued change for the same item.
+pub fn commit_edit(paths: &Paths, config: &mut Config, edit: PendingEdit) -> Result<Edited> {
+    let mut working = vault::load(paths, config)?;
+    let index = working
+        .entries
+        .iter()
+        .position(|entry| entry.id == edit.entry_id)
+        .ok_or_else(|| Error::NoResults(format!("no entry with id {}", edit.entry_id)))?;
     ensure_queue_room(&working)?;
-    let merged = merge_edit(&mut working.pending, op);
-    let name = {
+    let merged = merge_edit(&mut working.pending, edit.op);
+    {
         let entry = &mut working.entries[index];
-        entry.title = new_title;
-        entry.notes = new_notes;
-        entry.password = new_password;
-        entry.totp = new_totp;
-        if note {
+        entry.title = edit.title;
+        entry.notes = edit.notes;
+        entry.password = edit.password;
+        entry.totp = edit.totp;
+        if edit.note {
             entry.sites = entry.title.iter().cloned().collect();
         }
-        entry.display_name()
+    }
+    let edited = Edited {
+        id: edit.entry_id,
+        name: edit.name,
+        label: merged.label.clone(),
+        pending_id: merged.id,
+        changed: edit.changed,
     };
+    vault::save(paths, config, &working)?;
+    Ok(edited)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn edit(
+    paths: &Paths,
+    config: &mut Config,
+    query: Option<&str>,
+    id: Option<&str>,
+    title_flag: Option<&str>,
+    notes_flag: Option<&str>,
+    clear_notes: bool,
+    password_stdin: bool,
+    generate: bool,
+    totp_flag: Option<&str>,
+    clear_totp: bool,
+    dry_run: bool,
+    style: Style,
+) -> Result<()> {
+    if password_stdin && generate {
+        return Err(Error::Invalid(
+            "pass only one of --password-stdin or --generate".into(),
+        ));
+    }
+    if notes_flag.is_some() && clear_notes {
+        return Err(Error::Invalid(
+            "pass only one of --notes or --clear-notes".into(),
+        ));
+    }
+    if totp_flag.is_some() && clear_totp {
+        return Err(Error::Invalid(
+            "pass only one of --totp or --clear-totp".into(),
+        ));
+    }
+
+    let totp_spec = totp_flag.map(totp::parse_spec).transpose()?;
+    let mut request = EditRequest {
+        title: title_flag.map(|value| {
+            if value.is_empty() {
+                None
+            } else {
+                Some(value.to_string())
+            }
+        }),
+        notes: if clear_notes {
+            Some(None)
+        } else {
+            notes_flag.map(|value| Some(value.to_string()))
+        },
+        totp: if clear_totp {
+            Some(None)
+        } else {
+            totp_spec.map(Some)
+        },
+        password: None,
+    };
+    if password_stdin {
+        request.password = Some(read_stdin_line()?);
+    } else if generate {
+        let value = generate_password();
+        eprintln!("generated password: {value}");
+        request.password = Some(value);
+    }
+
+    let interactive = title_flag.is_none()
+        && notes_flag.is_none()
+        && !clear_notes
+        && !password_stdin
+        && !generate
+        && totp_flag.is_none()
+        && !clear_totp
+        && !dry_run;
+    if interactive {
+        let vault = vault::load(paths, config)?;
+        let index = find_entry(&vault, query, id)?;
+        let entry = vault.entries[index].clone();
+        if entry.kind != EntryKind::Wifi {
+            if let Some(value) = prompt_text("Title", entry.title.as_deref())? {
+                request.title = Some(Some(value));
+            }
+            if let Some(value) = prompt_text("Notes", entry.notes.as_deref())? {
+                request.notes = Some(Some(value));
+            }
+        }
+        if entry.kind != EntryKind::Note {
+            let entered = rpassword::prompt_password("Password (Enter keeps current password): ")?;
+            if !entered.is_empty() {
+                let again = rpassword::prompt_password("Password again: ")?;
+                if entered != again {
+                    return Err(Error::Invalid("passwords do not match".into()));
+                }
+                request.password = Some(entered);
+            }
+        }
+    }
+
+    let Some(prepared) = prepare_edit(paths, config, query, id, &request)? else {
+        if style.json {
+            let vault = vault::load(paths, config)?;
+            let index = find_entry(&vault, query, id)?;
+            output::print_json(&output::success(json!({
+                "id": vault.entries[index].id,
+                "name": vault.entries[index].name(),
+                "changed": false,
+            })));
+        } else {
+            let vault = vault::load(paths, config)?;
+            let index = find_entry(&vault, query, id)?;
+            println!("no changes for {}", vault.entries[index].display_name());
+        }
+        return Ok(());
+    };
+    let id = prepared.entry_id.clone();
+    let name = prepared.name.clone();
+    let label = prepared.label.clone();
+    let pending_id = prepared.op.id.clone();
 
     if dry_run {
         if style.json {
             output::print_json(&output::success(json!({
                 "dry_run": true,
-                "id": entry.id,
+                "id": id,
                 "name": name,
-                "label": merged.label,
-                "pending_id": merged.id,
+                "label": label,
+                "pending_id": pending_id,
             })));
         } else {
-            println!("would edit {} {name}", entry.id);
-            println!("would queue edit {}", merged.id);
+            println!("would edit {id} {name}");
+            println!("would queue edit {pending_id}");
         }
         return Ok(());
     }
 
-    vault::save(paths, config, &working)?;
-
+    let edited = commit_edit(paths, config, prepared)?;
     if style.json {
         output::print_json(&output::success(json!({
-            "id": entry.id,
-            "name": name,
-            "label": merged.label,
-            "pending_id": merged.id,
+            "id": edited.id,
+            "name": edited.name,
+            "label": edited.label,
+            "pending_id": edited.pending_id,
         })));
     } else {
-        println!("edited {} {name}", entry.id);
-        println!("pending {}", merged.id);
+        println!("edited {} {}", edited.id, edited.name);
+        println!("pending {}", edited.pending_id);
     }
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn rm(
+/// Prepare a move to Recently Deleted without saving it.
+pub fn prepare_rm(
     paths: &Paths,
     config: &mut Config,
     query: Option<&str>,
     id: Option<&str>,
-    yes: bool,
-    dry_run: bool,
-    style: Style,
-) -> Result<()> {
+) -> Result<PendingRemove> {
     let vault = vault::load(paths, config)?;
     let index = find_entry(&vault, query, id)?;
     let entry = vault.entries[index].clone();
@@ -758,9 +926,6 @@ pub fn rm(
             entry.display_name()
         ))
     })?;
-    if !yes {
-        return Err(Error::Invalid("refusing to delete without --yes".into()));
-    }
     ensure_queue_room(&vault)?;
 
     // Apple does not remove the record. It moves the same item, under the same
@@ -779,7 +944,7 @@ pub fn rm(
         item_name: entry.id.clone(),
         item_type: record.item_type.clone(),
         item_base: record.plist.clone(),
-        item_new: item_new.clone(),
+        item_new,
         item_etag: record.item_etag.clone(),
         item_dirty: true,
         sidecar_name: record.sidecar_name.clone(),
@@ -794,46 +959,85 @@ pub fn rm(
         next_attempt: None,
         force: false,
         restore: false,
-        label,
+        label: label.clone(),
     };
-    let name = entry.display_name();
+    Ok(PendingRemove {
+        id: entry.id.clone(),
+        name: entry.display_name(),
+        label,
+        op,
+    })
+}
+
+/// Save a prepared move to Recently Deleted.
+pub fn commit_rm(paths: &Paths, config: &mut Config, remove: PendingRemove) -> Result<Removed> {
+    let mut working = vault::load(paths, config)?;
+    ensure_queue_room(&working)?;
+    let removed = Removed {
+        id: remove.id.clone(),
+        name: remove.name.clone(),
+        label: remove.label.clone(),
+        pending_id: remove.op.id.clone(),
+    };
+    working
+        .pending
+        .retain(|pending| pending.item_name != remove.op.item_name);
+    working.pending.push(remove.op);
+    working
+        .entries
+        .retain(|candidate| candidate.id != remove.id);
+    vault::save(paths, config, &working)?;
+    Ok(removed)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn rm(
+    paths: &Paths,
+    config: &mut Config,
+    query: Option<&str>,
+    id: Option<&str>,
+    yes: bool,
+    dry_run: bool,
+    style: Style,
+) -> Result<()> {
+    if !yes {
+        return Err(Error::Invalid("refusing to delete without --yes".into()));
+    }
+    let remove = prepare_rm(paths, config, query, id)?;
+    let id = remove.id.clone();
+    let name = remove.name.clone();
+    let label = remove.label.clone();
+    let pending_id = remove.op.id.clone();
 
     if dry_run {
         if style.json {
             output::print_json(&output::success(json!({
                 "dry_run": true,
-                "id": entry.id,
+                "id": id,
                 "name": name,
-                "label": op.label,
-                "pending_id": op.id,
+                "label": label,
+                "pending_id": pending_id,
             })));
         } else {
-            println!("would delete {} {name}", entry.id);
-            println!("would queue delete {}", op.id);
+            println!("would delete {id} {name}");
+            println!("would queue delete {pending_id}");
         }
         return Ok(());
     }
 
-    let mut working = vault.clone();
-    working
-        .pending
-        .retain(|pending| pending.item_name != op.item_name);
-    working.pending.push(op.clone());
-    working.entries.retain(|candidate| candidate.id != entry.id);
-    vault::save(paths, config, &working)?;
-
+    let removed = commit_rm(paths, config, remove)?;
     if style.json {
         output::print_json(&output::success(json!({
-            "id": entry.id,
-            "name": name,
-            "label": op.label,
-            "pending_id": op.id,
+            "id": removed.id,
+            "name": removed.name,
+            "label": removed.label,
+            "pending_id": removed.pending_id,
             "recently_deleted": true,
             "recoverable_days": 30,
         })));
     } else {
-        println!("deleted {} {name}", entry.id);
-        println!("pending {}", op.id);
+        println!("deleted {} {}", removed.id, removed.name);
+        println!("pending {}", removed.pending_id);
         println!("the entry is in Recently Deleted and can be restored on any device for 30 days");
     }
     Ok(())
@@ -893,6 +1097,37 @@ pub fn trash_list(
     Ok(())
 }
 
+/// Restore a trashed entry and save the result.
+pub fn restore_data(
+    paths: &Paths,
+    config: &mut Config,
+    query: Option<&str>,
+    id: Option<&str>,
+) -> Result<Restored> {
+    if query.is_some() == id.is_some() {
+        return Err(Error::Invalid("pass exactly one of a query or --id".into()));
+    }
+    let vault = vault::load(paths, config)?;
+    let found = find_trash(&vault, query, id)?;
+    let mut working = vault.clone();
+    let (entry, queued) = plan_restore(&mut working, found, Utc::now())?;
+
+    let restored = Restored {
+        id: entry.id.clone(),
+        name: entry.display_name(),
+        username: entry.username.clone().unwrap_or_default(),
+        label: entry_label(&entry),
+        pending_id: queued.as_ref().map(|op| op.id.clone()),
+        cancelled: queued.is_none(),
+    };
+    working.entries.push(entry);
+    if let Some(op) = queued {
+        working.pending.push(op);
+    }
+    vault::save(paths, config, &working)?;
+    Ok(restored)
+}
+
 /// Undo a move to Recently Deleted.
 ///
 /// Restore works only for a record that is still in the trash: either a sync
@@ -905,21 +1140,19 @@ pub fn restore(
     dry_run: bool,
     style: Style,
 ) -> Result<()> {
-    if query.is_some() == id.is_some() {
-        return Err(Error::Invalid("pass exactly one of a query or --id".into()));
-    }
-    let vault = vault::load(paths, config)?;
-    let found = find_trash(&vault, query, id)?;
-    let mut working = vault.clone();
-    let (entry, queued) = plan_restore(&mut working, found, Utc::now())?;
-
-    let id = entry.id.clone();
-    let name = entry.display_name();
-    let username = entry.username.clone().unwrap_or_default();
-    let label = entry_label(&entry);
-    let pending_id = queued.as_ref().map(|op| op.id.clone());
-
     if dry_run {
+        if query.is_some() == id.is_some() {
+            return Err(Error::Invalid("pass exactly one of a query or --id".into()));
+        }
+        let vault = vault::load(paths, config)?;
+        let found = find_trash(&vault, query, id)?;
+        let mut working = vault.clone();
+        let (entry, queued) = plan_restore(&mut working, found, Utc::now())?;
+        let id = entry.id.clone();
+        let name = entry.display_name();
+        let username = entry.username.clone().unwrap_or_default();
+        let label = entry_label(&entry);
+        let pending_id = queued.as_ref().map(|op| op.id.clone());
         if style.json {
             output::print_json(&output::success(json!({
                 "dry_run": true,
@@ -940,24 +1173,19 @@ pub fn restore(
         return Ok(());
     }
 
-    working.entries.push(entry);
-    if let Some(op) = queued {
-        working.pending.push(op);
-    }
-    vault::save(paths, config, &working)?;
-
+    let restored = restore_data(paths, config, query, id)?;
     if style.json {
         output::print_json(&output::success(json!({
-            "id": id,
-            "name": name,
-            "username": username,
-            "label": label,
+            "id": restored.id,
+            "name": restored.name,
+            "username": restored.username,
+            "label": restored.label,
             "restored": true,
-            "pending_id": pending_id,
+            "pending_id": restored.pending_id,
         })));
     } else {
-        println!("restored {id} {name}");
-        match &pending_id {
+        println!("restored {} {}", restored.id, restored.name);
+        match &restored.pending_id {
             Some(pending_id) => println!("pending {pending_id}"),
             None => println!("the pending delete was cancelled; nothing to push"),
         }
@@ -1142,19 +1370,8 @@ pub fn pending(paths: &Paths, config: &mut Config, style: Style) -> Result<()> {
     Ok(())
 }
 
-pub fn resolve(
-    paths: &Paths,
-    config: &mut Config,
-    id: &str,
-    local: bool,
-    remote: bool,
-    style: Style,
-) -> Result<()> {
-    if local == remote {
-        return Err(Error::Invalid(
-            "pass exactly one of --local or --remote".into(),
-        ));
-    }
+/// Keep the local op or discard it in favour of the remote record.
+pub fn resolve_pending(paths: &Paths, config: &mut Config, id: &str, local: bool) -> Result<()> {
     let mut vault = vault::load(paths, config)?;
     let index = vault
         .pending
@@ -1172,6 +1389,23 @@ pub fn resolve(
         vault.pending.remove(index);
     }
     vault::save(paths, config, &vault)?;
+    Ok(())
+}
+
+pub fn resolve(
+    paths: &Paths,
+    config: &mut Config,
+    id: &str,
+    local: bool,
+    remote: bool,
+    style: Style,
+) -> Result<()> {
+    if local == remote {
+        return Err(Error::Invalid(
+            "pass exactly one of --local or --remote".into(),
+        ));
+    }
+    resolve_pending(paths, config, id, local)?;
 
     let action = if local { "local" } else { "remote" };
     if style.json {
@@ -1323,7 +1557,7 @@ fn dictionary_text(dict: &Dictionary, key: &str) -> Option<String> {
     }
 }
 
-fn generate_password() -> String {
+pub(crate) fn generate_password() -> String {
     let mut rng = rand::thread_rng();
     (0..20)
         .map(|_| GENERATED_CHARSET[rng.gen_range(0..GENERATED_CHARSET.len())] as char)

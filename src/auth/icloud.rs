@@ -27,6 +27,24 @@ pub struct Webservices {
     pub names: Vec<String>,
 }
 
+impl Webservices {
+    /// Fill the gaps of a reduced service map, keeping every value already set.
+    pub fn fill_from(&mut self, other: Webservices) {
+        if self.ckdatabasews_url.is_none() {
+            self.ckdatabasews_url = other.ckdatabasews_url;
+        }
+        if self.escrow_proxy_url.is_none() {
+            self.escrow_proxy_url = other.escrow_proxy_url;
+        }
+        if self.cloudkit_token.is_none() {
+            self.cloudkit_token = other.cloudkit_token;
+        }
+        if self.names.is_empty() {
+            self.names = other.names;
+        }
+    }
+}
+
 pub async fn login_delegates(
     identity: &Identity,
     apple_id: &str,
@@ -104,6 +122,17 @@ pub async fn account_settings(
     let status = response.status();
     let body = response.bytes().await?;
     if !status.is_success() {
+        if std::env::var_os("APW_DEBUG").is_some() {
+            eprintln!(
+                "get_account_settings {} body: {}",
+                status,
+                String::from_utf8_lossy(&body[..body.len().min(600)])
+            );
+            eprintln!(
+                "get_account_settings identity: {} | {}",
+                identity.client_info, identity.user_agent
+            );
+        }
         return Err(Error::Message(format!(
             "get_account_settings answered HTTP {status}"
         )));
@@ -339,4 +368,68 @@ fn uuid_v4() -> String {
         bytes[14],
         bytes[15]
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Webservices;
+
+    fn service(
+        ckdatabasews: Option<&str>,
+        escrow: Option<&str>,
+        token: Option<&str>,
+        name: &str,
+    ) -> Webservices {
+        Webservices {
+            ckdatabasews_url: ckdatabasews.map(str::to_string),
+            escrow_proxy_url: escrow.map(str::to_string),
+            cloudkit_token: token.map(str::to_string),
+            names: vec![name.to_string()],
+        }
+    }
+
+    #[test]
+    fn a_richer_service_map_only_fills_gaps() {
+        let mut windows = service(
+            Some("https://ckdatabasews"),
+            None,
+            Some("windows-token"),
+            "ckdatabasews",
+        );
+        let mac = service(
+            Some("https://ignored"),
+            Some("https://escrow"),
+            Some("mac-token"),
+            "keychainsync",
+        );
+
+        windows.fill_from(mac);
+
+        assert_eq!(
+            windows.ckdatabasews_url.as_deref(),
+            Some("https://ckdatabasews")
+        );
+        assert_eq!(windows.escrow_proxy_url.as_deref(), Some("https://escrow"));
+        assert_eq!(windows.cloudkit_token.as_deref(), Some("windows-token"));
+        assert_eq!(windows.names, vec!["ckdatabasews".to_string()]);
+    }
+
+    #[test]
+    fn an_empty_map_takes_everything() {
+        let mut empty = Webservices::default();
+        empty.fill_from(service(
+            Some("https://ckdatabasews"),
+            Some("https://escrow"),
+            Some("token"),
+            "keychainsync",
+        ));
+
+        assert_eq!(
+            empty.ckdatabasews_url.as_deref(),
+            Some("https://ckdatabasews")
+        );
+        assert_eq!(empty.escrow_proxy_url.as_deref(), Some("https://escrow"));
+        assert_eq!(empty.cloudkit_token.as_deref(), Some("token"));
+        assert_eq!(empty.names, vec!["keychainsync".to_string()]);
+    }
 }

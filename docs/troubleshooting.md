@@ -1,132 +1,151 @@
 # Troubleshooting
 
-Each heading is a symptom. The body names the cause and the fix.
+This page covers the failures you are most likely to see. Each entry names the
+message and the next action.
 
-## apw cannot find a snapshot
+## `apw` exits without opening the interface
 
-```
-no snapshot at /home/you/.local/share/apw/snapshot.bin; run `apw login` first
-```
+Bare `apw` opens the interface only when stdin and stdout are terminals and
+`TERM` is not `dumb`. In a pipe, a script, or a terminal that reports `dumb`, it
+prints help and exits. Run it directly in a terminal, or use a subcommand.
 
-There is no snapshot yet. Run `apw login` once. To exercise the CLI without an account, use `apw sync --fixture tests/fixtures/vault.json`.
+## `no snapshot at ...; run apw login first`
 
-`apw status` succeeds even before the first login; the other query commands exit 4.
+The snapshot file is missing. Run `apw login`, then `apw sync`. In the interface,
+use `/login` and `/sync`.
 
-## apw cannot reach Secret Service
+## `apw` asks for a passphrase and then cannot decrypt
 
-```
-no snapshot key; set APW_PASSPHRASE or unlock Secret Service
-```
+The passphrase derives a different key from the one that wrote the snapshot. Use
+the passphrase that created it. If you changed `kdf_salt` or replaced the Secret
+Service entry, restore the original key or rebuild the snapshot from iCloud.
 
-There is no D-Bus session, or no keyring provider is running. Start one (GNOME Keyring, KWallet), unlock it, or set `APW_PASSPHRASE`. A timer has no terminal, so it needs an unlocked keyring or the variable.
+## `Secret Service is unavailable and stdin is not a terminal`
 
-## apw cannot decrypt the snapshot
+The keyring is missing and `apw` cannot prompt. Set `APW_PASSPHRASE` for the
+command or for the timer's `sync.env`. For a desktop session, unlock the keyring
+and ensure `DBUS_SESSION_BUS_ADDRESS` points at it.
 
-```
-cannot decrypt the snapshot: wrong key or damaged file
-```
+## A build fails looking for Zig or the OpenTUI library
 
-The passphrase is wrong, the keyring entry changed, or the file is damaged. If an older release left the wrong key in Secret Service, `apw` prompts for the snapshot passphrase and opens the file. Clear the stale entry so the next unlock caches the right key.
-
-To clear the entry by hand:
-
-```sh
-secret-tool clear service apw account snapshot-key
-```
-
-Then run the command again and enter the passphrase that created the snapshot. Deleting `snapshot.bin` and signing in again also works, but it spends an escrow attempt.
-
-## A build fails looking for dbus
-
-```
-error: failed to run custom build command for `libdbus-sys`
-```
-
-The Secret Service backend needs `libdbus-1` headers and `pkg-config`. On Debian and Ubuntu:
+The source build needs Zig 0.17.1 and the `opentui` submodule. Clone with
+`--recurse-submodules`, or run:
 
 ```sh
-sudo apt-get install -y libdbus-1-dev pkg-config cmake perl
+git submodule update --init --recursive
+zig version
 ```
 
-On Arch, install `dbus`, `cmake`, `perl`, and `pkgconf`. A build without the keyring feature needs none of them: `cargo build --no-default-features`.
+The first build prepares the vendored Zig dependencies and compiles the native
+library into `opentui/packages/native/lib/`. Later builds reuse it. A changed
+submodule commit triggers a rebuild.
 
-## apw login stops before the two-factor prompt
-
-The anisette server is not answering at the configured URL. The default is `http://127.0.0.1:6969`. Check the URL and the server:
+If Zig is not on `PATH`, point at it for the build:
 
 ```sh
-curl -s http://127.0.0.1:6969/
+PATH=/path/to/zig-0.17.1:$PATH cargo build --release --locked
 ```
 
-`APW_ANISETTE_URL` overrides `anisette_url` in the config. An empty variable is not a problem; a wrong one is.
+`OPENTUI_LIB_DIR` overrides the native library directory. It must contain
+`opentui.h` and `libopentui.a`.
+
+## A build fails looking for `dbus`
+
+Install the development headers:
+
+```sh
+sudo apt-get install libdbus-1-dev pkg-config   # Debian, Ubuntu
+sudo pacman -S dbus pkgconf                     # Arch
+```
+
+Build without the keyring backend when you only need passphrase mode:
+
+```sh
+cargo build --release --locked --no-default-features --features tui
+```
+
+## `apw login` stops before the two-factor prompt
+
+The anisette server did not answer or returned an identity Apple rejected. Check
+that `APW_ANISETTE_URL` is reachable and that the container is running. Then run
+`apw login --refresh` to re-read the service URLs, or sign in again.
+
+## `apw login` reports `GSA answered HTTP 503`
+
+Apple's edge rejects the literal `<macOS;` platform token in `X-MMe-Client-Info`
+with HTTP 503. Anisette servers built from recent assets emit that spelling, so
+`apw` rewrites it to `<Mac OS X;` before sending, and retries with the server's
+Windows identity if the macOS one is still refused. Seeing this error means both
+were refused: check that the server is reachable, and restart the container if
+its machine identity is stale.
+
+A freshly provisioned identity can be refused for a few minutes; retry after a
+short wait.
+
+## `the session has no escrow URL`
+
+The escrow proxy URL comes from the `keychainsync` entry of Apple's service map,
+and Apple only returns that entry to a macOS client. A session created while
+`apw` still sent the literal `<macOS;` token was signed in as a Windows client,
+so its map lists dataclasses only and the escrow proxy is missing.
+
+Sign in again with `apw login` (or `/login`) to obtain a macOS session. If the
+URL is still missing afterwards, the macOS identity itself is being refused;
+check for a 503 as described above.
 
 ## The two-factor code is rejected
 
-Request a new code and enter it immediately. A clock more than a minute off breaks the code. Check the time:
-
-```sh
-timedatectl
-```
+Use the current code from a trusted device. A code is valid for a short window;
+request another when it expires. The interface keeps the wizard open and shows
+the error above the field.
 
 ## The escrow passcode is rejected
 
-The code is the device passcode or the iCloud Security Code, not the Apple ID password. `apw` makes one attempt per run and stops.
+Use the device passcode or the iCloud Security Code, not the Apple ID password.
+A failed join spends one attempt and increments the failure count. Check the
+passcode before trying again; repeated failures can exhaust the recovery record.
 
-Apple allows about ten attempts before the recovery record is destroyed. Do not rerun the command in a loop. Verify the code on a signed-in device first, then run `apw join` once. Set `APW_ESCROW_PASSCODE` for a non-interactive run.
+## `sync` refuses because of the floor
 
-## The escrow budget cannot be read
+The previous sync finished less than 300 seconds ago. Wait, or use `--force` /
+`/sync --force` when you know the previous run is done.
 
-```
-cannot read the escrow attempt budget; refusing to recover (set APW_SKIP_ESCROW_BUDGET=1 to join anyway)
-```
+## `sync` says the session expired
 
-Apple's reply did not include the remaining-attempt count, or the request failed. `apw` refuses to spend an attempt it cannot count. If you accept the risk, set `APW_SKIP_ESCROW_BUDGET=1` and run `apw join` once.
-
-## Sync is inside the floor
-
-```
-last sync was 42s ago; the floor is 300s (use --force)
-```
-
-This is the rate limit working. Wait, or pass `--force` for a deliberate manual sync.
-
-## Sync refuses a partial snapshot
-
-```
-sync could not decrypt 3 item(s); keeping the previous snapshot
-```
-
-One or more records did not decrypt, so `apw` kept the previous snapshot. Leave `APW_ALLOW_PARTIAL` unset and retry on the next timer tick. If the same items keep failing, set `APW_ALLOW_PARTIAL=1` to accept the partial result; the missing entries will be absent until a later sync succeeds.
-
-## Sync says the session expired
-
-`apw sync` already re-fetched the service map once, and Apple rejected `mmeAuthToken` as well. The token cannot be renewed without a password login, so run `apw login` again. The snapshot still answers `list`, `get`, `wifi`, and `otp` while you do.
+The stored tokens are no longer accepted. Run `apw login` again. The peer is
+kept, so the join is not repeated unless you pass `--join`.
 
 ## A shared group is empty
 
-The group has no items, or its PCS key did not arrive. `apw sync` prints a warning and keeps the previous shared entries when a group cannot be read. Owned groups are the reliable path; shared-with-me is the least proven part of the design.
+Shared items appear only after a sync reads them back. Run `apw sync`, then open
+**Groups** or `apw group show <group>`. A group whose protection cannot be opened
+still appears by name when `apw` journaled it.
 
 ## The timer does not fire
 
 ```sh
 systemctl --user status apw-sync.timer
-journalctl --user -u apw-sync -n 50
+systemctl --user enable --now apw-sync.timer
+journalctl --user -u apw-sync.service -n 50
 ```
 
-If the user session is not active, enable lingering:
+If the user session is not always active, enable lingering with
+`loginctl enable-linger "$USER"`. The service reads `sync.env`; a bad path or a
+missing passphrase leaves an error in the journal.
 
-```sh
-loginctl enable-linger "$USER"
-```
+## The interface does not update after a CLI write
 
-Then reload and start the timer again.
+The interface reloads the snapshot when its modification time changes, checked
+every few seconds and after its own writes. A file copied in with an old mtime
+can be missed. Run `/sync` or restart the interface.
 
-## An upgrade from 0.1.5 cannot open the snapshot
+## Copying a password does nothing
 
-0.1.5 could store a new random key in Secret Service while the snapshot used a passphrase. 0.2.0 prompts for the passphrase when the stored key fails. Clear the stale entry so the derived key can be cached:
+`apw` uses the system clipboard when it can and falls back to OSC 52. Your
+terminal must allow clipboard writes. Over SSH, enable clipboard integration in
+the terminal. If both paths fail, select the text after pressing `r`.
 
-```sh
-secret-tool clear service apw account snapshot-key
-```
+## The interface is too narrow
 
-Then run the command again.
+Below 60 columns the dashboard drops the right column and hides the wordmark.
+Below 40 columns the layout is not supported. Widen the terminal or use the CLI.

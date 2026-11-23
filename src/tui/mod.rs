@@ -5,6 +5,7 @@
 
 pub mod app;
 pub mod data;
+pub mod secret;
 pub mod theme;
 
 use crate::config::Paths;
@@ -14,7 +15,16 @@ use crate::error::Result;
 /// over, so a passphrase prompt still uses the normal terminal.
 pub fn run() -> Result<()> {
     let paths = Paths::resolve()?;
-    let view = data::VaultView::load(&paths)?;
+    let mut view = data::VaultView::load(&paths)?;
+    // A first run has no snapshot. Create the snapshot key here, before raw
+    // mode, so the interface can sign in without handing the terminal back.
+    if !paths.snapshot_file.is_file() {
+        crate::vault::prepare(&paths, &mut view.config)?;
+        let salt = view.config.kdf_salt.clone();
+        view.config = crate::config::Config::update(&paths, |config| {
+            config.kdf_salt = salt;
+        })?;
+    }
     app::run(view)
 }
 

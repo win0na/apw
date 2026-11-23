@@ -16,14 +16,53 @@ use self::anisette::Identity;
 use self::gsa::Status;
 use self::srp::SrpClient;
 
+/// Where a password sign-in stopped: finished, or waiting for a trusted-device code.
+#[derive(Clone)]
+pub enum LoginStart {
+    Done(Box<Session>),
+    NeedCode(Box<TwoFactor>),
+}
+
+/// The state a two-factor submission needs, including the password for the SRP replay.
+#[derive(Clone)]
+pub struct TwoFactor {
+    anisette_url: String,
+    identity: Identity,
+    account: String,
+    password: String,
+    identity_token: String,
+    pet: Option<String>,
+}
+
 pub fn login(config: &Config, account: &str, code: Option<String>) -> Result<Session> {
+    let password = match std::env::var("APW_PASSWORD") {
+        Ok(password) if !password.is_empty() => password,
+        _ => read_secret("Apple ID password: ")?,
+    };
+    match login_start(config, account, &password)? {
+        LoginStart::Done(session) => Ok(*session),
+        LoginStart::NeedCode(flow) => {
+            let code = match code.filter(|code| !code.is_empty()) {
+                Some(code) => code,
+                None => std::env::var("APW_2FA_CODE")
+                    .ok()
+                    .filter(|code| !code.is_empty())
+                    .map_or_else(|| read_secret("two-factor code: "), Ok)?,
+            };
+            submit_two_factor(*flow, &code)
+        }
+    }
+}
+
+/// Sign in with explicit credentials, stopping before the two-factor code.
+pub fn login_start(config: &Config, account: &str, password: &str) -> Result<LoginStart> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    runtime.block_on(login_async(config, account, code))
+    runtime.block_on(login_start_async(config, account, password))
 }
 
-async fn login_async(config: &Config, account: &str, code: Option<String>) -> Result<Session> {
+async fn login_start_async(config: &Config, account: &str, password: &str) -> Result<LoginStart> {
     let url = config
         .anisette_url()
         .ok_or_else(|| Error::Invalid("set --anisette-url or APW_ANISETTE_URL".into()))?;
@@ -37,19 +76,15 @@ async fn login_async(config: &Config, account: &str, code: Option<String>) -> Re
         .await
         .unwrap_or_else(|_| windows_identity.clone());
 
-    let password = match std::env::var("APW_PASSWORD") {
-        Ok(password) if !password.is_empty() => password,
-        _ => read_secret("Apple ID password: ")?,
-    };
-
-    let (status, spd, mut pet) = authenticate(&anisette, &mut identity, account, &password).await?;
+    let (status, spd, pet) =
+        authenticate_any_identity(&anisette, &mut identity, account, password).await?;
     // Apple may send a trusted-device code during the SRP exchange without
     // setting `au`; `hsc: 409` means one is already on its way.
     let code_sent = status.hsc == Some(409) && status.au.is_none();
     // Prefer a PET from `spd`; only force a 2FA cycle when neither source has one.
     let spd_pet = gsa::spd_fields(&spd).ok().and_then(|fields| fields.pet);
     let needs_pet = pet.is_none() && spd_pet.is_none();
-    let spd = if status.au.is_some() || code_sent || needs_pet {
+    if status.au.is_some() || code_sent || needs_pet {
         if status.au.as_deref() == Some("secondaryAuth") {
             return Err(Error::Message(
                 "Apple asked for SMS two-factor, which this build does not support yet".into(),
@@ -57,30 +92,64 @@ async fn login_async(config: &Config, account: &str, code: Option<String>) -> Re
         }
 
         let fields = gsa::idms_fields(&spd)?;
-        let token = twofa::identity_token(&fields.adsid, &fields.gs_idms_token);
+        let identity_token = twofa::identity_token(&fields.adsid, &fields.gs_idms_token);
         if !code_sent {
-            twofa::request_trusted_device(&token, &identity).await?;
+            twofa::request_trusted_device(&identity_token, &identity).await?;
         }
+        return Ok(LoginStart::NeedCode(Box::new(TwoFactor {
+            anisette_url: url,
+            identity,
+            account: account.to_string(),
+            password: password.to_string(),
+            identity_token,
+            pet,
+        })));
+    }
 
-        let code = match &code {
-            Some(code) if !code.is_empty() => code.clone(),
-            _ => read_secret("two-factor code: ")?,
-        };
-        let submitted = twofa::submit_trusted_device(&code, &token, &identity).await?;
+    finish_login(&anisette, &mut identity, account, password, spd, pet)
+        .await
+        .map(|session| LoginStart::Done(Box::new(session)))
+}
 
-        let (status, spd, refreshed) =
-            authenticate(&anisette, &mut identity, account, &password).await?;
-        if status.au.is_some() || status.hsc == Some(409) {
-            return Err(Error::Message(
-                "two-factor is still required after the code was accepted".into(),
-            ));
-        }
-        pet = submitted.or(refreshed).or(pet);
-        spd
-    } else {
-        spd
-    };
+/// Submit the trusted-device code and finish the sign-in.
+pub fn submit_two_factor(flow: TwoFactor, code: &str) -> Result<Session> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(submit_two_factor_async(flow, code))
+}
 
+async fn submit_two_factor_async(flow: TwoFactor, code: &str) -> Result<Session> {
+    let anisette = anisette::Anisette::new(&flow.anisette_url);
+    let mut identity = flow.identity;
+    let submitted = twofa::submit_trusted_device(code, &flow.identity_token, &identity).await?;
+    let (status, spd, refreshed) =
+        authenticate_any_identity(&anisette, &mut identity, &flow.account, &flow.password).await?;
+    if status.au.is_some() || status.hsc == Some(409) {
+        return Err(Error::Message(
+            "two-factor is still required after the code was accepted".into(),
+        ));
+    }
+    let pet = submitted.or(refreshed).or(flow.pet);
+    finish_login(
+        &anisette,
+        &mut identity,
+        &flow.account,
+        &flow.password,
+        spd,
+        pet,
+    )
+    .await
+}
+
+async fn finish_login(
+    anisette: &anisette::Anisette,
+    identity: &mut Identity,
+    account: &str,
+    password: &str,
+    spd: Value,
+    pet: Option<String>,
+) -> Result<Session> {
     let fields = gsa::spd_fields(&spd)?;
     if std::env::var_os("APW_DEBUG").is_some() {
         eprintln!(
@@ -93,25 +162,55 @@ async fn login_async(config: &Config, account: &str, code: Option<String>) -> Re
     let pet = fields.pet.or(pet).ok_or_else(|| {
         Error::Message("GSA returned no PET; sign in again or check the account".into())
     })?;
-    let delegates = icloud::login_delegates(&identity, account, &fields.adsid, &pet).await?;
+    let delegates = icloud::login_delegates(identity, account, &fields.adsid, &pet).await?;
     // A platform mismatch here is recoverable: the caller keeps the service
     // URLs and tokens from the previous session.
-    let services = icloud::account_settings(&identity, &delegates.dsid, &delegates.mme_auth_token)
-        .await
-        .unwrap_or_default();
-    let mut pet = pet;
-    if let Ok(mut windows) = anisette.identity_for(None).await {
-        if let Ok((_, spd, header_pet)) =
-            authenticate(&anisette, &mut windows, account, &password).await
-        {
-            if let Some(escrow_pet) = gsa::spd_fields(&spd)
-                .ok()
-                .and_then(|fields| fields.pet)
-                .or(header_pet)
+    let mut services =
+        icloud::account_settings(identity, &delegates.dsid, &delegates.mme_auth_token)
+            .await
+            .unwrap_or_default();
+    // A Windows identity gets a reduced service map, which drops the
+    // keychainsync entry that carries the escrow proxy URL. This call is
+    // authorized by the DSID and mmeAuthToken, not the machine identity, so ask
+    // again with the macOS client info the GSA exchange had to skip.
+    if services.escrow_proxy_url.is_none() {
+        if let Ok(cloud) = anisette.identity_for(Some("macos")).await {
+            if let Ok(richer) =
+                icloud::account_settings(&cloud, &delegates.dsid, &delegates.mme_auth_token).await
             {
-                pet = escrow_pet;
+                services.fill_from(richer);
             }
         }
+    }
+    // The escrow proxy only accepts the PET minted by the Windows chain, so
+    // trade the macOS PET for it before the session is stored.
+    let mut pet = pet;
+    if let Ok(mut windows) = anisette.identity_for(None).await {
+        match authenticate(anisette, &mut windows, account, password).await {
+            Ok((_, spd, header_pet)) => {
+                let escrow_pet = gsa::spd_fields(&spd)
+                    .ok()
+                    .and_then(|fields| fields.pet)
+                    .or(header_pet);
+                if std::env::var_os("APW_DEBUG").is_some() {
+                    eprintln!(
+                        "escrow pet: used={} len={}",
+                        escrow_pet.is_some(),
+                        escrow_pet.as_ref().map(String::len).unwrap_or(0)
+                    );
+                }
+                if let Some(escrow_pet) = escrow_pet {
+                    pet = escrow_pet;
+                }
+            }
+            Err(error) => {
+                if std::env::var_os("APW_DEBUG").is_some() {
+                    eprintln!("escrow pet: windows sign-in failed: {error}");
+                }
+            }
+        }
+    } else if std::env::var_os("APW_DEBUG").is_some() {
+        eprintln!("escrow pet: the server has no windows identity");
     }
 
     Ok(Session {
@@ -144,13 +243,32 @@ pub async fn refresh_services_async(config: &Config, session: &Session) -> Resul
         .anisette_url()
         .ok_or_else(|| Error::Invalid("set an anisette URL in the config".into()))?;
     let anisette = anisette::Anisette::new(&url);
-    // The token chain is macOS-minted; a Windows identity is rejected.
-    let identity = match anisette.identity_for(Some("macos")).await {
-        Ok(identity) => identity,
-        Err(_) => anisette.identity().await?,
-    };
-    let services =
-        icloud::account_settings(&identity, &session.dsid, &session.mme_auth_token).await?;
+    // The map must come from the platform that minted the token: Apple binds
+    // `mmeAuthToken` to the device identity, so a Windows-minted session answers
+    // 401 for a macOS client. Try macOS first, then merge the default identity's
+    // map when Apple refuses it.
+    let mut services = icloud::Webservices::default();
+    let mut first_error = None;
+    if let Ok(identity) = anisette.identity_for(Some("macos")).await {
+        match icloud::account_settings(&identity, &session.dsid, &session.mme_auth_token).await {
+            Ok(found) => services = found,
+            Err(error) => first_error = Some(error),
+        }
+    }
+    if services.escrow_proxy_url.is_none() {
+        let identity = anisette.identity().await?;
+        match icloud::account_settings(&identity, &session.dsid, &session.mme_auth_token).await {
+            Ok(found) => services.fill_from(found),
+            Err(error) => {
+                first_error.get_or_insert(error);
+            }
+        }
+    }
+    if let Some(error) = first_error {
+        if services.names.is_empty() {
+            return Err(error);
+        }
+    }
 
     let mut next = session.clone();
     if let Some(token) = services.cloudkit_token {
@@ -184,6 +302,25 @@ fn read_secret(prompt: &str) -> Result<String> {
     Ok(line.trim_end_matches(['\r', '\n']).to_string())
 }
 
+/// A macOS identity can be rejected by Apple's edge with a 5xx even though the
+/// same server answers with a Windows identity. Retry the SRP exchange once with
+/// the Windows identity before giving up; the service map is then whatever that
+/// identity yields, which is what a Windows-only anisette server gives anyway.
+async fn authenticate_any_identity(
+    anisette: &anisette::Anisette,
+    identity: &mut Identity,
+    account: &str,
+    password: &str,
+) -> Result<(Status, Value, Option<String>)> {
+    match authenticate(anisette, identity, account, password).await {
+        Err(error) if matches!(&error, Error::GsaStatus(status) if status.is_server_error()) => {
+            *identity = anisette.identity().await?;
+            authenticate(anisette, identity, account, password).await
+        }
+        result => result,
+    }
+}
+
 async fn authenticate(
     anisette: &anisette::Anisette,
     identity: &mut Identity,
@@ -209,16 +346,19 @@ async fn authenticate(
         if !init.status.ok() {
             return Err(Error::Message(init.status.message()));
         }
+        let Some(body) = init.body else {
+            return Err(Error::Message("GSA returned no SRP challenge".into()));
+        };
 
         let proof = srp.prove(
             account,
             password,
-            &init.salt,
-            init.iterations,
-            init.scheme,
-            &init.server_public,
+            &body.salt,
+            body.iterations,
+            body.scheme,
+            &body.server_public,
         )?;
-        let complete = gsa.complete(account, &init.continuation, &proof.m1).await?;
+        let complete = gsa.complete(account, &body.continuation, &proof.m1).await?;
 
         if !complete.status.ok() {
             return Err(Error::Message(complete.status.message()));

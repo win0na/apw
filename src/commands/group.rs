@@ -15,6 +15,44 @@ use crate::groups;
 use crate::output::{self, Style};
 use crate::vault;
 
+/// A group membership change that has been written.
+#[derive(Debug, Clone)]
+pub struct GroupChange {
+    pub zone: String,
+    pub record: String,
+    pub name: String,
+}
+
+/// Add one personal login to a group zone.
+pub fn add_item(
+    paths: &Paths,
+    config: &mut Config,
+    zone: &str,
+    entry: &crate::model::Entry,
+) -> Result<GroupChange> {
+    let session = sync::group_session(paths, config)?;
+    let owner = session.gateway.user_id().to_string();
+    let keys = block_on(groups::zone_keys(
+        &session.gateway,
+        zone,
+        &owner,
+        &session.service_keys,
+    ))?;
+    let record = block_on(group_write::add_item(
+        &session.gateway,
+        zone,
+        &keys.record_key,
+        keys.record_tag.as_deref(),
+        entry,
+        chrono::Utc::now(),
+    ))?;
+    Ok(GroupChange {
+        zone: zone.to_string(),
+        record,
+        name: entry.display_name(),
+    })
+}
+
 /// Add one personal login to a group.
 ///
 /// The item is sealed with the zone's record key, so the entries only appear in
@@ -50,33 +88,45 @@ pub fn add(
         return Ok(());
     }
 
+    let change = add_item(paths, config, &zone, entry)?;
+    if style.json {
+        output::print_json(&output::success(json!({
+            "item": change.record,
+            "zone": change.zone,
+            "name": change.name,
+        })));
+    } else {
+        println!("added {} to {}", change.record, change.zone);
+    }
+    Ok(())
+}
+
+/// Remove one shared item from a group zone.
+pub fn remove_item(
+    paths: &Paths,
+    config: &mut Config,
+    zone: &str,
+    record: &str,
+) -> Result<GroupChange> {
     let session = sync::group_session(paths, config)?;
     let owner = session.gateway.user_id().to_string();
     let keys = block_on(groups::zone_keys(
         &session.gateway,
-        &zone,
+        zone,
         &owner,
         &session.service_keys,
     ))?;
-    let record = block_on(group_write::add_item(
+    block_on(group_write::remove_item(
         &session.gateway,
-        &zone,
-        &keys.record_key,
+        zone,
         keys.record_tag.as_deref(),
-        entry,
-        chrono::Utc::now(),
+        record,
     ))?;
-
-    if style.json {
-        output::print_json(&output::success(json!({
-            "item": record,
-            "zone": zone,
-            "name": entry.display_name(),
-        })));
-    } else {
-        println!("added {record} to {zone}");
-    }
-    Ok(())
+    Ok(GroupChange {
+        zone: zone.to_string(),
+        record: record.to_string(),
+        name: record.to_string(),
+    })
 }
 
 /// Delete one shared item from a group.
@@ -112,28 +162,14 @@ pub fn remove(
         return Ok(());
     }
 
-    let session = sync::group_session(paths, config)?;
-    let owner = session.gateway.user_id().to_string();
-    let keys = block_on(groups::zone_keys(
-        &session.gateway,
-        &zone,
-        &owner,
-        &session.service_keys,
-    ))?;
-    block_on(group_write::remove_item(
-        &session.gateway,
-        &zone,
-        keys.record_tag.as_deref(),
-        &record,
-    ))?;
-
+    let change = remove_item(paths, config, &zone, &record)?;
     if style.json {
         output::print_json(&output::success(json!({
-            "removed": record,
-            "zone": zone,
+            "removed": change.record,
+            "zone": change.zone,
         })));
     } else {
-        println!("removed {record} from {zone}");
+        println!("removed {} from {}", change.record, change.zone);
     }
     Ok(())
 }

@@ -118,24 +118,25 @@ pub fn create(config: &mut Config, paths: &Paths) -> Result<SnapshotKey> {
 
 /// The key resolved earlier in this process. A command may load the snapshot
 /// and save it again; the passphrase must be asked for once, not twice.
-static SESSION: std::sync::OnceLock<std::sync::Mutex<Option<(std::path::PathBuf, SnapshotKey)>>> =
+static SESSION: std::sync::OnceLock<std::sync::Mutex<Vec<(std::path::PathBuf, SnapshotKey)>>> =
     std::sync::OnceLock::new();
 
-fn session() -> &'static std::sync::Mutex<Option<(std::path::PathBuf, SnapshotKey)>> {
-    SESSION.get_or_init(|| std::sync::Mutex::new(None))
+fn session() -> &'static std::sync::Mutex<Vec<(std::path::PathBuf, SnapshotKey)>> {
+    SESSION.get_or_init(|| std::sync::Mutex::new(Vec::new()))
 }
 
 fn session_key(paths: &Paths) -> Option<SnapshotKey> {
     let guard = session().lock().ok()?;
     guard
-        .as_ref()
-        .filter(|(path, _)| path == &paths.snapshot_file)
+        .iter()
+        .find(|(path, _)| path == &paths.snapshot_file)
         .map(|(_, key)| key.clone())
 }
 
 pub fn remember_session(paths: &Paths, key: &SnapshotKey) {
     if let Ok(mut guard) = session().lock() {
-        *guard = Some((paths.snapshot_file.clone(), key.clone()));
+        guard.retain(|(path, _)| path != &paths.snapshot_file);
+        guard.push((paths.snapshot_file.clone(), key.clone()));
     }
 }
 

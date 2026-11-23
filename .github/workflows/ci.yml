@@ -11,6 +11,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.17.1
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -27,6 +32,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - uses: cachix/install-nix-action@v31
+      - run: nix flake lock
       - run: nix build --print-build-logs
       - run: ./result/bin/apw --version

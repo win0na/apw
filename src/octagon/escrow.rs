@@ -281,7 +281,7 @@ impl Escrow {
 
         let mut last_status = reqwest::StatusCode::UNAUTHORIZED;
         let mut last_value = Value::Dictionary(Dictionary::new());
-        let candidates: [(&str, &str, &str); 8] = [
+        let candidates: [(&str, &str, &str); 9] = [
             (&self.email, &self.pet, "email:pet"),
             (&self.dsid, &self.pet, "dsid:pet"),
             (&self.adsid, &self.mme_token, "adsid:mme"),
@@ -290,6 +290,7 @@ impl Escrow {
             (&self.adsid, &self.pet, "adsid:pet"),
             (&self.dsid, &self.cloudkit_token, "dsid:ck"),
             (&self.email, &self.cloudkit_token, "email:ck"),
+            (&self.adsid, &self.cloudkit_token, "adsid:ck"),
         ];
         for (user, secret, label) in candidates {
             if std::env::var_os("APW_DEBUG").is_some() {
@@ -344,6 +345,7 @@ impl Escrow {
                 "x-mme-client-info",
                 anisette::with_service(&self.identity.client_info, anisette::SBD_SERVICE),
             )
+            .header("x-apple-adsid", &self.adsid)
             .body(body.to_vec());
 
         for (name, value) in &self.identity.headers {

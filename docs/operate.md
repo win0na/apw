@@ -1,79 +1,122 @@
 # Operate
 
-Queries read the snapshot. `apw sync`, `apw login`, `apw join`, and the hidden `probe` commands talk to iCloud.
+This page covers day-to-day sync, sign-in, writes, and timer checks.
 
 ## Sync the snapshot
 
-```sh
-apw sync          # respects the interval
-apw sync --force  # ignores it
-```
+Run `apw sync`, or choose `/sync` in the interface. The command refuses a second
+sync inside the five-minute floor. Use `--force` or `/sync --force` to override
+the floor after you know the previous run finished.
 
-Syncs are at least five minutes apart. The binary enforces the floor, so a laptop that wakes up after a missed timer tick does not sync twice. The timer runs hourly, well above the floor.
+A sync reads the keychain into the snapshot and pushes queued local writes. A
+queued write also bypasses the floor, so the queue can drain without `--force`.
+Pending writes are limited to 200 operations and 16 MiB of payload. When either
+limit is reached, new writes are refused until a sync or `apw resolve` drains the
+queue.
 
-A failed sync does not back off on its own. Fix the cause and let the next timer tick try again.
+The interface runs sync in the background and shows progress in the footer. It
+keeps the snapshot lock only for the sync itself, so the timer and the command
+line can run while the interface is idle.
 
 ## What sync does
 
-1. Refreshes `cloudKitToken` from `mmeAuthToken` through `setup.icloud.com` when CloudKit returns 401.
-2. Fetches the TLK shares for the stored sponsor and for the new peer, then unions them.
-3. Reads `tlkshare`, `synckey`, `item`, and `currentitem` records from the private `Passwords`, `Manatee`, and `WiFi` zones.
-4. Decrypts each item with AES-SIV and writes the snapshot.
-5. Reads shared groups from the `com.apple.security.shared.keychain` container.
+1. Opens the session stored in the snapshot, or fails with an expired-session
+   error that asks you to sign in again.
+2. Lists record zones and merges remote records into the local vault.
+3. Pushes queued creates, edits, and deletes.
+4. Writes the new snapshot and state atomically.
 
-Fetching only the new peer's shares returns a clean, empty keychain. The union in step 2 makes the data appear.
-
-Sync refuses to replace a good snapshot when it cannot decrypt every item. Set `APW_ALLOW_PARTIAL=1` to accept a partial sync, and read the warning it prints. A first sync has no previous snapshot, so it writes the items it decrypted and marks the run partial. Shared groups that cannot be read keep their previous entries.
+A partial sync keeps the records it read and records the failure in state. The
+next sync retries. Conflicts appear as pending operations with a blocked reason;
+open **Pending** in the interface and keep the local change or take the remote
+version.
 
 ## Check the snapshot
 
 ```sh
 apw status
-apw status --json
+apw list
+apw get example.com
+apw pending
+apw trash
 ```
 
-`apw status` prints the account, source, entry and group counts, last sync time, snapshot path, and size. It reads the state file, not the snapshot, and never asks for the snapshot key. `status` succeeds even before the first login.
+`apw status` prints the account, source, entry counts, last sync, and snapshot
+path. `--json` returns the same fields on a pipe.
 
-`needs_sync` is true when there is no last sync or the last one is older than the interval. `last_status` is `ok`, `partial`, `joined`, or `join-failed`.
+In the interface, the dashboard shows the account, counts, warnings, recent
+items, and the last sync. The footer shows the sync time.
 
-## Re-authenticate
+## Write locally
 
-A 401 from CloudKit first re-fetches the service map once. That renews `cloudKitToken` while `mmeAuthToken` is still accepted. If the re-fetch also returns 401, the session is dead: run `apw login` again.
+```sh
+apw add login example.com --username you@example.com --generate
+apw add note "Recovery codes" --body "Stored offline"
+apw edit example.com --title Example --generate
+apw rm example.com --yes
+apw restore --id <id>
+```
 
-`apw login` keeps the existing peer and syncs, so no escrow attempt is spent. `mmeAuthToken` cannot be renewed from stored material, because only a password login mints a fresh PET.
+Writes change the snapshot and queue a CloudKit operation. They do not touch the
+network. The next sync pushes them.
 
-The snapshot keeps working while the tokens are expired, so `list`, `get`, `wifi`, and `otp` still answer.
+`apw rm` requires `--yes`. The item moves to Recently Deleted and remains
+recoverable for 30 days. The interface shows the same confirmation and offers
+undo with `u`.
+
+Shared entries cannot be edited or deleted with these commands. Change them on a
+device that owns the group.
+
+## Sign in again
+
+```sh
+apw login
+apw sync
+```
+
+When the session expires, `apw sync` fails with an authentication error. A new
+`apw login` refreshes the tokens and keeps the existing peer. Use `--refresh` to
+re-read the service URLs without a password.
+
+In the interface, `/login` opens the same steps: anisette URL, Apple ID,
+password, two-factor code, then an optional join. `/join` asks for the escrow
+passcode and spends one attempt.
 
 ## Shared groups
 
-Shared groups live in the `com.apple.security.shared.keychain` container, one zone per group. `apw sync` reads the zones directly and decrypts items with PCS share keys. It does not accept invites; a group already joined on any device is readable.
+The interface lists snapshot groups; selecting one shows its item count. `g` adds a personal login to
+a group or removes a shared item from its group. Adding and removing group items
+needs a live session and runs on the network, then the next sync reads the result
+back into the snapshot.
 
-A group whose key or payload cannot be decoded is reported as a warning, and the rest of the sync continues. If every group read fails, the previous shared entries stay in the snapshot.
-
-`apw list` shows a GROUP column and includes shared items by default. `--personal` restricts the list to personal items; `--group <uuid>` restricts it to one group.
+```sh
+apw group list
+apw group show Family
+apw group add Family example.com
+apw group remove Family <record> --yes
+```
 
 ## Inspect the timer
 
 ```sh
 systemctl --user status apw-sync.timer
-journalctl --user -u apw-sync -n 50
+systemctl --user list-timers apw-sync.timer
+journalctl --user -u apw-sync.service -n 50
 ```
 
-`apw install-units` writes `apw-sync.service` and `apw-sync.timer` to `~/.config/systemd/user/`. The service runs `apw sync` once; the timer fires hourly with `Persistent=true`.
-
-If the timer never runs, enable lingering for the user:
-
-```sh
-loginctl enable-linger "$USER"
-```
+The unit runs `apw sync` with the environment from
+`~/.config/apw/sync.env`. A failed run leaves the last status and failure count
+in `state.json`; the next run backs off instead of retrying in a tight loop.
 
 ## Sync a fixture
 
-The fixture path exercises the storage layer without Apple credentials:
+Tests and demos can read a JSON fixture instead of iCloud:
 
 ```sh
-apw sync --fixture tests/fixtures/vault.json
-apw list
+APW_FIXTURE=tests/fixtures/vault.json apw sync --force
 ```
 
-`APW_FIXTURE` does the same when `--fixture` is absent. Fixtures use the same JSON model as the snapshot. A fixture sync keeps the existing session and peer keys and writes `snapshot.bin.prev` before it replaces the entries.
+Fixture sync writes the snapshot from the file and marks the state source as
+`fixture`. The interface shows a warning for fixture data. Pass
+`--fixture <path>` instead of the environment variable when you want the path in
+the command line.

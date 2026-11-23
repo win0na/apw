@@ -38,12 +38,18 @@ impl Status {
 }
 
 pub struct InitResponse {
+    pub status: Status,
+    /// Absent when Apple answered with an error status; the fields below only
+    /// exist on a usable SRP challenge.
+    pub body: Option<InitBody>,
+}
+
+pub struct InitBody {
     pub salt: Vec<u8>,
     pub iterations: u32,
     pub server_public: Vec<u8>,
     pub continuation: String,
     pub scheme: PasswordScheme,
-    pub status: Status,
 }
 
 pub struct CompleteResponse {
@@ -100,15 +106,19 @@ impl Gsa {
             .await?;
         let dict = response_dict(&response)?;
         let status = status(dict);
+        let body = if status.ok() {
+            Some(InitBody {
+                salt: required_data(dict, "s")?,
+                iterations: required_integer(dict, "i")? as u32,
+                server_public: required_data(dict, "B")?,
+                continuation: required_string(dict, "c")?,
+                scheme: PasswordScheme::parse(&required_string(dict, "sp")?)?,
+            })
+        } else {
+            None
+        };
 
-        Ok(InitResponse {
-            salt: required_data(dict, "s")?,
-            iterations: required_integer(dict, "i")? as u32,
-            server_public: required_data(dict, "B")?,
-            continuation: required_string(dict, "c")?,
-            scheme: PasswordScheme::parse(&required_string(dict, "sp")?)?,
-            status,
-        })
+        Ok(InitResponse { status, body })
     }
 
     pub async fn complete(
@@ -161,7 +171,14 @@ impl Gsa {
         let pet = pet_from_headers(response.headers());
         let body = response.bytes().await?;
         if !status.is_success() {
-            return Err(Error::Message(format!("GSA answered HTTP {status}")));
+            if std::env::var_os("APW_DEBUG").is_some() {
+                eprintln!(
+                    "gsa {} body: {}",
+                    status,
+                    String::from_utf8_lossy(&body[..body.len().min(600)])
+                );
+            }
+            return Err(Error::GsaStatus(status));
         }
         Ok((plist::Value::from_reader_xml(&body[..])?, pet))
     }
