@@ -38,6 +38,10 @@
         buildInputs = with pkgs; [ dbus ];
         preBuild = ''
           export AWS_LC_SYS_USE_SYSTEM=0
+          # Zig needs a writable HOME for its global cache; the build sandbox
+          # runs with HOME=/homeless-shelter, which is not writable.
+          export HOME=$TMPDIR
+          export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-global-cache
         '';
 
         # The CLI tests need a CA store, which the build sandbox does not have.
