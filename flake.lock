@@ -16,9 +16,27 @@
         "type": "github"
       }
     },
+    "opentui": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1795171902,
+        "narHash": "sha256-4+Of243V8qC6FMMINEs5bdF5h6b9XhK6yb1TetUO/B0=",
+        "ref": "refs/heads/main",
+        "rev": "4ea9c4035286e6d6eb75784ed21c52a9375c7035",
+        "revCount": 1646,
+        "type": "git",
+        "url": "https://github.com/anomalyco/opentui"
+      },
+      "original": {
+        "rev": "4ea9c4035286e6d6eb75784ed21c52a9375c7035",
+        "type": "git",
+        "url": "https://github.com/anomalyco/opentui"
+      }
+    },
     "root": {
       "inputs": {
-        "nixpkgs": "nixpkgs"
+        "nixpkgs": "nixpkgs",
+        "opentui": "opentui"
       }
     }
   },
