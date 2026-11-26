@@ -240,3 +240,47 @@ a code event (`rip`, `rsp`, both `u64` LE) and `1` for a memory event (`access`,
   cannot prove that no exotic composition works, only that nothing obvious does.
 - The live Apple gateway was not contacted in this pass; parity was measured
   against the pinned service, which is itself a wrapper over the same binary.
+
+## Update 2026-11-26: the primitive is public and works
+
+The earlier conclusion ("not reproducible") was wrong. A catalog search that
+started from Apple's clients rather than from the anisette-server ecosystem
+found [`apple-auth`](https://github.com/apple-auth/apple-auth): C++20, MIT,
+"runs without emulating Apple libraries". Its `src/adi` is a native
+implementation of the same primitives: state container, key derivation, OTP,
+and provisioning. Every public anisette server reviewed earlier wraps Apple's
+binary; this project does not.
+
+Evidence, collected in an Ubuntu 24.04 container with only Mbed TLS installed:
+
+- `APPLE_AUTH_WITH_CLIENT=OFF` builds `libapple_auth.so` from `src/adi` and
+  `src/crypto` (Mbed TLS 2.28). No Apple file is read at build or run time.
+- `apple-auth provision dev-mac --device mac` and `--device windows` both
+  completed against `gsa.apple.com` on 2026-11-26 and wrote `adi.pb` plus
+  `identity.json` (636 bytes / 444 bytes). Provisioning validates the
+  start, finish, and decode profiles.
+- A GrandSlam `init` request built with headers from the native profile
+  (random `A2k`, no password) returned HTTP 200 with `s`, `i`, `B`, and `c`.
+  Apple accepted the `X-Apple-I-MD` and `X-Apple-I-MD-M` values, so the OTP is
+  correct, not merely well-formed.
+- The OTP envelope matches the service byte layout: `u32 5 | u32 16 | 16
+  bytes | u32 platform` (platform 1 for Mac, 2 for Windows).
+
+The license route is clean: MIT code can be linked into or translated into
+GPL-3.0-only apw with the copyright notice. No clean-room pass is needed, and
+no Apple binary is distributed.
+
+`src/adi` is about 4,500 lines for Mac and Windows GrandSlam only, once
+Android and Store paths are dropped. The plan is a Rust translation under
+`src/adi/` with these stages:
+
+1. State container and key derivation, validated against `adi.pb` files
+   produced by the C++ implementation.
+2. Key recovery and OTP, validated at fixed counters.
+3. Provisioning, validated against Apple live.
+4. Wire `identity_for` to the native provider, keeping `anisette_url` as the
+   user override.
+
+Oracle vectors (25 counters for a Mac and a Windows device, plus machine IDs)
+are at `/tmp/opencode/oracle/vectors.json`; the reference binary is
+`/tmp/opencode/apple-auth/build2/apple_auth_otp_at`.
