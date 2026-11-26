@@ -15,13 +15,15 @@ apw needs two things from Apple's ADI stack:
    with the gateway, then `ptm`/`tk`, and persist the opaque result (`adi.pb`,
    664 bytes).
 2. **OTP.** On every request, derive `X-Apple-I-MD` from the provisioned state
-   and the current time. The value is 28 bytes:
+   and the current time. The value is 24 or 28 bytes:
 
    ```
-   u32 0x00000005 | u32 0x00000010 | 16 OTP bytes | u32 platform tail
+   u32 type | u32 0x00000010 | 16 OTP bytes [| u32 platform tail]
    ```
 
-   The 16-byte field changes exactly on 30-second boundaries.
+   The first word selects the variant by DSID: `4` with no tail for DSID -1
+   (24 bytes), `5` with a platform tail for DSID -2 (28 bytes). The 16-byte
+   field changes exactly on 30-second boundaries.
 
 Provisioning is gated behind the same binary and the same obfuscation, so a
 native OTP is a prerequisite for native provisioning, not a separate task.
@@ -100,6 +102,29 @@ MID, and their SHA-256 digests.
 This is consistent with the OTP being computed by an obfuscated, keyed
 permutation whose key material is itself derived inside the binary, not with a
 standard cipher applied to a key we can reach.
+
+## Public prior art
+
+Every public anisette implementation found wraps an Apple binary: Provision,
+anisette-v3-server, anisette-server-rs, omnisette, Anisette.py, anisette-js,
+swift-anisette, os-findmy-e, MacADICore, and xadi. None contains an OTP
+generator.
+
+What is documented publicly is the protocol, not the primitive:
+
+- The ADI C API and its calling convention (`ADILoadLibraryWithPath`,
+  `ADIOTPRequest`, `ADISetProvisioningPath`, the `ADICall` request struct, the
+  magic values `0x632b8d6e`/`0x85fe63b0`), in ionescu007/Blackwood-4NT (the
+  sections on OTP and MID are deliberately empty).
+- The provisioning exchange (`spim` -> `cpim` -> `ptm`/`tk`) as opaque blobs,
+  and the `adi.pb` path; no `adi.pb` format and no key agreement are published.
+- The claim, from Provision's own docs and Blackwood-4NT, that CoreADI is
+  "obfuscated with FairPlay techniques". No unpacked build, annotated database,
+  or identified primitive (AES, white-box AES, SM4, ARX) is public.
+
+So a reimplementation would start from zero against at least five divergent
+platform builds, and the one researcher who reached the API level explicitly
+withheld the algorithm.
 
 ## What this means
 
