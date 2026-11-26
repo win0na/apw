@@ -40,6 +40,12 @@ repository) was instrumented with three additions:
 With that, a single `OP_REQUEST_OTP` (ADI opcode `0xcfe0b46a`) can be traced end
 to end. Results were checked against the live `anisette-server-rs` container.
 
+Parity was confirmed before drawing conclusions: given the same provisioned
+state and the server's own `X-Apple-I-Client-Time`, the emulator produced a
+byte-identical `X-Apple-I-MD` (`00000005000000104b9e151d…a9e02980000001`,
+device `19FFDEED-97ED-35AE-14DF-819F442D6E99`, window 2026-11-26T21:39:07Z).
+The traces therefore describe the same computation the service performs.
+
 ## Result: the OTP is a proprietary white-box primitive
 
 The 16 OTP bytes are not produced by any standard primitive reached from the
@@ -145,6 +151,11 @@ GPL-2.0-only code and apw is GPL-3.0-only:
 Commands (from `/tmp/opencode/ani`):
 
 ```sh
+# parity with the live macOS service on 127.0.0.1:6971: fetch its headers,
+# then replay the same window through the emulator
+curl -s http://127.0.0.1:6971/ | python3 -c \
+  'import json,sys; d=json.load(sys.stdin); print(d["X-Apple-I-Client-Time"], d["X-Apple-I-MD"])'
+
 # three distinct OTPs from one state
 for T in 1000000000 1000000031 1795728358; do
   ADI_FAKE_TIME=$T ./src/target/release/examples/capture \
