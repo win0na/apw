@@ -1,8 +1,8 @@
 # Native ADI: feasibility findings
 
-Status: gate failed. Native OTP generation is not reproducible from public
-information or by searching standard primitives. Three independent checks
-(public prior art, the Windows PE, the Android aarch64 build) agree.
+Status: implemented. The gate below failed for Apple's binary, then a native
+MIT implementation (`apple-auth`) was found and ported to Rust. See Outcome at
+the end.
 
 Date: 2026-11-26. Branch: `native-adi`. Apple ADI binary analysed:
 `CoreADI-26.x86_64`, SHA-256 `4b6b320f…a5dae1` (the build pinned by

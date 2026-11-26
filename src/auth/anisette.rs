@@ -90,7 +90,8 @@ impl Identity {
 
 /// Apple's edge answers HTTP 503 to the literal `<macOS;` platform token and
 /// accepts `<Mac OS X;` for the same machine. Servers built from recent assets
-/// emit the rejected spelling, so rewrite it before any request leaves.
+/// emit the rejected spelling, so rewrite it before any account request leaves.
+/// The provisioning endpoints accept the original spelling.
 pub fn normalize_client_info(client_info: &str) -> String {
     client_info.replace("<macOS;", "<Mac OS X;")
 }
@@ -266,8 +267,20 @@ impl Anisette {
 
     pub async fn resync(&self, machine_data: &[u8]) -> Result<()> {
         match &self.source {
-            // A persisted native profile is stable; there is nothing to resync.
-            Source::Native { .. } => Ok(()),
+            // Apple asks for a resync when its copy of the device data is
+            // stale. apw cannot replay that state, so drop the stored identity
+            // and let the next request provision a fresh one.
+            Source::Native { paths, .. } => {
+                for platform in [Platform::Mac, Platform::Windows] {
+                    let path = state_path(paths, platform);
+                    match std::fs::remove_file(&path) {
+                        Ok(()) => {}
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(error) => return Err(error.into()),
+                    }
+                }
+                Ok(())
+            }
             Source::Remote { base, .. } => {
                 let body = serde_json::json!({
                     "sim": base64::engine::general_purpose::STANDARD.encode(machine_data),
@@ -514,7 +527,6 @@ fn utc_timestamp() -> String {
 fn state_path(paths: &Paths, platform: Platform) -> PathBuf {
     paths
         .state_dir
-        .join("apw")
         .join("adi")
         .join(format!("{}.json", platform.name()))
 }
@@ -803,8 +815,8 @@ mod tests {
             [0x11; 60],
             vec![0x22; Platform::Mac.secondary_len()],
             [0x33; 32],
-            [0x44; 8],
-            Some(7),
+            [0; 8],
+            None,
             Platform::Mac,
         )
         .unwrap();
@@ -839,7 +851,7 @@ mod tests {
             [0x11; 60],
             vec![0x22; Platform::Windows.secondary_len()],
             [0x33; 32],
-            [0x44; 8],
+            [0; 8],
             None,
             Platform::Windows,
         )
@@ -887,7 +899,7 @@ mod tests {
             [0x11; 60],
             vec![0x22; Platform::Mac.secondary_len()],
             [0x33; 32],
-            [0x44; 8],
+            [0; 8],
             None,
             Platform::Mac,
         )
@@ -910,6 +922,37 @@ mod tests {
         assert_eq!(mode, 0o600);
         let loaded = AdiState::load(&path, Platform::Mac).unwrap().unwrap();
         assert_eq!(loaded, state);
+    }
+
+    #[test]
+    fn the_adi_state_lives_under_the_state_directory() {
+        let paths = paths();
+        assert_eq!(
+            super::state_path(&paths, Platform::Mac),
+            paths.state_dir.join("adi/macos.json")
+        );
+        assert_eq!(
+            super::state_path(&paths, Platform::Windows),
+            paths.state_dir.join("adi/windows.json")
+        );
+    }
+
+    #[test]
+    fn an_unsupported_profile_variant_is_rejected() {
+        let rejected = |extra_data: [u8; 8], option: Option<u32>| {
+            crate::adi::Profile::from_parts(
+                [0x11; 60],
+                vec![0x22; Platform::Mac.secondary_len()],
+                [0x33; 32],
+                extra_data,
+                option,
+                Platform::Mac,
+            )
+            .is_err()
+        };
+        assert!(rejected([1; 8], None));
+        assert!(rejected([0; 8], Some(0)));
+        assert!(!rejected([0; 8], None));
     }
 
     #[test]

@@ -184,7 +184,7 @@ fn native_identities_are_accepted_by_gsa() {
 
     let state: Vec<PathBuf> = ["macos", "windows"]
         .iter()
-        .map(|name| paths.state_dir.join("apw/adi").join(format!("{name}.json")))
+        .map(|name| paths.state_dir.join("adi").join(format!("{name}.json")))
         .collect();
     for path in state {
         assert!(path.exists(), "{}", path.display());

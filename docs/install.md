@@ -27,6 +27,10 @@ The first sign-in provisions a macOS profile and a Windows profile against
 `windows.json` with mode 0600, then reuses them on later runs. Delete those files
 to make `apw` provision a new identity.
 
+If you used the separate anisette service before this release, run `apw login`
+again. Apple binds the session and escrow tokens to the machine identity that
+minted them, and an old session keeps tokens from the service identity.
+
 To use an external anisette server instead, set `APW_ANISETTE_URL`, pass
 `--anisette-url`, or set `anisette_url` in the config. The server must return a
 Windows identity by default and a macOS identity with `?backend=macos`. When a
