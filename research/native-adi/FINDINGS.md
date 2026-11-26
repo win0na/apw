@@ -1,7 +1,8 @@
 # Native ADI: feasibility findings
 
 Status: gate failed. Native OTP generation is not reproducible from public
-information or by searching standard primitives.
+information or by searching standard primitives. Three independent checks
+(public prior art, the Windows PE, the Android aarch64 build) agree.
 
 Date: 2026-11-26. Branch: `native-adi`. Apple ADI binary analysed:
 `CoreADI-26.x86_64`, SHA-256 `4b6b320f…a5dae1` (the build pinned by
@@ -89,6 +90,20 @@ interface, not code: `libstoreservicescore.so` loads it with `dlopen` and
 `int vdfut768ig(int op, void *ctx)`. That makes an aarch64 Unicorn oracle cheap
 to build, but the primitive remains obfuscated.
 
+The Windows build (`CoreADI.dll`, PE32+ x64) is the same protection class. Its
+PDB path names a `fairplay_release` build; both exports are gibberish names; the
+372 KB worker is flattened the same way and mixes in heavy mixed-boolean
+arithmetic (8,394 `imul`, 5,327 `xchg`, 4,436 `adc` in one function). It has no
+plaintext AES/SHA/ChaCha/SM4 constant, no AES-NI, and no 256-byte table that
+matches a known S-box. Thirteen 256-byte permutation tables exist in `.rdata`
+with no match to AES, SM4, or DES, so they are either obfuscator maps or an
+unknown primitive's tables.
+
+One useful structural fact: the Windows DLL has no clock read of its own. Its
+only `GetSystemTimeAsFileTime`/`QueryPerformanceCounter` calls are in the CRT
+security-cookie initialiser, so the time is passed in by the caller, like the
+30-second cadence in the macOS guest.
+
 ### Negative primitive search
 
 One provisioned macOS state was queried at `t = 1000000000`, `1000000031`, and
@@ -170,6 +185,13 @@ at first run or first install.
 Recommendation: take 1 for packaging and correctness now, and test 2 with a
 real account before investing further in 3. The `native-adi` branch should not
 merge an incomplete primitive.
+
+The concrete next experiment for 2 is `icloud.com/passwords` (Apple's web
+Passwords app) and `idmsa.apple.com` browser sign-in: both work without
+anisette headers. If a web session can read the keychain records, apw's escrow
+step disappears along with ADI; if not, escrow still needs a device identity
+and option 1 is the answer. That test needs one interactive account login, so
+it cannot run unattended.
 
 ## Reproduction
 
