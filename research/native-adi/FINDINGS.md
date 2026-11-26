@@ -79,6 +79,16 @@ at `0x1001d4d00`.
 - The 256-byte table candidates read during the final assembly are not
   permutations and do not match AES, inverse AES, or SM4.
 
+The Android build (`libCoreADI.so`, aarch64, NDK r19b) shows the same toolchain
+family: flattened blocks dispatched from `ldrsw` jump tables with computed
+indices, junk constant chains, `+0x11`-obfuscated strings, and an encrypted
+`.rodata` (entropy 7.87). It contains no AES/SHA/SM4/ChaCha tables and no ARMv8
+crypto instructions (0 in 369,602 decoded instructions). Its advantage is
+interface, not code: `libstoreservicescore.so` loads it with `dlopen` and
+`dlsym`s two plain C exports, `int cvu8io98wun(void *ctx)` and
+`int vdfut768ig(int op, void *ctx)`. That makes an aarch64 Unicorn oracle cheap
+to build, but the primitive remains obfuscated.
+
 ### Negative primitive search
 
 One provisioned macOS state was queried at `t = 1000000000`, `1000000031`, and
