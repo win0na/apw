@@ -21,9 +21,25 @@ Anisette is the device identity Apple expects on account requests. Apple does
 not document it and `apw` ships no Apple binary. Run a server and give `apw` its
 URL.
 
-The tested server is `anisette-server-rs` 0.2.1. It serves a Windows identity by
-default and a macOS identity on request. `apw` uses both, so the server must
-support `?backend=macos`.
+The flake packages the tested server, `anisette-server-rs` 0.2.1, with the ADI
+libraries it needs. It serves a Windows identity by default and a macOS identity
+on request, and `apw` uses both.
+
+```sh
+nix build .#anisette-server
+install -Dm755 result/bin/anisette-server ~/.local/bin/anisette-server
+install -Dm644 packaging/systemd/apw-anisette.service ~/.config/systemd/user/
+sed -i "s|@ANISETTE@|$HOME/.local/bin/anisette-server|" \
+  ~/.config/systemd/user/apw-anisette.service
+systemctl --user daemon-reload
+systemctl --user enable --now apw-anisette.service
+```
+
+The unit listens on `127.0.0.1:6969`, keeps its identity in
+`~/.local/state/anisette`, and restarts after a failure. `systemctl --user
+status apw-anisette` shows the first provisioning.
+
+Without Nix, run the upstream image instead:
 
 ```sh
 podman run -d --name apw-anisette \
@@ -32,10 +48,8 @@ podman run -d --name apw-anisette \
   ghcr.io/fdkevin0/anisette-server-rs:0.2.1 --backend windows
 ```
 
-`apw` uses the podman server above at `http://127.0.0.1:6969` by default. Set
-`APW_ANISETTE_URL` or pass
-`--anisette-url` when the server runs elsewhere. `anisette-v3-server` also works
-when it answers the same routes.
+`apw` uses `http://127.0.0.1:6969` by default. Set `APW_ANISETTE_URL` or pass
+`--anisette-url` when the server runs elsewhere.
 
 The server holds a device identity that Apple ties to your account. Self-host it
 or use a host you trust.

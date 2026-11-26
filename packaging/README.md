@@ -1,6 +1,7 @@
 # Packaging
 
-Four artifacts, all built from a release binary.
+Four apw artifacts, all built from a release binary. The anisette service is
+separate: it builds from upstream source and pinned Apple libraries.
 
 | Artifact | Source | Output |
 | --- | --- | --- |
@@ -8,6 +9,7 @@ Four artifacts, all built from a release binary.
 | Debian package | `packaging/debian/build.sh` | `dist/apw_0.4.0_<arch>.deb` |
 | AUR | `packaging/aur/PKGBUILD` | `makepkg -si` output |
 | Nix flake | `flake.nix` | `nix build` output |
+| Anisette service | `packaging/nix/anisette-server.nix` | `nix build .#anisette-server` |
 
 ## Build commands
 
