@@ -8,11 +8,11 @@ pub mod twofa;
 
 use plist::Value;
 
-use crate::config::Config;
+use crate::config::{Config, Paths};
 use crate::error::{Error, Result};
 use crate::model::Session;
 
-use self::anisette::Identity;
+use self::anisette::{Anisette, Identity};
 use self::gsa::Status;
 use self::srp::SrpClient;
 
@@ -26,7 +26,7 @@ pub enum LoginStart {
 /// The state a two-factor submission needs, including the password for the SRP replay.
 #[derive(Clone)]
 pub struct TwoFactor {
-    anisette_url: String,
+    anisette: Anisette,
     identity: Identity,
     account: String,
     password: String,
@@ -34,12 +34,17 @@ pub struct TwoFactor {
     pet: Option<String>,
 }
 
-pub fn login(config: &Config, account: &str, code: Option<String>) -> Result<Session> {
+pub fn login(
+    config: &Config,
+    paths: &Paths,
+    account: &str,
+    code: Option<String>,
+) -> Result<Session> {
     let password = match std::env::var("APW_PASSWORD") {
         Ok(password) if !password.is_empty() => password,
         _ => read_secret("Apple ID password: ")?,
     };
-    match login_start(config, account, &password)? {
+    match login_start(config, paths, account, &password)? {
         LoginStart::Done(session) => Ok(*session),
         LoginStart::NeedCode(flow) => {
             let code = match code.filter(|code| !code.is_empty()) {
@@ -55,19 +60,25 @@ pub fn login(config: &Config, account: &str, code: Option<String>) -> Result<Ses
 }
 
 /// Sign in with explicit credentials, stopping before the two-factor code.
-pub fn login_start(config: &Config, account: &str, password: &str) -> Result<LoginStart> {
+pub fn login_start(
+    config: &Config,
+    paths: &Paths,
+    account: &str,
+    password: &str,
+) -> Result<LoginStart> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    runtime.block_on(login_start_async(config, account, password))
+    runtime.block_on(login_start_async(config, paths, account, password))
 }
 
-async fn login_start_async(config: &Config, account: &str, password: &str) -> Result<LoginStart> {
-    let url = config
-        .anisette_url()
-        .ok_or_else(|| Error::Invalid("set --anisette-url or APW_ANISETTE_URL".into()))?;
-
-    let anisette = anisette::Anisette::new(&url);
+async fn login_start_async(
+    config: &Config,
+    paths: &Paths,
+    account: &str,
+    password: &str,
+) -> Result<LoginStart> {
+    let anisette = Anisette::from_config(config, paths);
     let windows_identity = anisette.identity().await?;
     // The macOS chain is the primary one: it yields the modern service map and
     // the cloudKitToken. The Windows chain supplies the escrow PET.
@@ -97,7 +108,7 @@ async fn login_start_async(config: &Config, account: &str, password: &str) -> Re
             twofa::request_trusted_device(&identity_token, &identity).await?;
         }
         return Ok(LoginStart::NeedCode(Box::new(TwoFactor {
-            anisette_url: url,
+            anisette,
             identity,
             account: account.to_string(),
             password: password.to_string(),
@@ -120,7 +131,7 @@ pub fn submit_two_factor(flow: TwoFactor, code: &str) -> Result<Session> {
 }
 
 async fn submit_two_factor_async(flow: TwoFactor, code: &str) -> Result<Session> {
-    let anisette = anisette::Anisette::new(&flow.anisette_url);
+    let anisette = flow.anisette;
     let mut identity = flow.identity;
     let submitted = twofa::submit_trusted_device(code, &flow.identity_token, &identity).await?;
     let (status, spd, refreshed) =
@@ -231,18 +242,19 @@ async fn finish_login(
 /// Re-fetch the service map and `cloudKitToken` with the stored session.
 /// This is the only password-free renewal: `mmeAuthToken` itself cannot be
 /// reissued without a fresh PET, and a PET only comes from a password login.
-pub fn refresh_services(config: &Config, session: &Session) -> Result<Session> {
+pub fn refresh_services(config: &Config, paths: &Paths, session: &Session) -> Result<Session> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    runtime.block_on(refresh_services_async(config, session))
+    runtime.block_on(refresh_services_async(config, paths, session))
 }
 
-pub async fn refresh_services_async(config: &Config, session: &Session) -> Result<Session> {
-    let url = config
-        .anisette_url()
-        .ok_or_else(|| Error::Invalid("set an anisette URL in the config".into()))?;
-    let anisette = anisette::Anisette::new(&url);
+pub async fn refresh_services_async(
+    config: &Config,
+    paths: &Paths,
+    session: &Session,
+) -> Result<Session> {
+    let anisette = Anisette::from_config(config, paths);
     // The map must come from the platform that minted the token: Apple binds
     // `mmeAuthToken` to the device identity, so a Windows-minted session answers
     // 401 for a macOS client. Try macOS first, then merge the default identity's

@@ -22,7 +22,8 @@ cargo test
 The suite has two parts:
 
 - Unit tests in `src/`: TOTP vectors from RFC 6238, AES key wrap, snapshot seal and open, SRP round trips, sidecar matching, and the GSA `spd` decrypt.
-- Integration tests in `tests/cli.rs`: a fixture sync, `list`, `get`, `wifi`, `otp`, `status`, wrong passphrase, missing snapshot, and the anisette check.
+- Integration tests in `tests/cli.rs`: a fixture sync, `list`, `get`, `wifi`, `otp`, `status`, wrong passphrase, missing snapshot, and an unreachable anisette
+server.
 
 Tests isolate the XDG directories with `APW_CONFIG_DIR`, `APW_DATA_DIR`, and `APW_STATE_DIR`, and set `APW_PASSPHRASE` so no keyring is needed. They never touch the network.
 

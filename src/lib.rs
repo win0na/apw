@@ -1,3 +1,4 @@
+pub mod adi;
 pub mod auth;
 pub mod ckks;
 pub mod cli;

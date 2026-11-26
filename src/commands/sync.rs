@@ -171,17 +171,15 @@ pub fn group_session(paths: &Paths, config: &mut Config) -> Result<GroupSession>
         .peer
         .clone()
         .ok_or_else(|| Error::Auth("run `apw join` first".into()))?;
-    let anisette_url = config
-        .anisette_url()
-        .ok_or_else(|| Error::Invalid("set an anisette URL in the config".into()))?;
+    let anisette = Anisette::from_config(config, paths);
     let encryption = PeerKeys::from_x963(
         &decode(&peer_state.signing_key)?,
         &decode(&peer_state.encryption_key)?,
     )?;
 
     block_on(async move {
-        let identity = Anisette::new(&anisette_url).identity().await?;
-        let mac = Anisette::new(&anisette_url)
+        let identity = anisette.identity().await?;
+        let mac = anisette
             .identity_for(Some("macos"))
             .await
             .unwrap_or_else(|_| identity.clone());
@@ -197,7 +195,7 @@ pub fn group_session(paths: &Paths, config: &mut Config) -> Result<GroupSession>
         {
             Ok(gateway) => gateway,
             Err(error) if crate::auth::is_auth_error(&error) => {
-                session = crate::auth::refresh_services_async(config, &session)
+                session = crate::auth::refresh_services_async(config, paths, &session)
                     .await
                     .map_err(|refresh| {
                         Error::Message(format!(
@@ -331,9 +329,7 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Resu
         .peer
         .clone()
         .ok_or_else(|| Error::Auth("run `apw join` first".into()))?;
-    let anisette_url = config
-        .anisette_url()
-        .ok_or_else(|| Error::Invalid("set an anisette URL in the config".into()))?;
+    let anisette = Anisette::from_config(config, paths);
 
     let encryption = PeerKeys::from_x963(
         &decode(&peer_state.signing_key)?,
@@ -352,8 +348,8 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Resu
         gateway,
     ) = block_on(async {
         let mut session = session;
-        let identity = Anisette::new(&anisette_url).identity().await?;
-        let mac = Anisette::new(&anisette_url)
+        let identity = anisette.identity().await?;
+        let mac = anisette
             .identity_for(Some("macos"))
             .await
             .unwrap_or_else(|_| identity.clone());
@@ -370,7 +366,7 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Resu
                 if std::env::var_os("APW_DEBUG").is_some() {
                     eprintln!("sync: session rejected, re-fetching the service map");
                 }
-                session = crate::auth::refresh_services_async(config, &session)
+                session = crate::auth::refresh_services_async(config, paths, &session)
                     .await
                     .map_err(|refresh| {
                         Error::Message(format!(
@@ -615,9 +611,7 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Resu
     let mut group_warnings: Vec<String> = Vec::new();
     if !service_keys.is_empty() {
         let read = block_on(async {
-            let mac = Anisette::new(&anisette_url)
-                .identity_for(Some("macos"))
-                .await?;
+            let mac = anisette.identity_for(Some("macos")).await?;
             let mut groups = Vec::new();
             let mut warnings = Vec::new();
             for scope in [

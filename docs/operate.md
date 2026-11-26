@@ -78,8 +78,9 @@ When the session expires, `apw sync` fails with an authentication error. A new
 `apw login` refreshes the tokens and keeps the existing peer. Use `--refresh` to
 re-read the service URLs without a password.
 
-In the interface, `/login` opens the same steps: anisette URL, Apple ID,
-password, two-factor code, then an optional join. `/join` asks for the escrow
+In the interface, `/login` opens the same steps: Apple ID, password, two-factor
+code, then an optional join. The anisette server field is optional and empty by
+default, which uses the native device identity. `/join` asks for the escrow
 passcode and spends one attempt.
 
 ## Shared groups

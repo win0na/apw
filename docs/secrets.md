@@ -56,11 +56,15 @@ Each join spends one attempt. Apple allows about ten attempts before destroying
 the record. A failed join increments the failure count in `state.json` and
 automatic logins stop retrying until you run `apw join` again.
 
-## Anisette
+## Device identity
 
-The anisette server holds a device identity that Apple associates with account
-requests. It can link requests from every client that uses the same identity.
-Run your own server, restrict who can reach it, and treat its data directory as
+`apw` holds the device identity Apple associates with account requests, in
+`$XDG_STATE_HOME/apw/adi/` with mode 0600. It can link requests from every client
+that uses the same identity, so treat the directory as sensitive. Deleting it
+makes `apw` provision a new identity on the next sign-in.
+
+If you configure an external anisette server, that server holds the identity
+instead. Run your own, restrict who can reach it, and treat its data directory as
 sensitive.
 
 ## Threat model
@@ -70,7 +74,7 @@ does not protect against:
 
 - A compromised user session that can read process memory or the unlocked
   Secret Service entry.
-- A malicious anisette server.
+- A malicious anisette server, when one is configured.
 - Apple account compromise.
 - A modified binary.
 - A snapshot copied together with its key.

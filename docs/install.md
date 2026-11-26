@@ -6,7 +6,7 @@ This page installs `apw`, signs in, and starts the hourly sync timer.
 
 - Linux on x86_64 or aarch64 with glibc.
 - An Apple ID with two-factor authentication.
-- An anisette server. See [Set up anisette](#set-up-anisette).
+- Network access to Apple on the first sign-in, for the device identity.
 - Secret Service on the session bus, or `APW_PASSPHRASE`.
 - To build: Rust 1.88 or newer, Zig 0.17.1, `cmake`, `perl`, and `libdbus-1`.
   On Debian and Ubuntu install `libdbus-1-dev` and `pkg-config`. On Arch install
@@ -15,44 +15,22 @@ This page installs `apw`, signs in, and starts the hourly sync timer.
 The built binary needs glibc and D-Bus for Secret Service. It links the OpenTUI
 native library in, so it does not need Zig at runtime.
 
-## Set up anisette
+## Device identity
 
-Anisette is the device identity Apple expects on account requests. Apple does
-not document it and `apw` ships no Apple binary. Run a server and give `apw` its
-URL.
+Apple expects a device identity on every account request. `apw` builds it in
+process. The ADI implementation in `src/adi/` is a Rust port of
+[apple-auth](https://github.com/apple-auth/apple-auth) (MIT) and does not load,
+emulate, or download an Apple binary.
 
-The flake packages the tested server, `anisette-server-rs` 0.2.1, with the ADI
-libraries it needs. It serves a Windows identity by default and a macOS identity
-on request, and `apw` uses both.
+The first sign-in provisions a macOS profile and a Windows profile against
+`gsa.apple.com`. `apw` writes them to `$XDG_STATE_HOME/apw/adi/macos.json` and
+`windows.json` with mode 0600, then reuses them on later runs. Delete those files
+to make `apw` provision a new identity.
 
-```sh
-nix build .#anisette-server
-install -Dm755 result/bin/anisette-server ~/.local/bin/anisette-server
-install -Dm644 packaging/systemd/apw-anisette.service ~/.config/systemd/user/
-sed -i "s|@ANISETTE@|$HOME/.local/bin/anisette-server|" \
-  ~/.config/systemd/user/apw-anisette.service
-systemctl --user daemon-reload
-systemctl --user enable --now apw-anisette.service
-```
-
-The unit listens on `127.0.0.1:6969`, keeps its identity in
-`~/.local/state/anisette`, and restarts after a failure. `systemctl --user
-status apw-anisette` shows the first provisioning.
-
-Without Nix, run the upstream image instead:
-
-```sh
-podman run -d --name apw-anisette \
-  --network host \
-  -v apw-anisette:/data \
-  ghcr.io/fdkevin0/anisette-server-rs:0.2.1 --backend windows
-```
-
-`apw` uses `http://127.0.0.1:6969` by default. Set `APW_ANISETTE_URL` or pass
-`--anisette-url` when the server runs elsewhere.
-
-The server holds a device identity that Apple ties to your account. Self-host it
-or use a host you trust.
+To use an external anisette server instead, set `APW_ANISETTE_URL`, pass
+`--anisette-url`, or set `anisette_url` in the config. The server must return a
+Windows identity by default and a macOS identity with `?backend=macos`. When a
+URL is configured, `apw` does not provision locally.
 
 ## Install the binary
 
@@ -125,7 +103,7 @@ systemctl --user enable --now apw-sync.timer
 ```
 
 The timer runs `apw sync` hourly. It reads `~/.config/apw/sync.env` when the file
-exists, so a headless passphrase or anisette URL can live in a mode 0600 file:
+exists, so a headless passphrase or anisette server URL can live in a mode 0600 file:
 
 ```sh
 install -m 600 /dev/null ~/.config/apw/sync.env

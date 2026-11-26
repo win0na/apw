@@ -24,12 +24,6 @@ pub fn run(
         config.account = Some(account);
     }
 
-    if config.anisette_url().is_none() {
-        return Err(Error::Invalid(
-            "set --anisette-url or APW_ANISETTE_URL".into(),
-        ));
-    }
-
     let account = match config.account.clone() {
         Some(account) => account,
         None if std::io::stdin().is_terminal() => {
@@ -78,7 +72,7 @@ pub fn run(
     let code = std::env::var("APW_2FA_CODE")
         .ok()
         .filter(|value| !value.is_empty());
-    let mut session = crate::auth::login(config, &account, code)?;
+    let mut session = crate::auth::login(config, paths, &account, code)?;
     // A profile can return a reduced service map. Keep the URLs we already
     // discovered rather than dropping a working escrow or CloudKit endpoint.
     if let Some(previous) = previous {
@@ -166,15 +160,11 @@ fn refresh_services(paths: &Paths, config: &mut Config, account: &str, json: boo
         .session
         .clone()
         .ok_or_else(|| Error::Auth("run `apw login` first".into()))?;
-    let url = config
-        .anisette_url()
-        .ok_or_else(|| Error::Invalid("set an anisette URL in the config".into()))?;
-
     // The macOS client info carries the full service map. When Apple refuses
     // it, the default identity still answers with a reduced one, so merge
     // rather than give up on the whole refresh.
+    let anisette = crate::auth::anisette::Anisette::from_config(config, paths);
     let services = crate::commands::join::block_on(async {
-        let anisette = crate::auth::anisette::Anisette::new(&url);
         let mut services = crate::auth::icloud::Webservices::default();
         let mut first_error = None;
         if let Ok(identity) = anisette.identity_for(Some("macos")).await {

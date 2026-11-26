@@ -66,18 +66,20 @@ cargo build --release --locked --no-default-features --features tui
 
 ## `apw login` stops before the two-factor prompt
 
-The anisette server did not answer or returned an identity Apple rejected. Check
-that `APW_ANISETTE_URL` is reachable and that the container is running. Then run
-`apw login --refresh` to re-read the service URLs, or sign in again.
+Apple rejected the device identity, or a configured anisette server did not
+answer. If `APW_ANISETTE_URL` or `anisette_url` is set, check that the server is
+reachable. Otherwise delete `$XDG_STATE_HOME/apw/adi/` and sign in again; `apw`
+provisions a new identity. Then run `apw login --refresh` to re-read the service
+URLs.
 
 ## `apw login` reports `GSA answered HTTP 503`
 
 Apple's edge rejects the literal `<macOS;` platform token in `X-MMe-Client-Info`
-with HTTP 503. Anisette servers built from recent assets emit that spelling, so
-`apw` rewrites it to `<Mac OS X;` before sending, and retries with the server's
-Windows identity if the macOS one is still refused. Seeing this error means both
-were refused: check that the server is reachable, and restart the container if
-its machine identity is stale.
+with HTTP 503. `apw` rewrites it to `<Mac OS X;` before sending, and retries with
+the Windows identity if the macOS one is still refused. Seeing this error means
+both were refused. If you configured an anisette server, check that it is
+reachable and restart it if its identity is stale. Otherwise delete
+`$XDG_STATE_HOME/apw/adi/` so the next sign-in provisions a new identity.
 
 A freshly provisioned identity can be refused for a few minutes; retry after a
 short wait.

@@ -18,8 +18,6 @@
 
       version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).package.version;
 
-      anisette-server = pkgs: pkgs.callPackage ./packaging/nix/anisette-server.nix { };
-
       apw = pkgs: pkgs.rustPlatform.buildRustPackage {
         pname = "apw";
         inherit version;
@@ -63,7 +61,6 @@
       packages = eachSystem (pkgs: {
         default = apw pkgs;
         apw = apw pkgs;
-        anisette-server = anisette-server pkgs;
       });
 
       apps = eachSystem (pkgs: {

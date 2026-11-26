@@ -24,7 +24,7 @@ the command-line contract, so scripts and the systemd timer continue to work.
 ## Requirements
 
 - Linux on x86_64 or aarch64.
-- An anisette server. See [Install](docs/install.md#set-up-anisette).
+- Network access to Apple on the first sign-in, for the device identity.
 - Rust 1.88 or newer and Zig 0.17.1 to build from source.
 - `cmake`, `perl`, `libdbus-1-dev`, and `pkg-config` to build with the keyring backend.
 - An Apple ID with iCloud Passwords enabled.
@@ -138,8 +138,8 @@ Configuration lives in `$XDG_CONFIG_HOME/apw/config.toml` and state in
 `$XDG_STATE_HOME/apw/state.json`. The snapshot and its lock live in
 `$XDG_DATA_HOME/apw/`.
 
-Environment variables override the anisette URL, account, directories, and the
-snapshot passphrase. See [Reference](docs/reference.md).
+Environment variables override the anisette server URL, account, directories,
+and the snapshot passphrase. See [Reference](docs/reference.md).
 
 The `[tui]` table remembers interface preferences:
 

@@ -231,7 +231,7 @@ fn pw_wifi_lists_networks_and_get_returns_the_password() {
 }
 
 #[test]
-fn login_explains_how_to_start_anisette() {
+fn login_explains_an_unreachable_anisette_server() {
     let dir = TempDir::new().unwrap();
     apw(&dir)
         .env("APW_PASSWORD", "test password")
@@ -239,8 +239,8 @@ fn login_explains_how_to_start_anisette() {
         .args(["login", "--account", "a@b.c"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("podman run"))
-        .stderr(predicate::str::contains("anisette-server-rs"));
+        .stderr(predicate::str::contains("cannot use the anisette server"))
+        .stderr(predicate::str::contains("APW_ANISETTE_URL"));
 }
 
 #[test]

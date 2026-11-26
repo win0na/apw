@@ -1844,10 +1844,9 @@ impl Ui {
                 state.view.vault.account.clone().unwrap_or_default(),
             )
         };
-        let _ = paths;
         let proxy = self.app.proxy();
         std::thread::spawn(move || {
-            let result = crate::auth::refresh_services(&config, &session)
+            let result = crate::auth::refresh_services(&config, &paths, &session)
                 .map(|session| (account, session))
                 .map_err(|error| error.message().to_string());
             let _ = proxy.send(AuthEvent::Refreshed(result));
@@ -1944,7 +1943,7 @@ impl Ui {
         }
         self.modal_title.set_text("APPLE SIGN IN");
         let (key, label, value, secret) = match step {
-            AuthStep::Anisette => (RowKey::Site, "Anisette URL", anisette, false),
+            AuthStep::Anisette => (RowKey::Site, "Anisette URL (optional)", anisette, false),
             AuthStep::Account => (RowKey::Site, "Apple ID", account, false),
             AuthStep::Password => (RowKey::Password, "Password", password, true),
             AuthStep::TwoFactor => (RowKey::Site, "Two-factor code", code, false),
@@ -1972,7 +1971,7 @@ impl Ui {
             // replaces it instead of appending to it.
             input.perform(EditorAction::SelectAll);
             input.placeholder(match step {
-                AuthStep::Anisette => crate::config::DEFAULT_ANISETTE_URL,
+                AuthStep::Anisette => "leave blank for native ADI",
                 AuthStep::Account => "you@example.com",
                 AuthStep::TwoFactor => "6-digit code",
                 _ => "",
@@ -2003,10 +2002,6 @@ impl Ui {
         match step {
             AuthStep::Anisette => {
                 let value = self.field_value(RowKey::Site).trim().to_string();
-                if value.is_empty() {
-                    self.auth_error("An anisette URL is required.");
-                    return;
-                }
                 let paths = {
                     let mut state = self.state.borrow_mut();
                     let Some(auth) = state.auth.as_mut() else {
@@ -2016,7 +2011,7 @@ impl Ui {
                     state.view.paths.clone()
                 };
                 match crate::config::Config::update(&paths, |config| {
-                    config.anisette_url = Some(value);
+                    config.anisette_url = (!value.is_empty()).then(|| value.clone());
                 }) {
                     Ok(config) => {
                         let mut state = self.state.borrow_mut();
@@ -2080,12 +2075,11 @@ impl Ui {
                         state.view.paths.clone(),
                     )
                 };
-                let _ = paths;
                 self.render_auth();
                 let proxy = self.app.proxy();
                 let attempt = self.state.borrow().auth_attempt;
                 std::thread::spawn(move || {
-                    let result = crate::auth::login_start(&config, &account, &password)
+                    let result = crate::auth::login_start(&config, &paths, &account, &password)
                         .map_err(|error| error.message().to_string());
                     let _ = proxy.send(AuthEvent::Started { attempt, result });
                 });

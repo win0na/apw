@@ -284,3 +284,35 @@ Android and Store paths are dropped. The plan is a Rust translation under
 Oracle vectors (25 counters for a Mac and a Windows device, plus machine IDs)
 are at `/tmp/opencode/oracle/vectors.json`; the reference binary is
 `/tmp/opencode/apple-auth/build2/apple_auth_otp_at`.
+
+## Outcome (2026-11-26)
+
+The port is implemented. `src/adi/` is a Rust translation of the MIT
+`apple-auth` ADI core, with the MIT notice in `src/adi/LICENSE-MIT`. It loads no
+Apple binary and downloads nothing. Scope is GrandSlam macOS and Windows.
+
+Evidence:
+
+- 150 OTP vectors (6 provisioned profiles × 25 counters) are byte-exact, in
+  `tests/fixtures/adi/profiles.json`.
+- The masked parameter tables were re-derived independently and match the C++
+  arrays byte for byte. 26 counters outside the fixture also match the reference
+  binary.
+- `tests/fixtures/adi/provisioning.json` holds a captured macOS and Windows
+  provisioning exchange. The Rust code reproduces the CPIM, machine ID,
+  secondary state, encrypted seed, extra data, and OTPs exactly.
+- Live GSA accepts fresh native identities for both platforms: the response
+  carries `hsc = 200`, which is the device-identity status. A zeroed proof in
+  the same request returns `hsc = 401`. Apple reports the placeholder account
+  separately as `ec = -20970`, so the device check is independent of the
+  account.
+- Re-run with `APW_LIVE_ADI=1 cargo test --test adi_live -- --ignored`.
+
+`apw` provisions on first sign-in and stores the decoded state in
+`$XDG_STATE_HOME/apw/adi/{macos,windows}.json` with mode 0600. `APW_ANISETTE_URL`,
+`--anisette-url`, or `anisette_url` selects an external server instead. The Nix
+anisette package and the systemd unit are removed on this branch.
+
+Not ported: the Store and Android profile paths, and the `adi.pb` container
+format, which only obfuscates the same decoded fields with a hardware-derived
+file key.

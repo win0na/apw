@@ -99,6 +99,7 @@ creates; export reads the snapshot only.
 | `$XDG_DATA_HOME/apw/snapshot.bin` | Encrypted snapshot |
 | `$XDG_DATA_HOME/apw/snapshot.lock` | Per-operation lock file |
 | `$XDG_STATE_HOME/apw/state.json` | Last sync, source, counts, failures, retry time |
+| `$XDG_STATE_HOME/apw/adi/{macos,windows}.json` | Device identity, mode 0600 |
 | `$XDG_CONFIG_HOME/apw/config.lock` | Config read-modify-write lock |
 
 The snapshot is written with a mode 0600 temporary file and renamed into place.
@@ -106,7 +107,7 @@ The snapshot is written with a mode 0600 temporary file and renamed into place.
 ## Configuration
 
 ```toml
-anisette_url = "http://127.0.0.1:6969"
+# anisette_url = "http://127.0.0.1:6969"   # optional; native ADI is the default
 account = "you@example.com"
 kdf_salt = "..."       # written by apw; leave it alone
 
@@ -130,7 +131,7 @@ binary can read a newer file.
 
 | Variable | Use |
 | --- | --- |
-| `APW_ANISETTE_URL` | Anisette server URL |
+| `APW_ANISETTE_URL` | Anisette server URL; unset uses the native device identity |
 | `APW_PASSPHRASE` | Derive the snapshot key from this passphrase |
 | `APW_PASSWORD` | Apple ID password for `login` |
 | `APW_2FA_CODE` | Trusted-device code |
