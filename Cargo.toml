@@ -50,7 +50,10 @@ aes-siv = "0.7.0"
 hkdf = "0.12.4"
 prost = "0.13.5"
 flate2 = "1.1"
-opentui = { version = "0.9.7", optional = true, default-features = false }
+# `opentui` pins its `opentui-sys` to the same version, and the shim below
+# patches only 0.9.7. An unpinned requirement lets an install with no lock file
+# resolve a newer `opentui`, whose registry `opentui-sys` then refuses to build.
+opentui = { version = "=0.9.7", optional = true, default-features = false }
 
 [profile.release]
 lto = "fat"
