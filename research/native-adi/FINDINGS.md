@@ -153,6 +153,10 @@ withheld the algorithm.
 
 ## What this means
 
+Superseded: the primitive turned out to be public in an MIT project (see
+"Update 2026-11-26" and "Outcome"). The analysis below is why the binary route
+was abandoned, not a claim about the final implementation.
+
 A from-scratch implementation has to reverse Apple's obfuscated primitive:
 recover the key-derivation path from `adi.pb`, deobfuscate the arithmetic, and
 prove header parity against Apple's servers for every backend. That is a
