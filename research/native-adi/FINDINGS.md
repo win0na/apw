@@ -347,7 +347,7 @@ Experiment, needs one interactive sign-in:
 
 ```sh
 APW_ESCROW_IDENTITY=macos apw login
-apw join            # or: apw probe-escrow
+apw probe-escrow    # free GETRECORDS; `apw join` spends one escrow attempt
 ```
 
 The variable makes the sign-in keep the macOS PET, and the session records which
