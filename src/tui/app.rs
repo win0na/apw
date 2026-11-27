@@ -221,6 +221,7 @@ struct AuthState {
 enum AuthEvent {
     Started {
         attempt: u64,
+        account: String,
         result: std::result::Result<crate::auth::LoginStart, String>,
     },
     SignedIn {
@@ -2090,7 +2091,11 @@ impl Ui {
                     let result =
                         crate::auth::login_start(&config, &paths, &account, &password, false)
                             .map_err(|error| error.message().to_string());
-                    let _ = proxy.send(AuthEvent::Started { attempt, result });
+                    let _ = proxy.send(AuthEvent::Started {
+                        attempt,
+                        account,
+                        result,
+                    });
                 });
             }
             AuthStep::TwoFactor => {
@@ -2099,7 +2104,7 @@ impl Ui {
                     self.auth_error("Enter the code Apple sent.");
                     return;
                 }
-                let flow = {
+                let (flow, account) = {
                     let mut state = self.state.borrow_mut();
                     let Some(auth) = state.auth.as_mut() else {
                         return;
@@ -2107,7 +2112,7 @@ impl Ui {
                     auth.code = code.clone();
                     auth.busy = true;
                     auth.error = None;
-                    auth.flow.clone()
+                    (auth.flow.clone(), auth.account.clone())
                 };
                 let Some(flow) = flow else {
                     self.auth_error("The sign-in session expired. Start again.");
@@ -2119,7 +2124,11 @@ impl Ui {
                 std::thread::spawn(move || {
                     let result = crate::auth::submit_two_factor(flow, &code, false)
                         .map_err(|error| error.message().to_string());
-                    let _ = proxy.send(AuthEvent::Started { attempt, result });
+                    let _ = proxy.send(AuthEvent::Started {
+                        attempt,
+                        account,
+                        result,
+                    });
                 });
             }
             AuthStep::WindowsCode => {
@@ -2206,6 +2215,20 @@ impl Ui {
             // sign-in still changed the account, so report it instead of losing
             // the escrow attempt or session.
             match event {
+                AuthEvent::Started {
+                    account,
+                    result: Ok(crate::auth::LoginStart::Done(session)),
+                    ..
+                } => match self.store_session(account, session) {
+                    Ok(()) => {
+                        self.refresh();
+                        self.start_sync(false);
+                        self.set_notice(Some(format!("signed in as {account}")), false);
+                    }
+                    Err(error) => {
+                        self.set_notice(Some(error.message().to_string()), true);
+                    }
+                },
                 AuthEvent::SignedIn {
                     result: Ok((account, session)),
                     ..
@@ -2277,6 +2300,7 @@ impl Ui {
                         return;
                     };
                     auth.busy = false;
+                    auth.code.clear();
                     auth.windows = Some((**flow).clone());
                     auth.step = AuthStep::WindowsCode;
                     auth.error = None;
