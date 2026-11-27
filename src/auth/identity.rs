@@ -231,7 +231,7 @@ impl IdentitySource {
         Ok(Identity {
             headers,
             client_info,
-            platform: None,
+            platform: Some(platform_for(backend)),
             user_agent: info
                 .user_agent
                 .filter(|value| !value.is_empty())
