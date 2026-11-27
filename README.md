@@ -1,5 +1,10 @@
-# apw
-
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/icon/renders/icon-512-dark.png">
+    <img alt="apw" src="assets/icon/renders/icon-512.png" width="56" valign="middle">
+  </picture>
+  &nbsp;apw
+</h1>
 Apple Passwords on Linux, in the terminal.
 
 ![apw showing the login list with Example selected and its fields in the item pane](assets/apw-tui.png)

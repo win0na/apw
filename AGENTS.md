@@ -17,8 +17,8 @@ live gate are in [CONTRIBUTING.md](CONTRIBUTING.md); do not repeat them here.
 
 ## README
 
-- MUST open with `# name`, one sentence on what the tool does, one real
-  screenshot or demo, then `## Install`.
+- MUST open with the app icon and `apw` in an `h1`, one sentence on what the
+  tool does, one real screenshot or demo, then `## Install`.
 - MUST order install: `scripts/install.sh` first, a source build with Cargo
   second, package managers last, each as a single copyable command.
 - MUST present the terminal interface first and the command line second.
