@@ -22,28 +22,30 @@ process. The ADI implementation in `src/adi/` is a Rust port of
 [apple-auth](https://github.com/apple-auth/apple-auth) (MIT) and does not load,
 emulate, or download an Apple binary.
 
-The first sign-in provisions a macOS profile and a Windows profile against
-`gsa.apple.com`. If Apple asks for two-factor codes, the first is for the macOS
-identity and the second is for the Windows identity; both are one-time. The
-Windows identity authorizes escrow recovery, and later sign-ins ask for
-neither. `apw` writes the profiles to `$XDG_STATE_HOME/apw/adi/macos.json` and
-`windows.json` with mode 0600 in a mode 0700 directory, then reuses them on
-later runs. Delete those files
-to make `apw` provision a new identity.
+The first sign-in provisions a macOS profile against `gsa.apple.com`. If Apple
+asks for a two-factor code it is for that identity, and the code is one-time.
+The macOS identity authorizes account requests and escrow recovery, so later
+sign-ins ask for no code. `apw` writes the profile to
+`$XDG_STATE_HOME/apw/adi/macos.json` with mode 0600 in a mode 0700 directory,
+then reuses it on later runs. Delete the file
+to make `apw` provision a new identity. When Apple or a configured server cannot
+serve a macOS identity, `apw` falls back to Windows and stores `windows.json`.
 
-`apw login` and the interface both ask for each code when Apple requests one.
+`apw login` and the interface both ask for the code when Apple requests one.
 
 If you used the separate anisette service before this release, delete the
 `anisette_url` line from `~/.config/apw/config.toml` (or
 `$XDG_CONFIG_HOME/apw/config.toml` when set) and run `apw login` again.
 The old interface always saved a URL, and with one configured `apw` keeps using
 that server. Apple binds the session and escrow tokens to the machine identity
-that minted them, and an old session keeps tokens from the service identity.
+that minted them, and an old session keeps tokens from the service identity. A
+session from an earlier build keeps its Windows escrow token until the next
+`apw login`; sign in again to switch to the macOS token.
 
 To use an external anisette server instead, set `APW_ANISETTE_URL`, pass
 `--anisette-url`, or set `anisette_url` in the config. The server must return a
-Windows identity by default and a macOS identity with `?backend=macos`. When a
-URL is configured, `apw` does not provision locally.
+macOS identity with `?backend=macos`. When a URL is configured, `apw` does not
+provision locally.
 
 ## Install the binary
 

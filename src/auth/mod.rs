@@ -24,8 +24,6 @@ pub enum LoginStart {
     Done(Box<Session>),
     /// The macOS identity was asked for a code.
     NeedCode(Box<TwoFactor>),
-    /// The escrow token needs a code from the Windows identity.
-    NeedWindowsCode(Box<WindowsCode>),
 }
 
 /// The platform of the identity that actually completed the sign-in. It can be
@@ -38,14 +36,6 @@ fn chain_platform(identity: &Identity) -> &'static str {
     }
 }
 
-/// The escrow identity is the Windows one unless the operator opts into the
-/// macOS experiment. A PET only works with the platform claim that minted it.
-fn escrow_identity_is_macos() -> bool {
-    std::env::var("APW_ESCROW_IDENTITY")
-        .map(|value| value.eq_ignore_ascii_case("macos"))
-        .unwrap_or(false)
-}
-
 /// The state a two-factor submission needs, including the password for the SRP replay.
 #[derive(Clone)]
 pub struct TwoFactor {
@@ -55,32 +45,6 @@ pub struct TwoFactor {
     password: String,
     identity_token: String,
     pet: Option<String>,
-}
-
-/// The state a Windows two-factor submission needs. Reached only when the
-/// escrow token has to be minted, which is what `join` and recovery use.
-#[derive(Clone)]
-pub struct WindowsCode {
-    identities: IdentitySource,
-    identity: Identity,
-    account: String,
-    spd: Value,
-    pet: Option<String>,
-    pending: WindowsPending,
-}
-
-#[derive(Clone)]
-struct WindowsPending {
-    identity: Identity,
-    identity_token: String,
-    spd_pet: Option<String>,
-    header_pet: Option<String>,
-}
-
-/// The escrow step either has its PET or needs the Windows code first.
-enum EscrowPet {
-    Ready(Option<String>),
-    NeedCode(WindowsPending),
 }
 
 pub fn login(
@@ -111,16 +75,6 @@ pub fn login(
                 };
                 next = submit_two_factor(*flow, &code, interactive)?;
             }
-            LoginStart::NeedWindowsCode(flow) => {
-                let code = std::env::var("APW_2FA_CODE_WINDOWS")
-                    .ok()
-                    .filter(|code| !code.is_empty())
-                    .map_or_else(
-                        || read_secret("two-factor code for the Windows identity: "),
-                        Ok,
-                    )?;
-                return submit_windows_code(*flow, &code);
-            }
         }
     }
 }
@@ -131,18 +85,12 @@ pub fn login_start(
     paths: &Paths,
     account: &str,
     password: &str,
-    interactive: bool,
+    _interactive: bool,
 ) -> Result<LoginStart> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    runtime.block_on(login_start_async(
-        config,
-        paths,
-        account,
-        password,
-        interactive,
-    ))
+    runtime.block_on(login_start_async(config, paths, account, password))
 }
 
 async fn login_start_async(
@@ -150,12 +98,11 @@ async fn login_start_async(
     paths: &Paths,
     account: &str,
     password: &str,
-    interactive: bool,
 ) -> Result<LoginStart> {
     let identities = IdentitySource::from_config(config, paths);
-    // The macOS chain is the primary one: it yields the modern service map and
-    // the cloudKitToken. The Windows chain supplies the escrow PET and is
-    // fetched lazily, so a broken Windows identity cannot abort this chain.
+    // The macOS chain yields the modern service map, the cloudKitToken, and the
+    // PET the escrow proxy accepts. Fall back to Windows only when Apple or the
+    // configured server cannot serve a macOS identity.
     let mut identity = match identities.identity_for(Some("macos")).await {
         Ok(identity) => identity,
         Err(error) => {
@@ -196,55 +143,28 @@ async fn login_start_async(
         })));
     }
 
+    // The signed-in identity already holds a PET here: the branch above forces
+    // a code when it does not. The escrow proxy accepts it with the same
+    // platform claim, so no second machine identity is needed.
     let signed_in_as = chain_platform(&identity);
-    let escrow = if escrow_identity_is_macos() {
-        // The signed-in identity already holds a PET here: the branch above
-        // forces a code when it does not.
-        spd_pet
-            .clone()
-            .or_else(|| pet.clone())
-            .map(|pet| (pet, signed_in_as))
-    } else {
-        match escrow_pet(
-            &identities,
-            account,
-            password,
-            std::env::var("APW_2FA_CODE_WINDOWS").ok(),
-            interactive,
-        )
-        .await?
-        {
-            EscrowPet::Ready(pet) => pet.map(|pet| (pet, "windows")),
-            EscrowPet::NeedCode(pending) => {
-                return Ok(LoginStart::NeedWindowsCode(Box::new(WindowsCode {
-                    identities,
-                    identity,
-                    account: account.to_string(),
-                    spd,
-                    pet,
-                    pending,
-                })));
-            }
-        }
-    };
+    let escrow = spd_pet
+        .clone()
+        .or_else(|| pet.clone())
+        .map(|pet| (pet, signed_in_as));
     finish_login(&identities, &mut identity, account, spd, pet, escrow)
         .await
         .map(|session| LoginStart::Done(Box::new(session)))
 }
 
 /// Submit the trusted-device code and finish the sign-in.
-pub fn submit_two_factor(flow: TwoFactor, code: &str, interactive: bool) -> Result<LoginStart> {
+pub fn submit_two_factor(flow: TwoFactor, code: &str, _interactive: bool) -> Result<LoginStart> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    runtime.block_on(submit_two_factor_async(flow, code, interactive))
+    runtime.block_on(submit_two_factor_async(flow, code))
 }
 
-async fn submit_two_factor_async(
-    flow: TwoFactor,
-    code: &str,
-    interactive: bool,
-) -> Result<LoginStart> {
+async fn submit_two_factor_async(flow: TwoFactor, code: &str) -> Result<LoginStart> {
     let identities = flow.identities;
     let mut identity = flow.identity;
     // The pre-replay identity mints the submitted PET and any PET carried in
@@ -267,58 +187,10 @@ async fn submit_two_factor_async(
     } else {
         (flow.pet, mint_platform)
     };
-    let escrow = if escrow_identity_is_macos() {
-        pet.clone().map(|pet| (pet, pet_platform))
-    } else {
-        match escrow_pet(
-            &identities,
-            &flow.account,
-            &flow.password,
-            std::env::var("APW_2FA_CODE_WINDOWS").ok(),
-            interactive,
-        )
-        .await?
-        {
-            EscrowPet::Ready(escrow) => match escrow {
-                Some(pet) => Some((pet, "windows")),
-                None => pet.clone().map(|pet| (pet, pet_platform)),
-            },
-            EscrowPet::NeedCode(pending) => {
-                return Ok(LoginStart::NeedWindowsCode(Box::new(WindowsCode {
-                    identities,
-                    identity,
-                    account: flow.account,
-                    spd,
-                    pet,
-                    pending,
-                })));
-            }
-        }
-    };
+    let escrow = pet.clone().map(|pet| (pet, pet_platform));
     finish_login(&identities, &mut identity, &flow.account, spd, pet, escrow)
         .await
         .map(|session| LoginStart::Done(Box::new(session)))
-}
-
-/// Submit the Windows identity's code and finish the sign-in.
-pub fn submit_windows_code(flow: WindowsCode, code: &str) -> Result<Session> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-    runtime.block_on(submit_windows_code_async(flow, code))
-}
-
-async fn submit_windows_code_async(mut flow: WindowsCode, code: &str) -> Result<Session> {
-    let escrow_pet = resolve_windows_pet(flow.pending, code).await?;
-    finish_login(
-        &flow.identities,
-        &mut flow.identity,
-        &flow.account,
-        flow.spd,
-        flow.pet,
-        escrow_pet.map(|pet| (pet, "windows")),
-    )
-    .await
 }
 
 async fn finish_login(
@@ -478,87 +350,6 @@ async fn authenticate_any_identity(
             authenticate(identities, identity, account, password).await
         }
         result => result,
-    }
-}
-
-/// Mint the Windows-chain PET the escrow proxy accepts.
-///
-/// A Windows machine that Apple has not seen before answers the SRP with
-/// `hsc: 409` and no PET, so ask for that machine's own two-factor code and
-/// submit it. Without this the session keeps the macOS PET, which the escrow
-/// proxy rejects with `-3001`.
-///
-/// A failure to obtain the Windows identity is not fatal: the caller keeps the
-/// macOS PET and `join` reports the missing escrow token. A code that Apple
-/// accepts but answers without a PET is fatal, because the session would store
-/// a token the escrow proxy rejects.
-async fn escrow_pet(
-    identities: &identity::IdentitySource,
-    account: &str,
-    password: &str,
-    mut code: Option<String>,
-    interactive: bool,
-) -> Result<EscrowPet> {
-    let debug = std::env::var_os("APW_DEBUG").is_some();
-    let mut windows = match identities.identity_for(None).await {
-        Ok(identity) => identity,
-        Err(error) => {
-            if debug {
-                eprintln!("escrow pet: windows identity unavailable: {error}");
-            }
-            return Ok(EscrowPet::Ready(None));
-        }
-    };
-    let (status, spd, header_pet) =
-        match authenticate(identities, &mut windows, account, password).await {
-            Ok(result) => result,
-            Err(error) => {
-                if debug {
-                    eprintln!("escrow pet: windows sign-in failed: {error}");
-                }
-                return Ok(EscrowPet::Ready(None));
-            }
-        };
-    let spd_pet = gsa::spd_fields(&spd).ok().and_then(|fields| fields.pet);
-    if status.au.as_deref() == Some("secondaryAuth") {
-        return Err(Error::Message(
-            "Apple asked for SMS two-factor, which this build does not support yet".into(),
-        ));
-    }
-    if status.au.is_none() && status.hsc != Some(409) {
-        return Ok(EscrowPet::Ready(spd_pet.or(header_pet)));
-    }
-
-    let fields = gsa::idms_fields(&spd)?;
-    let identity_token = twofa::identity_token(&fields.adsid, &fields.gs_idms_token);
-    if status.hsc != Some(409) {
-        twofa::request_trusted_device(&identity_token, &windows).await?;
-    }
-    let pending = WindowsPending {
-        identity: windows,
-        identity_token,
-        spd_pet,
-        header_pet,
-    };
-    let code = match code.take().filter(|code| !code.trim().is_empty()) {
-        Some(code) => code,
-        None if interactive => read_secret("two-factor code for the Windows identity: ")?,
-        None => return Ok(EscrowPet::NeedCode(pending)),
-    };
-    resolve_windows_pet(pending, &code)
-        .await
-        .map(EscrowPet::Ready)
-}
-
-async fn resolve_windows_pet(pending: WindowsPending, code: &str) -> Result<Option<String>> {
-    let pet =
-        twofa::submit_trusted_device(code, &pending.identity_token, &pending.identity).await?;
-    match pet.or(pending.spd_pet).or(pending.header_pet) {
-        Some(pet) => Ok(Some(pet)),
-        None => Err(Error::Message(
-            "Apple accepted the Windows code but returned no escrow PET; run `apw login` again"
-                .into(),
-        )),
     }
 }
 

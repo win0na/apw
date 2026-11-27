@@ -199,7 +199,6 @@ enum AuthStep {
     Account,
     Password,
     TwoFactor,
-    WindowsCode,
     Escrow,
     JoinConfirm,
 }
@@ -212,7 +211,6 @@ struct AuthState {
     code: String,
     escrow: String,
     flow: Option<crate::auth::TwoFactor>,
-    windows: Option<crate::auth::WindowsCode>,
     busy: bool,
     error: Option<String>,
     join_only: bool,
@@ -224,10 +222,6 @@ enum AuthEvent {
         account: String,
         result: std::result::Result<crate::auth::LoginStart, String>,
     },
-    SignedIn {
-        attempt: u64,
-        result: std::result::Result<(String, crate::model::Session), String>,
-    },
     Joined {
         attempt: u64,
         result: std::result::Result<String, String>,
@@ -238,9 +232,9 @@ enum AuthEvent {
 impl AuthEvent {
     fn attempt(&self) -> Option<u64> {
         match self {
-            AuthEvent::Started { attempt, .. }
-            | AuthEvent::SignedIn { attempt, .. }
-            | AuthEvent::Joined { attempt, .. } => Some(*attempt),
+            AuthEvent::Started { attempt, .. } | AuthEvent::Joined { attempt, .. } => {
+                Some(*attempt)
+            }
             AuthEvent::Refreshed(_) => None,
         }
     }
@@ -1898,7 +1892,6 @@ impl Ui {
                 code: String::new(),
                 escrow: String::new(),
                 flow: None,
-                windows: None,
                 busy: false,
                 error: None,
                 join_only,
@@ -1951,7 +1944,6 @@ impl Ui {
             AuthStep::Account => (RowKey::Site, "Apple ID", account, false),
             AuthStep::Password => (RowKey::Password, "Password", password, true),
             AuthStep::TwoFactor => (RowKey::Site, "Two-factor code", code, false),
-            AuthStep::WindowsCode => (RowKey::Site, "Windows code", code, false),
             AuthStep::Escrow => (RowKey::Password, "Escrow passcode", escrow, true),
             AuthStep::JoinConfirm => (RowKey::Site, "", String::new(), false),
         };
@@ -1978,7 +1970,7 @@ impl Ui {
             input.placeholder(match step {
                 AuthStep::Anisette => "leave blank for native ADI",
                 AuthStep::Account => "you@example.com",
-                AuthStep::TwoFactor | AuthStep::WindowsCode => "6-digit code",
+                AuthStep::TwoFactor => "6-digit code",
                 _ => "",
             });
             input.focus();
@@ -1991,13 +1983,9 @@ impl Ui {
             AuthStep::Escrow => {
                 "This spends one of your escrow attempts. Check the passcode before continuing."
             }
-            AuthStep::WindowsCode => {
-                "Apple sent the Windows identity its own code. The escrow token is tied to that identity."
-            }
             _ => "",
         });
-        self.modal_body
-            .visible(matches!(step, AuthStep::Escrow | AuthStep::WindowsCode));
+        self.modal_body.visible(matches!(step, AuthStep::Escrow));
     }
 
     fn auth_submit(&self) {
@@ -2131,36 +2119,6 @@ impl Ui {
                     });
                 });
             }
-            AuthStep::WindowsCode => {
-                let code = self.field_value(RowKey::Site).trim().to_string();
-                if code.is_empty() {
-                    self.auth_error("Enter the code Apple sent.");
-                    return;
-                }
-                let (flow, account) = {
-                    let mut state = self.state.borrow_mut();
-                    let Some(auth) = state.auth.as_mut() else {
-                        return;
-                    };
-                    auth.code = code.clone();
-                    auth.busy = true;
-                    auth.error = None;
-                    (auth.windows.clone(), auth.account.clone())
-                };
-                let Some(flow) = flow else {
-                    self.auth_error("The sign-in session expired. Start again.");
-                    return;
-                };
-                self.render_auth();
-                let proxy = self.app.proxy();
-                let attempt = self.state.borrow().auth_attempt;
-                std::thread::spawn(move || {
-                    let result = crate::auth::submit_windows_code(flow, &code)
-                        .map(|session| (account, session))
-                        .map_err(|error| error.message().to_string());
-                    let _ = proxy.send(AuthEvent::SignedIn { attempt, result });
-                });
-            }
             AuthStep::Escrow => {
                 let escrow = self.secret_value.value();
                 if escrow.is_empty() {
@@ -2229,19 +2187,6 @@ impl Ui {
                         self.set_notice(Some(error.message().to_string()), true);
                     }
                 },
-                AuthEvent::SignedIn {
-                    result: Ok((account, session)),
-                    ..
-                } => match self.store_session(account, session) {
-                    Ok(()) => {
-                        self.refresh();
-                        self.start_sync(false);
-                        self.set_notice(Some(format!("signed in as {account}")), false);
-                    }
-                    Err(error) => {
-                        self.set_notice(Some(error.message().to_string()), true);
-                    }
-                },
                 AuthEvent::Joined {
                     result: Ok(peer), ..
                 } => {
@@ -2289,32 +2234,6 @@ impl Ui {
                     auth.error = None;
                 }
                 self.render_auth();
-            }
-            AuthEvent::Started {
-                result: Ok(crate::auth::LoginStart::NeedWindowsCode(flow)),
-                ..
-            } => {
-                {
-                    let mut state = self.state.borrow_mut();
-                    let Some(auth) = state.auth.as_mut() else {
-                        return;
-                    };
-                    auth.busy = false;
-                    auth.code.clear();
-                    auth.windows = Some((**flow).clone());
-                    auth.step = AuthStep::WindowsCode;
-                    auth.error = None;
-                }
-                self.render_auth();
-            }
-            AuthEvent::SignedIn {
-                result: Err(error), ..
-            } => self.auth_error(error),
-            AuthEvent::SignedIn {
-                result: Ok((account, session)),
-                ..
-            } => {
-                self.complete_login(account.clone(), session.clone());
             }
             AuthEvent::Joined {
                 result: Err(error), ..
@@ -4074,35 +3993,6 @@ mod tests {
 
         app.press("escape");
         assert!(!ui.state.borrow().modal_open);
-    }
-
-    #[test]
-    fn the_login_wizard_renders_the_windows_code_step() {
-        let app = TestApp::new(100, 30);
-        let ui = ui(&app);
-        ui.open_auth(false);
-        {
-            let mut state = ui.state.borrow_mut();
-            let auth = state.auth.as_mut().unwrap();
-            auth.step = AuthStep::WindowsCode;
-        }
-        ui.render_auth();
-        let text = app.render().text();
-        assert!(text.contains("Windows code"), "{text}");
-        assert!(text.contains("Apple sent"), "{text}");
-        assert!(text.contains("6-digit code"), "{text}");
-
-        app.press("enter");
-        let error = ui
-            .state
-            .borrow()
-            .auth
-            .as_ref()
-            .unwrap()
-            .error
-            .clone()
-            .unwrap_or_default();
-        assert!(error.contains("Enter the code Apple sent"), "{error}");
     }
 
     #[test]

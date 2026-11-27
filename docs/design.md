@@ -104,9 +104,9 @@ selected. The password field is a custom widget that paints bullets and handles
 editing, paste, and focus without exposing the text.
 
 The interface collects Apple ID credentials in a wizard and calls a stepwise
-login API. The password and two-factor codes stay in the process, and the
-escrow passcode is sent once for a join. The wizard asks for the macOS code and,
-when escrow needs it, the Windows identity's code.
+login API. The password and two-factor code stay in the process, and the
+escrow passcode is sent once for a join. The wizard asks for the macOS code when
+Apple requests one.
 
 ## Sync
 

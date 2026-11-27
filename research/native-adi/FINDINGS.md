@@ -321,11 +321,12 @@ Not ported: the Store and Android profile paths, and the `adi.pb` container
 format, which only obfuscates the same decoded fields with a hardware-derived
 file key.
 
-## Escrow identity (2026-11-26)
+## Escrow identity (2026-11-26, resolved 2026-11-27)
 
-The shipped client mints the escrow PET on the Windows chain and sends the
-Windows claim with it. That works, but "escrow requires Windows" is not
-established. The evidence points to a platform-consistency rule instead.
+Escrow does not need a Windows identity. The proxy binds a PET to the platform
+claim that minted it, and a macOS PET with a macOS claim is accepted.
+
+Evidence:
 
 - The escrow proxy authenticates with Basic `apple-id:PET`, where PET is
   `com.apple.gs.idms.pet` from GrandSlam, with anisette headers and the sbd user
@@ -334,32 +335,28 @@ established. The evidence points to a platform-consistency rule instead.
   `x-apple-i-device-type: 1`.
 - A macOS-minted PET sent with Windows client info and a Windows proof returns
   `-3001 Authentication failed` for every credential pair. The same request
-  with the Windows PET succeeds. Community tables report the same failure for a
+  with the Windows PET succeeded. Community tables report the same failure for a
   Mac claim with Windows ADI, and other mismatch codes (`-80045`, `-22410`) when
   the ADI library and the advertised platform disagree.
 - Apple's open-source `escrowrequest` and `TrustedPeersHelper` enroll macOS as a
   first-class escrow client (`device_platform = 2`). No public source shows a
   server-side Windows-only gate.
-- Unverified: a macOS-ADI escrow request after Apple's October 2026 change.
+- On 2026-11-27 a macOS-only session ran `apw probe-escrow` from the repository
+  build and printed `escrow auth ok: 34 records`, with
+  `escrow identity: platform=Some("macos") identity=Some(Mac)` under
+  `APW_DEBUG`. The macOS PET and the macOS claim were accepted.
 
-Experiment (open). Run the repository build, not an installed binary:
-
-```sh
-cargo build --release
-APW_ESCROW_IDENTITY=macos ./target/release/apw login
-APW_DEBUG=1 ./target/release/apw probe-escrow   # free GETRECORDS
-```
-
-`APW_DEBUG` prints `escrow identity: platform=...`. The session must show
-`Some("macos")`; if it shows `None` or `Some("windows")`, the login did not use
-this build and the result says nothing about macOS.
-
-A run on 2026-11-27 printed `escrow auth ok: 34 records`, but its session had no
+An earlier run with the same message is not evidence: its session had no
 platform field, its native identity files were untouched, and the installed
-binary was from 2026-11-23. It used the old binary and the podman service on
-`127.0.0.1:6969`, so it exercised the Windows chain, not native macOS. Do not
-count it as confirmation.
+binary was from 2026-11-23, so it exercised the Windows chain through the podman
+service on `127.0.0.1:6969`. Check the `escrow identity:` line before believing
+a probe result.
 
-A 200 from the repository build means macOS covers escrow, and the Windows
-identity, the second code, and half the state can go. Until then the Windows
-path is the tested one.
+The shipped client now keeps the macOS PET and records its platform in the
+session. `join` and `probe-escrow` send the identity that matches the stored
+token. New sign-ins never mint a Windows identity or ask for a second code. A
+session from an earlier build keeps its Windows token until the next
+`apw login`, which moves it to the macOS token.
+
+If a macOS identity cannot be provisioned, the sign-in falls back to Windows;
+the session records that platform and the escrow path follows it.
