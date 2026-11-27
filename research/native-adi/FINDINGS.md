@@ -338,24 +338,28 @@ established. The evidence points to a platform-consistency rule instead.
   Mac claim with Windows ADI, and other mismatch codes (`-80045`, `-22410`) when
   the ADI library and the advertised platform disagree.
 - Apple's open-source `escrowrequest` and `TrustedPeersHelper` enroll macOS as a
-  first-class escrow client (`device_platform = 2`), and working Rust clients
-  have sent a Mac claim. No public source shows a server-side Windows-only gate.
-- Unverified: a full macOS-ADI recovery after Apple's October 2026 change. No
-  public report confirms or denies it.
+  first-class escrow client (`device_platform = 2`). No public source shows a
+  server-side Windows-only gate.
+- Unverified: a macOS-ADI escrow request after Apple's October 2026 change.
 
-Experiment, needs one interactive sign-in:
+Experiment (open). Run the repository build, not an installed binary:
 
 ```sh
-APW_ESCROW_IDENTITY=macos apw login
-apw probe-escrow    # free GETRECORDS; `apw join` spends one escrow attempt
+cargo build --release
+APW_ESCROW_IDENTITY=macos ./target/release/apw login
+APW_DEBUG=1 ./target/release/apw probe-escrow   # free GETRECORDS
 ```
 
-The variable makes the sign-in keep the macOS PET, and the session records which
-platform minted it (`escrow_platform`) so `join`, `probe-escrow`, and later runs
-send the matching claim. Unset keeps the tested Windows path. A macOS PET is
-already forced when the account needs a code; a trusted machine may have one
-without a new code.
+`APW_DEBUG` prints `escrow identity: platform=...`. The session must show
+`Some("macos")`; if it shows `None` or `Some("windows")`, the login did not use
+this build and the result says nothing about macOS.
 
-If `GETRECORDS` answers 200, macOS covers escrow, and the Windows identity, the
-second code, and half the state can go. Until then the Windows path is the
-tested one.
+A run on 2026-11-27 printed `escrow auth ok: 34 records`, but its session had no
+platform field, its native identity files were untouched, and the installed
+binary was from 2026-11-23. It used the old binary and the podman service on
+`127.0.0.1:6969`, so it exercised the Windows chain, not native macOS. Do not
+count it as confirmation.
+
+A 200 from the repository build means macOS covers escrow, and the Windows
+identity, the second code, and half the state can go. Until then the Windows
+path is the tested one.
