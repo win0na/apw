@@ -78,12 +78,10 @@ When the session expires, `apw sync` fails with an authentication error. A new
 `apw login` refreshes the tokens and keeps the existing peer. Use `--refresh` to
 re-read the service URLs without a password.
 
-In the interface, `/login` opens the same steps: Apple ID, password, two-factor
-code, then an optional join. The first sign-in asks for the Windows identity's
-code on the terminal, so run `apw login` once before using `/login`. The
+In the interface, `/login` opens the same steps: Apple ID, password, two-factor,
+the Windows identity's code when escrow needs it, then an optional join. The
 anisette server field is optional and empty by default, which uses the native
-device identity. `/join` asks for the escrow
-passcode and spends one attempt.
+device identity. `/join` asks for the escrow passcode and spends one attempt.
 
 ## Shared groups
 

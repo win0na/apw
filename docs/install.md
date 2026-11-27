@@ -31,8 +31,7 @@ neither. `apw` writes the profiles to `$XDG_STATE_HOME/apw/adi/macos.json` and
 later runs. Delete those files
 to make `apw` provision a new identity.
 
-Run the first sign-in with `apw login` rather than the interface. The second code
-is prompted on the terminal, which the interface cannot do.
+`apw login` and the interface both ask for each code when Apple requests one.
 
 If you used the separate anisette service before this release, delete the
 `anisette_url` line from `~/.config/apw/config.toml` (or

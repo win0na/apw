@@ -104,9 +104,9 @@ selected. The password field is a custom widget that paints bullets and handles
 editing, paste, and focus without exposing the text.
 
 The interface collects Apple ID credentials in a wizard and calls a stepwise
-login API. The password and 2FA code stay in the process, and the escrow
-passcode is sent once for a join. It never hands the terminal back; a first
-sign-in that needs the Windows identity's code runs as `apw login`.
+login API. The password and two-factor codes stay in the process, and the
+escrow passcode is sent once for a join. The wizard asks for the macOS code and,
+when escrow needs it, the Windows identity's code.
 
 ## Sync
 
@@ -130,5 +130,4 @@ is enforced in the same function the CLI uses.
 - Notes are edited as a single line in the interface; the CLI accepts a body.
 - A passphrase prompt is still line-mode when the snapshot has no usable key.
 - The interface supports one vault at a time.
-- The first sign-in with a new Windows identity needs `apw login`; the wizard cannot ask for that code.
 - SMS two-factor is not supported by the sign-in code.

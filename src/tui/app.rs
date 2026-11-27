@@ -199,6 +199,7 @@ enum AuthStep {
     Account,
     Password,
     TwoFactor,
+    WindowsCode,
     Escrow,
     JoinConfirm,
 }
@@ -211,6 +212,7 @@ struct AuthState {
     code: String,
     escrow: String,
     flow: Option<crate::auth::TwoFactor>,
+    windows: Option<crate::auth::WindowsCode>,
     busy: bool,
     error: Option<String>,
     join_only: bool,
@@ -1895,6 +1897,7 @@ impl Ui {
                 code: String::new(),
                 escrow: String::new(),
                 flow: None,
+                windows: None,
                 busy: false,
                 error: None,
                 join_only,
@@ -1947,6 +1950,7 @@ impl Ui {
             AuthStep::Account => (RowKey::Site, "Apple ID", account, false),
             AuthStep::Password => (RowKey::Password, "Password", password, true),
             AuthStep::TwoFactor => (RowKey::Site, "Two-factor code", code, false),
+            AuthStep::WindowsCode => (RowKey::Site, "Windows code", code, false),
             AuthStep::Escrow => (RowKey::Password, "Escrow passcode", escrow, true),
             AuthStep::JoinConfirm => (RowKey::Site, "", String::new(), false),
         };
@@ -1973,7 +1977,7 @@ impl Ui {
             input.placeholder(match step {
                 AuthStep::Anisette => "leave blank for native ADI",
                 AuthStep::Account => "you@example.com",
-                AuthStep::TwoFactor => "6-digit code",
+                AuthStep::TwoFactor | AuthStep::WindowsCode => "6-digit code",
                 _ => "",
             });
             input.focus();
@@ -1986,9 +1990,13 @@ impl Ui {
             AuthStep::Escrow => {
                 "This spends one of your escrow attempts. Check the passcode before continuing."
             }
+            AuthStep::WindowsCode => {
+                "Apple sent the Windows identity its own code. The escrow token is tied to that identity."
+            }
             _ => "",
         });
-        self.modal_body.visible(matches!(step, AuthStep::Escrow));
+        self.modal_body
+            .visible(matches!(step, AuthStep::Escrow | AuthStep::WindowsCode));
     }
 
     fn auth_submit(&self) {
@@ -2091,7 +2099,7 @@ impl Ui {
                     self.auth_error("Enter the code Apple sent.");
                     return;
                 }
-                let (flow, account) = {
+                let flow = {
                     let mut state = self.state.borrow_mut();
                     let Some(auth) = state.auth.as_mut() else {
                         return;
@@ -2099,7 +2107,7 @@ impl Ui {
                     auth.code = code.clone();
                     auth.busy = true;
                     auth.error = None;
-                    (auth.flow.clone(), auth.account.clone())
+                    auth.flow.clone()
                 };
                 let Some(flow) = flow else {
                     self.auth_error("The sign-in session expired. Start again.");
@@ -2110,6 +2118,35 @@ impl Ui {
                 let attempt = self.state.borrow().auth_attempt;
                 std::thread::spawn(move || {
                     let result = crate::auth::submit_two_factor(flow, &code, false)
+                        .map_err(|error| error.message().to_string());
+                    let _ = proxy.send(AuthEvent::Started { attempt, result });
+                });
+            }
+            AuthStep::WindowsCode => {
+                let code = self.field_value(RowKey::Site).trim().to_string();
+                if code.is_empty() {
+                    self.auth_error("Enter the code Apple sent.");
+                    return;
+                }
+                let (flow, account) = {
+                    let mut state = self.state.borrow_mut();
+                    let Some(auth) = state.auth.as_mut() else {
+                        return;
+                    };
+                    auth.code = code.clone();
+                    auth.busy = true;
+                    auth.error = None;
+                    (auth.windows.clone(), auth.account.clone())
+                };
+                let Some(flow) = flow else {
+                    self.auth_error("The sign-in session expired. Start again.");
+                    return;
+                };
+                self.render_auth();
+                let proxy = self.app.proxy();
+                let attempt = self.state.borrow().auth_attempt;
+                std::thread::spawn(move || {
+                    let result = crate::auth::submit_windows_code(flow, &code)
                         .map(|session| (account, session))
                         .map_err(|error| error.message().to_string());
                     let _ = proxy.send(AuthEvent::SignedIn { attempt, result });
@@ -2226,6 +2263,22 @@ impl Ui {
                     auth.busy = false;
                     auth.flow = Some((**flow).clone());
                     auth.step = AuthStep::TwoFactor;
+                    auth.error = None;
+                }
+                self.render_auth();
+            }
+            AuthEvent::Started {
+                result: Ok(crate::auth::LoginStart::NeedWindowsCode(flow)),
+                ..
+            } => {
+                {
+                    let mut state = self.state.borrow_mut();
+                    let Some(auth) = state.auth.as_mut() else {
+                        return;
+                    };
+                    auth.busy = false;
+                    auth.windows = Some((**flow).clone());
+                    auth.step = AuthStep::WindowsCode;
                     auth.error = None;
                 }
                 self.render_auth();
@@ -3997,6 +4050,35 @@ mod tests {
 
         app.press("escape");
         assert!(!ui.state.borrow().modal_open);
+    }
+
+    #[test]
+    fn the_login_wizard_renders_the_windows_code_step() {
+        let app = TestApp::new(100, 30);
+        let ui = ui(&app);
+        ui.open_auth(false);
+        {
+            let mut state = ui.state.borrow_mut();
+            let auth = state.auth.as_mut().unwrap();
+            auth.step = AuthStep::WindowsCode;
+        }
+        ui.render_auth();
+        let text = app.render().text();
+        assert!(text.contains("Windows code"), "{text}");
+        assert!(text.contains("Apple sent"), "{text}");
+        assert!(text.contains("6-digit code"), "{text}");
+
+        app.press("enter");
+        let error = ui
+            .state
+            .borrow()
+            .auth
+            .as_ref()
+            .unwrap()
+            .error
+            .clone()
+            .unwrap_or_default();
+        assert!(error.contains("Enter the code Apple sent"), "{error}");
     }
 
     #[test]
