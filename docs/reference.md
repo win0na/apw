@@ -95,7 +95,7 @@ creates; export reads the snapshot only.
 | Path | Contents |
 | --- | --- |
 | `$XDG_CONFIG_HOME/apw/config.toml` | Anisette URL, account, sync floor, interface preferences |
-| `$XDG_CONFIG_HOME/apw/sync.env` | Optional environment for the systemd timer, mode 0600 |
+| `~/.config/apw/sync.env` | Optional environment for the systemd timer, mode 0600 |
 | `$XDG_DATA_HOME/apw/snapshot.bin` | Encrypted snapshot |
 | `$XDG_DATA_HOME/apw/snapshot.lock` | Per-operation lock file |
 | `$XDG_STATE_HOME/apw/state.json` | Last sync, source, counts, failures, retry time |
@@ -134,7 +134,8 @@ binary can read a newer file.
 | `APW_ANISETTE_URL` | Anisette server URL; unset uses the native device identity |
 | `APW_PASSPHRASE` | Derive the snapshot key from this passphrase |
 | `APW_PASSWORD` | Apple ID password for `login` |
-| `APW_2FA_CODE` | Trusted-device code |
+| `APW_2FA_CODE` | Trusted-device code for the macOS identity |
+| `APW_2FA_CODE_WINDOWS` | Trusted-device code for the Windows identity, for headless first sign-in |
 | `APW_ESCROW_PASSCODE` | Escrow passcode for `join` |
 | `APW_FIXTURE` | Fixture file for `sync` |
 | `APW_CONFIG_DIR` | Override the config directory |
@@ -142,7 +143,7 @@ binary can read a newer file.
 | `APW_STATE_DIR` | Override the state directory |
 | `APW_DEBUG` | Print PET source diagnostics to stderr |
 
-Explicit flags win over environment variables.
+`APW_ANISETTE_URL` wins over `--anisette-url` and `anisette_url`.
 
 ## JSON output
 

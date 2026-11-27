@@ -34,6 +34,7 @@ pub enum Command {
     /// Sign in to iCloud, join the trust, and write the first snapshot.
     Login {
         /// Anisette server base URL; omit to use the native ADI implementation.
+        /// The value is saved to the config for later commands.
         #[arg(long)]
         anisette_url: Option<String>,
         /// Apple ID to sign in with.
