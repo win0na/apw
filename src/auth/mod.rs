@@ -52,7 +52,10 @@ pub fn login(
                 None => std::env::var("APW_2FA_CODE")
                     .ok()
                     .filter(|code| !code.is_empty())
-                    .map_or_else(|| read_secret("two-factor code: "), Ok)?,
+                    .map_or_else(
+                        || read_secret("two-factor code for the macOS identity: "),
+                        Ok,
+                    )?,
             };
             submit_two_factor(*flow, &code)
         }
