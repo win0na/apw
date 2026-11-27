@@ -105,8 +105,8 @@ editing, paste, and focus without exposing the text.
 
 The interface collects Apple ID credentials in a wizard and calls a stepwise
 login API. The password and 2FA code stay in the process, and the escrow
-passcode is sent once for a join. The only line-mode prompt is the Windows
-identity's code on a first sign-in.
+passcode is sent once for a join. It never hands the terminal back; a first
+sign-in that needs the Windows identity's code runs as `apw login`.
 
 ## Sync
 

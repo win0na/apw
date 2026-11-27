@@ -458,8 +458,8 @@ impl IdentitySource {
 fn offline(base: &str, error: impl std::fmt::Display) -> Error {
     Error::Message(format!(
         "cannot use the anisette server at {base}: {error}\nset APW_ANISETTE_URL or configure \
-         anisette_url to a reachable anisette server, or remove anisette_url to use the \
-         native identity"
+         anisette_url to a reachable anisette server, or remove anisette_url and unset \
+         APW_ANISETTE_URL to use the native identity"
     ))
 }
 
@@ -673,7 +673,7 @@ impl AdiState {
         };
         let state: Self = serde_json::from_str(&text).map_err(|error| {
             Error::Message(format!(
-                "cannot read the native ADI state at {}: {error}",
+                "cannot read the native ADI state at {}: {error}; delete it to provision a new identity",
                 path.display()
             ))
         })?;
