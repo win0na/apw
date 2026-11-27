@@ -105,8 +105,8 @@ editing, paste, and focus without exposing the text.
 
 The interface collects Apple ID credentials in a wizard and calls a stepwise
 login API. The password and 2FA code stay in the process, and the escrow
-passcode is sent once for a join. The terminal is never handed back to a
-line-mode prompt.
+passcode is sent once for a join. A first sign-in that needs the Windows
+identity's code runs as `apw login`, which prompts on the terminal.
 
 ## Sync
 
@@ -130,4 +130,5 @@ is enforced in the same function the CLI uses.
 - Notes are edited as a single line in the interface; the CLI accepts a body.
 - A passphrase prompt is still line-mode when the snapshot has no usable key.
 - The interface supports one vault at a time.
+- The first sign-in with a new Windows identity needs `apw login`; the wizard cannot ask for that code.
 - SMS two-factor is not supported by the sign-in code.

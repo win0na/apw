@@ -27,7 +27,8 @@ The first sign-in provisions a macOS profile and a Windows profile against
 identity and the second is for the Windows identity; both are one-time. The
 Windows identity authorizes escrow recovery, and later sign-ins ask for
 neither. `apw` writes the profiles to `$XDG_STATE_HOME/apw/adi/macos.json` and
-`windows.json` with mode 0600 in a mode 0700 directory, then reuses them on later runs. Delete those files
+`windows.json` with mode 0600 in a mode 0700 directory, then reuses them on
+later runs. Delete those files
 to make `apw` provision a new identity.
 
 Run the first sign-in with `apw login` rather than the interface. The second code

@@ -966,10 +966,10 @@ mod tests {
 
     #[test]
     fn a_nonzero_option_and_extra_data_are_accepted() {
-        // These fields are re-serialized into adi.pb and do not choose the
-        // envelope, so a GrandSlam profile may carry them.
-        for (extra_data, option) in [([1; 8], None), ([0; 8], Some(0)), ([0; 8], None)] {
-            assert!(crate::adi::Profile::from_parts(
+        // These fields live in the ADI state body and do not choose the
+        // envelope, so they must not change the proof.
+        let profile = |extra_data, option| {
+            crate::adi::Profile::from_parts(
                 [0x11; 60],
                 vec![0x22; Platform::Mac.secondary_len()],
                 [0x33; 32],
@@ -977,8 +977,11 @@ mod tests {
                 option,
                 Platform::Mac,
             )
-            .is_ok());
-        }
+            .unwrap()
+        };
+        let baseline = profile([0; 8], None).otp_header(12345);
+        assert_eq!(profile([1; 8], None).otp_header(12345), baseline);
+        assert_eq!(profile([0; 8], Some(7)).otp_header(12345), baseline);
     }
 
     #[test]
