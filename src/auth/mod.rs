@@ -90,13 +90,18 @@ async fn login_start_async(
     interactive: bool,
 ) -> Result<LoginStart> {
     let identities = IdentitySource::from_config(config, paths);
-    let windows_identity = identities.identity().await?;
     // The macOS chain is the primary one: it yields the modern service map and
-    // the cloudKitToken. The Windows chain supplies the escrow PET.
-    let mut identity = identities
-        .identity_for(Some("macos"))
-        .await
-        .unwrap_or_else(|_| windows_identity.clone());
+    // the cloudKitToken. The Windows chain supplies the escrow PET and is
+    // fetched lazily, so a broken Windows identity cannot abort this chain.
+    let mut identity = match identities.identity_for(Some("macos")).await {
+        Ok(identity) => identity,
+        Err(error) => {
+            if std::env::var_os("APW_DEBUG").is_some() {
+                eprintln!("adi: macOS identity unavailable: {error}");
+            }
+            identities.identity().await?
+        }
+    };
 
     let (status, spd, pet) =
         authenticate_any_identity(&identities, &mut identity, account, password).await?;
