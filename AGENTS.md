@@ -34,7 +34,8 @@ live gate are in [CONTRIBUTING.md](CONTRIBUTING.md); do not repeat them here.
 ## Docs
 
 - MUST keep one job per page and the existing filenames: `design.md`,
-  `install.md`, `operate.md`, `reference.md`, `secrets.md`, `troubleshooting.md`.
+  `install.md`, `operate.md`, `reference.md`, `secrets.md`, `troubleshooting.md`,
+  `ui.md`.
 - MUST keep exact paths, flags, defaults, versions, and limits, and change them
   in the same change as the code.
 - MUST resolve every link and anchor, and link to the page that owns the detail
