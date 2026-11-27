@@ -316,3 +316,31 @@ anisette package and the systemd unit are removed on this branch.
 Not ported: the Store and Android profile paths, and the `adi.pb` container
 format, which only obfuscates the same decoded fields with a hardware-derived
 file key.
+
+## Escrow identity (2026-11-26)
+
+The shipped client mints the escrow PET on the Windows chain and sends the
+Windows claim with it. That works, but "escrow requires Windows" is not
+established. The evidence points to a platform-consistency rule instead.
+
+- The escrow proxy authenticates with Basic `apple-id:PET`, where PET is
+  `com.apple.gs.idms.pet` from GrandSlam, with anisette headers and the sbd user
+  agent (`com.apple.sbd/638.100.48 com.apple.iCloudHelper/282`), client info
+  `...<com.apple.AuthKit/1 (com.apple.sbd/638.100.48)>`, and
+  `x-apple-i-device-type: 1`.
+- A macOS-minted PET sent with Windows client info and a Windows proof returns
+  `-3001 Authentication failed` for every credential pair. The same request
+  with the Windows PET succeeds. Community tables report the same failure for a
+  Mac claim with Windows ADI, and other mismatch codes (`-80045`, `-22410`) when
+  the ADI library and the advertised platform disagree.
+- Apple's open-source `escrowrequest` and `TrustedPeersHelper` enroll macOS as a
+  first-class escrow client (`device_platform = 2`), and working Rust clients
+  have sent a Mac claim. No public source shows a server-side Windows-only gate.
+- Unverified: a full macOS-ADI recovery after Apple's October 2026 change. No
+  public report confirms or denies it.
+
+Experiment, needs one interactive sign-in: force a macOS two-factor challenge
+(`request_trusted_device` plus a code) so Apple mints a macOS PET, then call
+`GETRECORDS` with the macOS claim and that PET. A 200 removes the Windows
+identity, the second code, and half the state. Until then the Windows path is
+the tested one.
