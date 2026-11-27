@@ -36,6 +36,12 @@
         AWS_LC_SYS_USE_SYSTEM = "0";
         nativeBuildInputs = with pkgs; [ cmake perl pkg-config zig ];
         buildInputs = with pkgs; [ dbus ];
+        # The nixpkgs Zig hook claims buildPhase and runs `zig build` at the
+        # source root. apw has no root build.zig; its build script drives Zig.
+        dontUseZigBuild = true;
+        dontUseZigCheck = true;
+        dontUseZigInstall = true;
+        dontUseZigConfigure = true;
         preBuild = ''
           export AWS_LC_SYS_USE_SYSTEM=0
           # Zig needs a writable HOME for its global cache; the build sandbox
