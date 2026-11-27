@@ -1,13 +1,12 @@
 # Packaging
 
-Four apw artifacts, all built from a release binary. Each one installs the
-executable and `libopentui.so`; the executable loads the library from `lib/apw`
-relative to itself.
+Four apw artifacts, all built from a release binary. Each installs one
+self-contained executable; OpenTUI is linked statically.
 
 | Artifact | Source | Output |
 | --- | --- | --- |
-| Tarball | `packaging/tarball.sh` | `dist/apw-0.5.0-<host-target>.tar.gz` |
-| Debian package | `packaging/debian/build.sh` | `dist/apw_0.5.0_<arch>.deb` |
+| Tarball | `packaging/tarball.sh` | `dist/apw-0.5.1-<host-target>.tar.gz` |
+| Debian package | `packaging/debian/build.sh` | `dist/apw_0.5.1_<arch>.deb` |
 | AUR | `packaging/aur/PKGBUILD` | `makepkg -si` output |
 | Nix flake | `flake.nix` | `nix build` output |
 
@@ -18,7 +17,9 @@ packaging/tarball.sh
 packaging/debian/build.sh
 ```
 
-Both scripts build with `cargo build --release --locked` first. Set `APW_SKIP_BUILD=1` to reuse an existing `target/release/apw`; the scripts honour `CARGO_TARGET_DIR`.
+Both scripts build with `cargo build --release --locked` first. Set
+`APW_SKIP_BUILD=1` to reuse an existing `target/release/apw`; the scripts honour
+`CARGO_TARGET_DIR`.
 
 ```sh
 cd packaging/aur && makepkg -si
@@ -30,14 +31,16 @@ From the repository root:
 nix build
 ```
 
-The binary links `libdbus-1` for the Secret Service backend and loads
-`libopentui.so` from `lib/apw`. The Debian package declares `libdbus-1-3` and
-installs the library at `/usr/lib/apw`; the AUR recipe's makedepends are
-`cargo`, `rust`, `dbus`, and `zig`; the flake uses `dbus` as a build input.
+The binary links `libdbus-1` for the Secret Service backend. The Debian package
+declares `libdbus-1-3`; the AUR recipe's makedepends are `cargo`, `rust`,
+`dbus`, and `zig`; the flake uses `dbus` as a build input.
 
 ## Notes
 
-- The AUR package is `apw-cli` (`ssh://aur@aur.archlinux.org/apw-cli.git`); `packaging/aur/` holds the tracked copies of `PKGBUILD` and `.SRCINFO`. The binary is `/usr/bin/apw`; the recipe declares `provides=('apw')` and `conflicts=('apw')` because an unrelated wrapper already owns that path.
+- The AUR package is `apw-cli` (`ssh://aur@aur.archlinux.org/apw-cli.git`);
+  `packaging/aur/` holds the tracked copies of `PKGBUILD` and `.SRCINFO`. The
+  binary is `/usr/bin/apw`; the recipe declares `provides=('apw')` and
+  `conflicts=('apw')` because an unrelated wrapper already owns that path.
 - `release.yml` builds the tarball, the Debian package, their `.sha256` files,
   and `install.sh` on a `vX.Y.Z` tag, then publishes a pre-release.
 - To update the AUR package, bump `pkgver` in `PKGBUILD` and `.SRCINFO`, then
@@ -47,6 +50,5 @@ installs the library at `/usr/lib/apw`; the AUR recipe's makedepends are
   workaround are gone. The tests run in the default profile because the release
   profile aborts on panic. The tests are not run offline: `build()` does not
   fetch dev-dependencies.
-- Every installed layout puts `libopentui.so` in `lib/apw` beside the
-  executable: `$ORIGIN/../lib/apw` is the runpath.
+- Every installed layout is one binary; no runtime library sits beside it.
 - `flake.nix` pins `nixos-unstable`; `flake.lock` is committed.

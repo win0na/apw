@@ -26,13 +26,6 @@ The Secret Service backend is missing and `apw` cannot prompt. Set
 session, unlock the collection and check that `DBUS_SESSION_BUS_ADDRESS` points
 at it.
 
-## `error while loading shared libraries: libopentui.so`
-
-The executable loads the library from `../lib/apw` relative to itself. The
-install script puts both files in place; a Cargo install needs the library copy
-from [Install](install.md#cargo). Do not move the executable away from its
-`lib/apw` directory.
-
 ## A build fails looking for Zig or the OpenTUI library
 
 The source build needs Zig 0.17.1 and the `opentui` submodule. Clone with

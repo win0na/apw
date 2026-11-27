@@ -1,104 +1,63 @@
 # Install
 
-This page installs `apw`, signs in, and starts the hourly sync timer. Upgrading
-from an earlier release also needs the anisette note under [Sign in](#sign-in).
+Installs `apw` and opens the interface.
 
-## Requirements
-
-- Linux on x86_64 or aarch64 with glibc.
-- An Apple ID with two-factor authentication and iCloud Passwords enabled.
-- Network access to Apple on the first sign-in.
-- Secret Service on the session bus, or `APW_PASSPHRASE`.
-- To build: Rust 1.88 or newer, Zig 0.17.1, and `libdbus-1`. On Debian and
-  Ubuntu install `libdbus-1-dev` and `pkg-config`; on Arch install `dbus` and
-  `pkgconf`.
-
-The executable needs glibc, `libdbus-1` for Secret Service, and the
-`libopentui.so` installed beside it. It does not need Zig or Rust at runtime.
-
-## Install
-
-### Install script
+## Install script
 
 ```sh
-curl -fsSL https://github.com/win0na/apw/releases/latest/download/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/win0na/apw/main/scripts/install.sh | sh
 ```
 
-The script verifies the release checksum and installs `apw` to
-`~/.local/bin/apw` and the library to `~/.local/lib/apw/libopentui.so`. Add
-`~/.local/bin` to `PATH`. Use `--prefix DIR` or `APW_PREFIX` for another prefix,
-and `--version vX.Y.Z` to pin a release.
+The script verifies the release checksum and installs `~/.local/bin/apw`; add
+that directory to `PATH`. `--prefix DIR` installs elsewhere and
+`--version vX.Y.Z` pins a release.
 
-Prebuilt releases are x86_64 only. On aarch64, build from source.
-
-### Cargo
+## Cargo
 
 ```sh
-git clone --recurse-submodules https://github.com/win0na/apw
-cd apw
-cargo install --path . --locked
-install -s -D -m 0755 opentui/packages/native/lib/x86_64-linux/libopentui.so \
-  "${CARGO_HOME:-$HOME/.cargo}/lib/apw/libopentui.so"
+cargo install --git https://github.com/win0na/apw --locked
 ```
 
-Use `aarch64-linux` in place of `x86_64-linux` on ARM. `cargo install` builds
-only the executable, so the second command installs the library it loads at
-`../lib/apw`. Zig 0.17.1 must be on `PATH`; the build uses it once.
+Cargo needs Rust 1.88 or newer, Zig 0.17.1, `libdbus-1`, and `pkg-config`. On
+Debian and Ubuntu install `libdbus-1-dev`; on Arch install `dbus` and `pkgconf`.
+Use this path on aarch64; the prebuilt packages are x86_64.
 
-To build without installing, run `cargo build --release --locked` and install
-`target/release/apw` and `opentui/packages/native/lib/<platform>/libopentui.so`
-into the same `bin` and `lib/apw` layout.
+## Packages
 
-### Packages
+| Package | Command |
+| --- | --- |
+| Debian | `sudo apt install ./apw_0.5.1_amd64.deb`, after downloading it from the [release](https://github.com/win0na/apw/releases) |
+| Nix | `nix profile install github:win0na/apw` |
 
-| Package | Command | Installs |
-| --- | --- | --- |
-| Tarball | `packaging/tarball.sh` | `dist/apw-0.5.0-<target>.tar.gz` |
-| Debian | `packaging/debian/build.sh` | `dist/apw_0.5.0_<arch>.deb` |
-| AUR | `cd packaging/aur && makepkg -si` | the `apw-cli` package |
-| Nix | `nix build` | `result/bin/apw`, `result/lib/apw/libopentui.so` |
-
-Every layout keeps `libopentui.so` in `lib/apw` beside the executable. The
-tarball and Debian scripts build the release binary first; set
-`APW_SKIP_BUILD=1` to reuse `target/release/apw`.
+The AUR recipe in `packaging/aur/` is updated by hand, and the published
+`apw-cli` package still carries 0.3.0; use another path until it catches up.
 
 ## Sign in
 
 ```sh
-apw login --account you@example.com
+apw login
 apw sync
 ```
 
 The first sign-in asks for the Apple ID password, a two-factor code, and your
 escrow passcode, then joins the Octagon trust circle and syncs. Later sign-ins
-usually ask only for the password; use `--refresh` to re-read the service URLs
-without signing in, `--join` to join again, and `--no-join` to skip the join.
+usually ask only for the password; `--refresh` re-reads the service URLs without
+signing in.
 
 The escrow passcode is your device passcode, or the iCloud Security Code when
 you set one. It is used once, never stored, and is not the snapshot passphrase.
-A join spends one of about ten attempts; a wrong passcode stops the command. For
-a non-interactive run, set `APW_ESCROW_PASSCODE`.
+A join spends one of about ten attempts. For a non-interactive run, set
+`APW_ESCROW_PASSCODE`.
 
 The snapshot key goes to Secret Service on the first write. When Secret Service
 is unavailable, `apw` asks for an apw passphrase and derives the key with
 Argon2id; set `APW_PASSPHRASE` to choose that mode from the start.
 
-### Device identity
-
 Apple expects a device identity on every account request. `apw` provisions one
-in process from the Rust port of [apple-auth](https://github.com/apple-auth/apple-auth)
-and stores the macOS profile at `$XDG_STATE_HOME/apw/adi/macos.json`, mode 0600
-in a mode 0700 directory. Delete the file to provision a new identity. When
-macOS provisioning fails, `apw` stores `windows.json` instead; the Windows
-identity still reads the vault but escrow needs the macOS one.
-
-A release before 0.5.0 required a separate anisette service. Delete the
-`anisette_url` line from `~/.config/apw/config.toml` and sign in again: tokens
-bind to the identity that minted them, and an old session keeps its Windows
-escrow token until the next `apw login`. To keep using an external server, set
-`APW_ANISETTE_URL`, pass `--anisette-url`, or set `anisette_url`; the server must
-return a macOS identity with `?backend=macos`. See [Secrets](secrets.md) for the
-identity and escrow details.
+in process and stores it under `$XDG_STATE_HOME/apw/adi/`; delete that directory
+to provision a new identity. A release before 0.5.0 required a separate
+anisette service: delete `anisette_url` from `~/.config/apw/config.toml` and
+sign in again. [Secrets](secrets.md) covers the identity and escrow details.
 
 ## Start the sync timer
 
@@ -117,9 +76,9 @@ printf 'APW_PASSPHRASE=%s\n' 'your apw passphrase' > ~/.config/apw/sync.env
 ```
 
 Use the apw passphrase, never the device passcode. In Secret Service mode the
-timer needs an unlocked collection instead of this file. `apw` no longer reads
-the kernel keyring cache, so set `APW_PASSPHRASE` whenever the timer runs
-without an unlocked session.
+timer needs an unlocked collection instead. `apw` no longer reads the kernel
+keyring cache, so set `APW_PASSPHRASE` whenever the timer runs without an
+unlocked session.
 
 `Persistent=true` catches up after suspend or a missed run. Enable lingering
 when the user session is not always active:
@@ -131,12 +90,10 @@ loginctl enable-linger "$USER"
 ## Check the install
 
 ```sh
+apw
 apw status
-apw list
-apw otp example.com
 ```
 
-`apw status` prints the account, source, entry counts, last sync, and snapshot
-path. Bare `apw` opens the interface on a terminal. Next, read
-[Operate](operate.md) for sync and re-authentication, or
-[Troubleshooting](troubleshooting.md) when a step fails.
+Bare `apw` opens the interface. `apw status` prints the account, source, entry
+counts, last sync, and snapshot path. Next, read [Operate](operate.md) for
+day-to-day use, or [Troubleshooting](troubleshooting.md) when a step fails.

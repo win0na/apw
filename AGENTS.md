@@ -18,7 +18,8 @@ live gate are in [CONTRIBUTING.md](CONTRIBUTING.md); do not repeat them here.
 - MUST open with `# name`, one sentence on what the tool does, one real
   screenshot or demo, then `## Install`.
 - MUST order install: `scripts/install.sh` first, a source build with Cargo
-  second, package managers last.
+  second, package managers last, each as a single copyable command.
+- MUST present the terminal interface first and the command line second.
 - MUST name only real things: package names (the `apw` Debian package, the
   `apw-cli` AUR package, the Nix flake), flags, files, and versions that exist
   in this tree.
@@ -51,6 +52,8 @@ live gate are in [CONTRIBUTING.md](CONTRIBUTING.md); do not repeat them here.
   and `install.sh` to the release.
 - MUST keep `scripts/install.sh` checksum-verified, x86_64, and honest: on
   aarch64 it stops and points at a source build.
+- MUST keep the executable self-contained: OpenTUI is linked statically and no
+  runtime library is installed beside the binary.
 - MUST NOT advertise a package or asset the release does not produce.
 
 ## Verify

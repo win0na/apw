@@ -22,24 +22,10 @@ if [[ ! -x "$BIN" ]]; then
   exit 1
 fi
 
-HOST_TARGET="$(rustc -vV | awk '/^host: /{print $2}')"
-case "$HOST_TARGET" in
-  x86_64-unknown-linux-gnu) LIB_PLATFORM=x86_64-linux ;;
-  aarch64-unknown-linux-gnu) LIB_PLATFORM=aarch64-linux ;;
-  *) echo "error: no OpenTUI library for $HOST_TARGET" >&2; exit 1 ;;
-esac
-LIB="${OPENTUI_LIB_DIR:-${ROOT}/opentui/packages/native/lib/${LIB_PLATFORM}}/libopentui.so"
-if [[ ! -f "$LIB" ]]; then
-  echo "error: no OpenTUI library at $LIB" >&2
-  exit 1
-fi
-
 rm -rf "$STAGE"
-mkdir -p "$STAGE/DEBIAN" "$STAGE/usr/bin" "$STAGE/usr/lib/apw" "$STAGE/usr/share/doc/apw"
+mkdir -p "$STAGE/DEBIAN" "$STAGE/usr/bin" "$STAGE/usr/share/doc/apw"
 
 install -m 0755 "$BIN" "$STAGE/usr/bin/apw"
-# The executable finds this at $ORIGIN/../lib/apw.
-install -s -m 0755 "$LIB" "$STAGE/usr/lib/apw/libopentui.so"
 install -m 0644 README.md LICENSE "$STAGE/usr/share/doc/apw/"
 
 cat > "$STAGE/DEBIAN/control" <<EOF

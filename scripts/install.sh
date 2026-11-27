@@ -1,11 +1,11 @@
 #!/bin/sh
-# Install apw from a GitHub release: the executable and libopentui.so.
+# Install apw from a GitHub release.
 #
-#   curl -fsSL https://github.com/win0na/apw/releases/latest/download/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/win0na/apw/main/scripts/install.sh | sh
 #
 # Options:
 #   --prefix DIR     install under DIR (default: $APW_PREFIX or ~/.local)
-#   --version TAG    install a specific release tag (default: latest)
+#   --version TAG    install a specific release tag (default: newest release)
 #   -h, --help       show this text
 set -eu
 
@@ -20,13 +20,13 @@ die() {
 
 usage() {
     cat <<'EOF'
-Install apw from a GitHub release: the executable and libopentui.so.
+Install apw from a GitHub release.
 
-  curl -fsSL https://github.com/win0na/apw/releases/latest/download/install.sh | sh
+  curl -fsSL https://raw.githubusercontent.com/win0na/apw/main/scripts/install.sh | sh
 
 Options:
   --prefix DIR     install under DIR (default: $APW_PREFIX or ~/.local)
-  --version TAG    install a specific release tag (default: latest)
+  --version TAG    install a specific release tag (default: newest release)
   -h, --help       show this text
 EOF
 }
@@ -39,7 +39,7 @@ while [ $# -gt 0 ]; do
             shift 2
             ;;
         --version)
-            [ $# -ge 2 ] || die "--version needs a tag such as v0.5.0"
+            [ $# -ge 2 ] || die "--version needs a tag such as v0.5.1"
             VERSION=$2
             shift 2
             ;;
@@ -61,21 +61,28 @@ case $(uname -m) in
     x86_64|amd64) target=x86_64-unknown-linux-gnu ;;
     aarch64|arm64)
         die "no aarch64 release yet; build from source:
-  git clone --recurse-submodules https://github.com/$REPO
-  cd apw && cargo install --path . --locked"
+  cargo install --git https://github.com/$REPO --locked"
         ;;
     *) die "unsupported architecture: $(uname -m)" ;;
 esac
 
 if [ -z "$VERSION" ]; then
+    # `releases/latest` skips pre-releases, so fall back to the API while the
+    # newest release is one.
     latest=$(curl -fsSL -o /dev/null -w '%{url_effective}' \
-        "https://github.com/$REPO/releases/latest") ||
-        die "cannot reach github.com"
+        "https://github.com/$REPO/releases/latest" 2>/dev/null || true)
     VERSION=${latest##*/}
+    case $VERSION in
+        v[0-9]*) ;;
+        *)
+            VERSION=$(curl -fsSL "https://api.github.com/repos/$REPO/releases?per_page=1" 2>/dev/null |
+                sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1)
+            ;;
+    esac
 fi
 case $VERSION in
     v[0-9]*) ;;
-    *) die "not a release tag: $VERSION" ;;
+    *) die "cannot find a release; pass --version vX.Y.Z" ;;
 esac
 
 number=${VERSION#v}
@@ -96,11 +103,9 @@ curl -fsSL "$base/$archive.sha256" -o "$tmp/$archive.sha256" ||
 tar -xzf "$tmp/$archive" -C "$tmp"
 tree="$tmp/apw-$number-$target"
 [ -x "$tree/bin/apw" ] || die "archive has no bin/apw"
-[ -f "$tree/lib/apw/libopentui.so" ] || die "archive has no lib/apw/libopentui.so"
 
-install -d "$PREFIX/bin" "$PREFIX/lib/apw"
+install -d "$PREFIX/bin"
 install -m 0755 "$tree/bin/apw" "$PREFIX/bin/apw"
-install -m 0755 "$tree/lib/apw/libopentui.so" "$PREFIX/lib/apw/libopentui.so"
 
 if "$PREFIX/bin/apw" --version >/dev/null 2>&1; then
     echo "apw: installed $PREFIX/bin/apw ($("$PREFIX/bin/apw" --version))"
@@ -111,7 +116,5 @@ fi
 
 case ":$PATH:" in
     *":$PREFIX/bin:"*) ;;
-    *)
-        echo "apw: add $PREFIX/bin to PATH, then run: apw login"
-        ;;
+    *) echo "apw: add $PREFIX/bin to PATH, then run: apw login" ;;
 esac

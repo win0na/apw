@@ -1,6 +1,8 @@
 # Reference
 
-Commands, files, environment variables, and output formats.
+Commands, files, environment variables, and output formats for the command line.
+The terminal interface is the primary front end; its keys and slash commands are
+in [Operate](operate.md).
 
 ## Commands
 

@@ -3,6 +3,20 @@
 Changes worth knowing between releases. 0.5.0 covers everything since `v0.3.0`;
 0.4.0 was never tagged.
 
+## [0.5.1] - 2026-11-27
+
+### Changed
+
+- OpenTUI is linked statically. The executable is self-contained, so
+  `cargo install --git` works in one command and packages no longer install
+  `libopentui.so`. The stripped executable is 8.9 MB.
+- The install script, README, and docs present the install script, Cargo, and
+  package managers as one-line installs, with the terminal interface first.
+
+### Fixed
+
+- The install script finds the newest release when it is a pre-release.
+
 ## [0.5.0] - 2026-11-27
 
 ### Added
@@ -46,4 +60,5 @@ Changes worth knowing between releases. 0.5.0 covers everything since `v0.3.0`;
 - `cargo install --path .` resolves the repository's OpenTUI shim without
   `--locked`.
 
+[0.5.1]: https://github.com/win0na/apw/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/win0na/apw/compare/v0.3.0...v0.5.0

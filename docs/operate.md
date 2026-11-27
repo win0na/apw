@@ -1,23 +1,51 @@
 # Operate
 
-This page covers day-to-day sync, writes, sign-in, groups, and the sync timer.
+Day-to-day use of the interface, with the command line for scripts and the
+timer.
 
-## Sync the snapshot
+## The interface
 
-Run `apw sync`, or `/sync` in the interface. A second sync inside the five-minute
-floor is refused; `--force` or `/sync --force` overrides the floor when the
-previous run has finished. A queued write bypasses the floor, so the queue can
-drain without `--force`.
+Run `apw` with no arguments. The dashboard shows the account, counts, warnings,
+recent items, and the last sync. Category tabs open the vault.
 
-A sync reads the keychain into the snapshot and pushes queued local writes.
-Pending writes are capped at 200 operations and 16 MiB of payload. At either
-limit new writes are refused until a sync or `apw resolve` drains the queue.
+- Type to filter the focused list.
+- `/` opens the command palette; `enter` opens the selected item.
+- `tab` moves between panes, `esc` goes back, and `ctrl+c` quits.
+- `ctrl+z` suspends; return with `fg`.
 
-The interface runs sync in the background and shows progress in the footer. It
-holds the snapshot lock only for the sync itself, so the timer and the command
-line can run while the interface is idle.
+| Key | Action |
+| --- | --- |
+| `y` | Copy the password |
+| `o` | Copy the current one-time code |
+| `r` | Reveal the password for 20 seconds |
+| `e` | Edit the item |
+| `t` | Move the item to Recently Deleted |
+| `s` | Restore a trashed item |
+| `g` | Add the login to a group, or leave its group |
+| `u` | Undo the last move to Recently Deleted |
+| `l` / `v` | Keep the local change or take the remote version of a pending operation |
 
-## What sync does
+Slash commands mirror the subcommands: `/list`, `/notes`, `/wifi`, `/passkeys`,
+`/groups`, `/add`, `/edit`, `/rm`, `/restore`, `/trash`, `/pending`, `/sync`,
+`/resolve`, `/passkey`, `/otp`, `/group`, `/login`, `/join`, `/status`,
+`/help`, and `/quit`.
+
+The interface reloads the snapshot when its modification time changes, checked
+every few seconds and after its own writes. It holds the snapshot lock only for
+a sync, so the timer and the command line can run while it is idle.
+
+## Sync
+
+`/sync` runs in the background and shows progress in the footer. A second sync
+inside the five-minute floor is refused; `/sync --force` overrides the floor
+when the previous run has finished. A queued write bypasses the floor, so the
+queue can drain without `--force`.
+
+The command-line equivalent is `apw sync`, with the same floor. Pending writes
+are capped at 200 operations and 16 MiB of payload; at either limit new writes
+are refused until a sync or `apw resolve` drains the queue.
+
+A sync:
 
 1. Opens the session stored in the snapshot, or fails with an expired-session
    error that asks you to sign in again.
@@ -27,58 +55,47 @@ line can run while the interface is idle.
 
 A partial sync keeps the records it read and records the failure in state; the
 next sync retries. Conflicts arrive as pending operations with a blocked reason.
-Open **Pending** in the interface and keep the local change or take the remote
-version, or run `apw resolve --local` or `--remote`.
+Open **Pending** and keep the local change or take the remote version, or run
+`apw resolve --local` or `--remote`.
 
-## Check the snapshot
+## Read and write
+
+The interface reads and writes the same snapshot as the CLI, so an item added
+in one appears in the other. Writes change the snapshot and queue a CloudKit
+operation; they do not touch the network.
 
 ```sh
 apw status
 apw list
 apw get example.com
-apw pending
-apw trash
-```
-
-`apw status` prints the account, source, entry counts, last sync, and snapshot
-path; `--json` returns the same fields on a pipe.
-
-The interface dashboard shows the account, counts, warnings, recent items, and
-the last sync. The footer shows the sync time.
-
-## Write locally
-
-```sh
 apw add login example.com --username you@example.com --generate
 apw add note "Recovery codes" --body "Stored offline"
 apw edit example.com --title Example --generate
 apw rm example.com --yes
 apw restore --id <id>
+apw pending
+apw trash
 ```
 
-Writes change the snapshot and queue a CloudKit operation; they do not touch the
-network. The next sync pushes them.
-
-`apw rm` requires `--yes`. The item moves to Recently Deleted and stays
-recoverable for 30 days. The interface shows the same confirmation and offers
-undo with `u`. Shared entries cannot be edited or deleted here; change them on a
-device that owns the group.
+`apw rm` requires `--yes`; the item moves to Recently Deleted and stays
+recoverable for 30 days. Shared entries cannot be edited or deleted here;
+change them on a device that owns the group.
 
 ## Sign in again
+
+When the session expires, a sync fails with an authentication error. `/login`
+runs the wizard: Apple ID, password, a two-factor code when Apple asks, then an
+optional join. The anisette field is optional and empty by default, which uses
+the native device identity. `/join` asks for the escrow passcode and spends one
+attempt.
 
 ```sh
 apw login
 apw sync
 ```
 
-When the session expires, `apw sync` fails with an authentication error. A new
-`apw login` refreshes the tokens and keeps the existing peer. `--refresh`
-re-reads the service URLs without a password.
-
-In the interface, `/login` runs the same steps: Apple ID, password, a two-factor
-code when Apple asks, then an optional join. The anisette field is optional and
-empty by default, which uses the native device identity. `/join` asks for the
-escrow passcode and spends one attempt.
+`apw login` keeps the existing peer; `--refresh` re-reads the service URLs
+without a password.
 
 ## Shared groups
 

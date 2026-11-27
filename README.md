@@ -1,38 +1,33 @@
 # apw
 
-Apple Passwords on Linux, with a terminal interface and an offline snapshot.
+Apple Passwords on Linux, in the terminal.
 
 ![apw showing the login list with Example selected and its fields in the item pane](assets/apw-tui.png)
 
-`apw` signs in with your Apple ID, joins the keychain trust with your escrow
-passcode, and keeps an encrypted snapshot of logins, notes, Wi-Fi networks,
-passkeys, and groups. Queries work offline; edits are queued for the next
-sync. Bare `apw` opens the interface, and every subcommand stays scriptable.
-
 ## Install
 
-```sh
-curl -fsSL https://github.com/win0na/apw/releases/latest/download/install.sh | sh
-```
-
-Installs `apw` and `libopentui.so` under `~/.local`; add `~/.local/bin` to
-`PATH` if needed. `--prefix DIR` installs elsewhere. Prebuilt releases are
-x86_64; aarch64 builds from source, or with Cargo:
+With the install script:
 
 ```sh
-git clone --recurse-submodules https://github.com/win0na/apw
-cd apw
-cargo install --path . --locked
-install -s -D -m 0755 opentui/packages/native/lib/x86_64-linux/libopentui.so \
-  "${CARGO_HOME:-$HOME/.cargo}/lib/apw/libopentui.so"
+curl -fsSL https://raw.githubusercontent.com/win0na/apw/main/scripts/install.sh | sh
 ```
 
-Use `aarch64-linux` in place of `x86_64-linux` on ARM. Building needs Rust 1.88
-or newer, Zig 0.17.1, `libdbus-1`, and `pkg-config`. On Debian and Ubuntu
-install `libdbus-1-dev`; on Arch install `dbus` and `pkgconf`.
+With Cargo:
 
-Packages are the fallback: Debian, the `apw-cli` AUR package, and the Nix
-flake. See [Install](docs/install.md#packages).
+```sh
+cargo install --git https://github.com/win0na/apw --locked
+```
+
+With a package manager:
+
+```sh
+curl -fsSLO https://github.com/win0na/apw/releases/download/v0.5.1/apw_0.5.1_amd64.deb \
+  && sudo apt install ./apw_0.5.1_amd64.deb   # Debian
+nix profile install github:win0na/apw          # Nix
+```
+
+The script installs to `~/.local/bin`; add it to `PATH` if needed. Prebuilt
+packages are x86_64; on aarch64 use Cargo. Every method needs `libdbus-1`.
 
 ## Sign in
 
@@ -47,9 +42,8 @@ stored.
 
 ## Use the interface
 
-Run `apw` with no arguments. Type to filter, `/` opens the command palette, and
-`enter` opens the selected item; the full key map is in
-[Operate](docs/operate.md).
+Run `apw`. Type to filter, `/` opens the command palette, and `enter` opens the
+selected item.
 
 | Key | Action |
 | --- | --- |
@@ -59,30 +53,33 @@ Run `apw` with no arguments. Type to filter, `/` opens the command palette, and
 | `e` | Edit the item |
 | `t` | Move the item to Recently Deleted |
 
-## Use the CLI
+The full key map is in [Operate](docs/operate.md).
+
+## Command line
+
+Every subcommand answers from the snapshot, for scripts and the systemd timer.
 
 ```sh
 apw list github
 apw get github --password-only
 apw otp github
-apw add login github.com --username you --generate
 apw sync --force
 ```
 
-JSON is the default when stdout is a pipe; a terminal gets a table, and
-`--json` forces it. See [Reference](docs/reference.md#json-output).
+See [Reference](docs/reference.md).
 
 ## Requirements
 
-- Linux x86_64 or aarch64 with glibc, `libdbus-1`, and Secret Service (or
-  `APW_PASSPHRASE`).
-- An Apple ID with iCloud Passwords, and network access on the first sign-in.
+- Linux x86_64 or aarch64 with glibc, and `libdbus-1`.
+- An Apple ID with iCloud Passwords, Secret Service or `APW_PASSPHRASE`, and
+  network access on the first sign-in.
 
 ## Docs
 
-[Install](docs/install.md) · [Operate](docs/operate.md) · [Reference](docs/reference.md) ·
-[Secrets](docs/secrets.md) · [Troubleshooting](docs/troubleshooting.md) ·
-[Design](docs/design.md) · [Changelog](CHANGELOG.md)
+[Install](docs/install.md) · [Operate](docs/operate.md) ·
+[Reference](docs/reference.md) · [Secrets](docs/secrets.md) ·
+[Troubleshooting](docs/troubleshooting.md) · [Design](docs/design.md) ·
+[Changelog](CHANGELOG.md)
 
 ## License
 

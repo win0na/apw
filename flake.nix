@@ -31,7 +31,7 @@
 
         cargoLock.lockFile = ./Cargo.lock;
 
-        nativeBuildInputs = with pkgs; [ patchelf pkg-config zig ];
+        nativeBuildInputs = with pkgs; [ pkg-config zig ];
         buildInputs = with pkgs; [ dbus ];
         # The nixpkgs Zig hook claims buildPhase and runs `zig build` at the
         # source root. apw has no root build.zig; its build script drives Zig.
@@ -50,27 +50,10 @@
         # CI runs them on a normal runner.
         doCheck = false;
 
-        postInstall = ''
-          lib=$(find . -path '*/opentui/packages/native/lib/*/libopentui.so' -print -quit)
-          if [ -z "$lib" ]; then
-            echo "libopentui.so was not built" >&2
-            exit 1
-          fi
-          install -Dm755 "$lib" "$out/lib/apw/libopentui.so"
-          # The cargo install hook also copies the build-tree library here.
-          rm -f "$out/lib/libopentui.so"
-          strip --strip-unneeded "$out/bin/apw" "$out/lib/apw/libopentui.so"
-        '';
-
-        # Nix's fixup strip keeps the symbol table. Strip fully here, then put
-        # the relative runpath back after the fixup shrinks it away.
+        # Nix's fixup strip keeps the symbol table; strip fully for size.
         dontStrip = true;
-        postFixup = ''
-          rpath=$(patchelf --print-rpath "$out/bin/apw")
-          case ":$rpath:" in
-            *':$ORIGIN/../lib/apw:'*) ;;
-            *) patchelf --add-rpath '$ORIGIN/../lib/apw' "$out/bin/apw" ;;
-          esac
+        postInstall = ''
+          strip --strip-unneeded "$out/bin/apw"
         '';
 
         meta = {

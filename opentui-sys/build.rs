@@ -1,5 +1,5 @@
 //! Thin shim over OpenTUI's `opentui-sys`: build the pinned native library, then
-//! run upstream's own build script for header checks and link directives.
+//! run upstream's own build script for header checks and static link directives.
 //!
 //! A crate's own `build.rs` runs after its dependencies' build scripts, so the
 //! native build cannot live in apw's root. Patching `opentui-sys` is the only way
@@ -43,38 +43,6 @@ fn run(command: &mut Command, what: &str) {
         )
     });
     assert!(status.success(), "apw: {what} failed with {status}");
-}
-
-/// Copy the shared library into the cargo profile directory and its `deps`
-/// subdirectory, where `$ORIGIN` finds it for `cargo run` and `cargo test`.
-/// A temp file plus rename replaces a mapped copy without truncating it.
-fn copy_library(library: &std::path::Path) {
-    if !env::var("TARGET").unwrap_or_default().contains("-linux") {
-        return;
-    }
-    let source = library.join("libopentui.so");
-    if !source.is_file() {
-        // A static link uses libopentui.a; only the shared build needs a copy.
-        return;
-    }
-    let Ok(out) = env::var("OUT_DIR") else {
-        return;
-    };
-    let out = PathBuf::from(out);
-    let Some(profile) = out
-        .parent()
-        .and_then(std::path::Path::parent)
-        .and_then(std::path::Path::parent)
-    else {
-        return;
-    };
-    for directory in [profile.to_path_buf(), profile.join("deps")] {
-        fs::create_dir_all(&directory).expect("create the cargo profile directory");
-        let temporary = directory.join(".libopentui.so.tmp");
-        fs::copy(&source, &temporary).expect("copy libopentui.so into the build tree");
-        fs::rename(&temporary, directory.join("libopentui.so"))
-            .expect("replace libopentui.so in the build tree");
-    }
 }
 
 fn main() {
@@ -155,9 +123,4 @@ fn main() {
         native.join("build.zig.zon").display()
     );
     upstream::run();
-
-    let library = env::var_os("OPENTUI_LIB_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| libdir.clone());
-    copy_library(&library);
 }

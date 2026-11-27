@@ -1,6 +1,6 @@
 [package]
 name = "apw"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2021"
 rust-version = "1.88"
 description = "Read Apple Passwords on Linux"
@@ -53,7 +53,7 @@ flate2 = "1.1"
 # `opentui` pins its `opentui-sys` to the same version, and the shim below
 # patches only 0.9.7. An unpinned requirement lets an install with no lock file
 # resolve a newer `opentui`, whose registry `opentui-sys` then refuses to build.
-opentui = { version = "=0.9.7", optional = true, default-features = false }
+opentui = { version = "=0.9.7", optional = true, default-features = false, features = ["static"] }
 
 [profile.release]
 lto = "fat"

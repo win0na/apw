@@ -1,6 +1,6 @@
 # Maintainer: win0na <winona@winneon.moe>
 pkgname=apw-cli
-pkgver=0.5.0
+pkgver=0.5.1
 pkgrel=1
 pkgdesc='Read Apple Passwords on Linux'
 arch=('x86_64' 'aarch64')
@@ -28,17 +28,8 @@ check() {
 
 package() {
   cd apw
-  case "$CARCH" in
-    x86_64) lib_platform=x86_64-linux ;;
-    aarch64) lib_platform=aarch64-linux ;;
-    *) echo "error: no OpenTUI library for $CARCH" >&2; exit 1 ;;
-  esac
-
   install -Dm755 "target/release/apw" "$pkgdir/usr/bin/apw"
-  # The executable finds this at $ORIGIN/../lib/apw.
-  install -Dm755 "${OPENTUI_LIB_DIR:-opentui/packages/native/lib/$lib_platform}/libopentui.so" \
-    "$pkgdir/usr/lib/apw/libopentui.so"
-  strip --strip-unneeded "$pkgdir/usr/lib/apw/libopentui.so"
+  strip --strip-unneeded "$pkgdir/usr/bin/apw"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
   install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
   install -d "$pkgdir/usr/share/doc/$pkgname/docs"
