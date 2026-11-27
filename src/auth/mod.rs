@@ -117,7 +117,14 @@ async fn login_start_async(
         })));
     }
 
-    finish_login(&anisette, &mut identity, account, password, spd, pet)
+    let escrow_pet = escrow_pet(
+        &anisette,
+        account,
+        password,
+        std::env::var("APW_2FA_CODE_WINDOWS").ok(),
+    )
+    .await?;
+    finish_login(&anisette, &mut identity, account, spd, pet, escrow_pet)
         .await
         .map(|session| LoginStart::Done(Box::new(session)))
 }
@@ -142,13 +149,20 @@ async fn submit_two_factor_async(flow: TwoFactor, code: &str) -> Result<Session>
         ));
     }
     let pet = submitted.or(refreshed).or(flow.pet);
+    let escrow_pet = escrow_pet(
+        &anisette,
+        &flow.account,
+        &flow.password,
+        std::env::var("APW_2FA_CODE_WINDOWS").ok(),
+    )
+    .await?;
     finish_login(
         &anisette,
         &mut identity,
         &flow.account,
-        &flow.password,
         spd,
         pet,
+        escrow_pet,
     )
     .await
 }
@@ -157,9 +171,9 @@ async fn finish_login(
     anisette: &anisette::Anisette,
     identity: &mut Identity,
     account: &str,
-    password: &str,
     spd: Value,
     pet: Option<String>,
+    escrow_pet: Option<String>,
 ) -> Result<Session> {
     let fields = gsa::spd_fields(&spd)?;
     if std::env::var_os("APW_DEBUG").is_some() {
@@ -193,35 +207,11 @@ async fn finish_login(
             }
         }
     }
-    // The escrow proxy only accepts the PET minted by the Windows chain, so
-    // trade the macOS PET for it before the session is stored.
-    let mut pet = pet;
-    if let Ok(mut windows) = anisette.identity_for(None).await {
-        match authenticate(anisette, &mut windows, account, password).await {
-            Ok((_, spd, header_pet)) => {
-                let escrow_pet = gsa::spd_fields(&spd)
-                    .ok()
-                    .and_then(|fields| fields.pet)
-                    .or(header_pet);
-                if std::env::var_os("APW_DEBUG").is_some() {
-                    eprintln!(
-                        "escrow pet: used={} len={}",
-                        escrow_pet.is_some(),
-                        escrow_pet.as_ref().map(String::len).unwrap_or(0)
-                    );
-                }
-                if let Some(escrow_pet) = escrow_pet {
-                    pet = escrow_pet;
-                }
-            }
-            Err(error) => {
-                if std::env::var_os("APW_DEBUG").is_some() {
-                    eprintln!("escrow pet: windows sign-in failed: {error}");
-                }
-            }
-        }
-    } else if std::env::var_os("APW_DEBUG").is_some() {
-        eprintln!("escrow pet: the server has no windows identity");
+    // The escrow proxy only accepts the PET minted by the Windows chain.
+    // `escrow_pet` minted that one before this function runs.
+    let pet = escrow_pet.unwrap_or(pet);
+    if std::env::var_os("APW_DEBUG").is_some() {
+        eprintln!("escrow pet: len={}", pet.len());
     }
 
     Ok(Session {
@@ -331,6 +321,35 @@ async fn authenticate_any_identity(
         }
         result => result,
     }
+}
+
+/// Mint the Windows-chain PET the escrow proxy accepts.
+///
+/// A Windows machine that Apple has not seen before answers the SRP with
+/// `hsc: 409` and no PET, so ask for that machine's own two-factor code and
+/// submit it. Without this the session keeps the macOS PET, which the escrow
+/// proxy rejects with `-3001`.
+async fn escrow_pet(
+    anisette: &anisette::Anisette,
+    account: &str,
+    password: &str,
+    mut code: Option<String>,
+) -> Result<Option<String>> {
+    let mut windows = anisette.identity_for(None).await?;
+    let (status, spd, header_pet) = authenticate(anisette, &mut windows, account, password).await?;
+    let spd_pet = gsa::spd_fields(&spd).ok().and_then(|fields| fields.pet);
+    if status.au.is_none() && status.hsc != Some(409) {
+        return Ok(header_pet.or(spd_pet));
+    }
+
+    let code = match code.take().filter(|code| !code.trim().is_empty()) {
+        Some(code) => code,
+        None => read_secret("two-factor code for the Windows identity: ")?,
+    };
+    let fields = gsa::idms_fields(&spd)?;
+    let identity_token = twofa::identity_token(&fields.adsid, &fields.gs_idms_token);
+    let pet = twofa::submit_trusted_device(&code, &identity_token, &windows).await?;
+    Ok(pet.or(spd_pet).or(header_pet))
 }
 
 async fn authenticate(

@@ -23,7 +23,9 @@ process. The ADI implementation in `src/adi/` is a Rust port of
 emulate, or download an Apple binary.
 
 The first sign-in provisions a macOS profile and a Windows profile against
-`gsa.apple.com`. `apw` writes them to `$XDG_STATE_HOME/apw/adi/macos.json` and
+`gsa.apple.com`. Apple sends the Windows identity its own two-factor code once;
+enter it when asked. That identity authorizes escrow recovery, and later
+sign-ins do not ask again. `apw` writes the profiles to `$XDG_STATE_HOME/apw/adi/macos.json` and
 `windows.json` with mode 0600, then reuses them on later runs. Delete those files
 to make `apw` provision a new identity.
 
