@@ -18,7 +18,7 @@ pub fn escrow(paths: &Paths, config: &mut Config, json: bool) -> Result<()> {
         .clone()
         .or_else(|| config.account.clone())
         .ok_or_else(|| Error::Invalid("the snapshot has no account".into()))?;
-    let anisette = IdentitySource::from_config(config, paths);
+    let identities = IdentitySource::from_config(config, paths);
     let escrow_url = session
         .escrow_proxy_url
         .clone()
@@ -27,7 +27,7 @@ pub fn escrow(paths: &Paths, config: &mut Config, json: bool) -> Result<()> {
     let records = block_on(async {
         // The escrow PET is minted by the Windows chain, so the request must
         // carry that machine's identity.
-        let identity = anisette.identity().await?;
+        let identity = identities.identity().await?;
         let escrow = Escrow::new(
             &escrow_url,
             &account,
@@ -68,10 +68,10 @@ pub fn settings(paths: &Paths, config: &mut Config, json: bool) -> Result<()> {
         .session
         .clone()
         .ok_or_else(|| Error::Auth("run `apw login` first".into()))?;
-    let anisette = IdentitySource::from_config(config, paths);
+    let identities = IdentitySource::from_config(config, paths);
 
     let services = block_on(async {
-        let identity = anisette.identity().await?;
+        let identity = identities.identity().await?;
         crate::auth::icloud::account_settings(&identity, &session.dsid, &session.mme_auth_token)
             .await
     })?;
@@ -98,7 +98,7 @@ pub fn zoneinfo(paths: &Paths, config: &mut Config, zone: &str, json: bool) -> R
         .session
         .clone()
         .ok_or_else(|| Error::Auth("run `apw login` first".into()))?;
-    let anisette = IdentitySource::from_config(config, paths);
+    let identities = IdentitySource::from_config(config, paths);
 
     let container =
         std::env::var("APW_PROBE_CONTAINER").unwrap_or_else(|_| crate::cloudkit::CONTAINER.into());
@@ -109,8 +109,8 @@ pub fn zoneinfo(paths: &Paths, config: &mut Config, zone: &str, json: bool) -> R
         _ => crate::cloudkit::Scope::Private,
     };
     let (info, owner) = block_on(async {
-        let identity = anisette.identity().await?;
-        let mac = anisette
+        let identity = identities.identity().await?;
+        let mac = identities
             .identity_for(Some("macos"))
             .await
             .unwrap_or_else(|_| identity.clone());
@@ -222,11 +222,11 @@ pub fn zones(paths: &Paths, config: &mut Config, json: bool) -> Result<()> {
         .session
         .clone()
         .ok_or_else(|| Error::Auth("run `apw login` first".into()))?;
-    let anisette = IdentitySource::from_config(config, paths);
+    let identities = IdentitySource::from_config(config, paths);
 
     let zones = block_on(async {
-        let identity = anisette.identity().await?;
-        let mac = anisette
+        let identity = identities.identity().await?;
+        let mac = identities
             .identity_for(Some("macos"))
             .await
             .unwrap_or_else(|_| identity.clone());
@@ -309,11 +309,11 @@ pub fn group(paths: &Paths, config: &mut Config, zone: &str, json: bool) -> Resu
         .session
         .clone()
         .ok_or_else(|| Error::Auth("run `apw login` first".into()))?;
-    let anisette = IdentitySource::from_config(config, paths);
+    let identities = IdentitySource::from_config(config, paths);
 
     let report = block_on(async {
-        let identity = anisette.identity().await?;
-        let mac = anisette
+        let identity = identities.identity().await?;
+        let mac = identities
             .identity_for(Some("macos"))
             .await
             .unwrap_or_else(|_| identity.clone());
@@ -624,11 +624,11 @@ pub fn record(
         .session
         .clone()
         .ok_or_else(|| Error::Auth("run `apw login` first".into()))?;
-    let anisette = IdentitySource::from_config(config, paths);
+    let identities = IdentitySource::from_config(config, paths);
 
     let record = block_on(async {
-        let identity = anisette.identity().await?;
-        let mac = anisette
+        let identity = identities.identity().await?;
+        let mac = identities
             .identity_for(Some("macos"))
             .await
             .unwrap_or_else(|_| identity.clone());

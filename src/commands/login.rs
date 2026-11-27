@@ -163,11 +163,11 @@ fn refresh_services(paths: &Paths, config: &mut Config, account: &str, json: boo
     // The macOS client info carries the full service map. When Apple refuses
     // it, the default identity still answers with a reduced one, so merge
     // rather than give up on the whole refresh.
-    let anisette = crate::auth::identity::IdentitySource::from_config(config, paths);
+    let identities = crate::auth::identity::IdentitySource::from_config(config, paths);
     let services = crate::commands::join::block_on(async {
         let mut services = crate::auth::icloud::Webservices::default();
         let mut first_error = None;
-        if let Ok(identity) = anisette.identity_for(Some("macos")).await {
+        if let Ok(identity) = identities.identity_for(Some("macos")).await {
             match crate::auth::icloud::account_settings(
                 &identity,
                 &session.dsid,
@@ -180,7 +180,7 @@ fn refresh_services(paths: &Paths, config: &mut Config, account: &str, json: boo
             }
         }
         if services.escrow_proxy_url.is_none() {
-            let identity = anisette.identity().await?;
+            let identity = identities.identity().await?;
             match crate::auth::icloud::account_settings(
                 &identity,
                 &session.dsid,

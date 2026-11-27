@@ -26,7 +26,7 @@ pub enum LoginStart {
 /// The state a two-factor submission needs, including the password for the SRP replay.
 #[derive(Clone)]
 pub struct TwoFactor {
-    anisette: IdentitySource,
+    identities: IdentitySource,
     identity: Identity,
     account: String,
     password: String,
@@ -81,17 +81,17 @@ async fn login_start_async(
     account: &str,
     password: &str,
 ) -> Result<LoginStart> {
-    let anisette = IdentitySource::from_config(config, paths);
-    let windows_identity = anisette.identity().await?;
+    let identities = IdentitySource::from_config(config, paths);
+    let windows_identity = identities.identity().await?;
     // The macOS chain is the primary one: it yields the modern service map and
     // the cloudKitToken. The Windows chain supplies the escrow PET.
-    let mut identity = anisette
+    let mut identity = identities
         .identity_for(Some("macos"))
         .await
         .unwrap_or_else(|_| windows_identity.clone());
 
     let (status, spd, pet) =
-        authenticate_any_identity(&anisette, &mut identity, account, password).await?;
+        authenticate_any_identity(&identities, &mut identity, account, password).await?;
     // Apple may send a trusted-device code during the SRP exchange without
     // setting `au`; `hsc: 409` means one is already on its way.
     let code_sent = status.hsc == Some(409) && status.au.is_none();
@@ -111,7 +111,7 @@ async fn login_start_async(
             twofa::request_trusted_device(&identity_token, &identity).await?;
         }
         return Ok(LoginStart::NeedCode(Box::new(TwoFactor {
-            anisette,
+            identities,
             identity,
             account: account.to_string(),
             password: password.to_string(),
@@ -121,13 +121,13 @@ async fn login_start_async(
     }
 
     let escrow_pet = escrow_pet(
-        &anisette,
+        &identities,
         account,
         password,
         std::env::var("APW_2FA_CODE_WINDOWS").ok(),
     )
     .await?;
-    finish_login(&anisette, &mut identity, account, spd, pet, escrow_pet)
+    finish_login(&identities, &mut identity, account, spd, pet, escrow_pet)
         .await
         .map(|session| LoginStart::Done(Box::new(session)))
 }
@@ -141,11 +141,12 @@ pub fn submit_two_factor(flow: TwoFactor, code: &str) -> Result<Session> {
 }
 
 async fn submit_two_factor_async(flow: TwoFactor, code: &str) -> Result<Session> {
-    let anisette = flow.anisette;
+    let identities = flow.identities;
     let mut identity = flow.identity;
     let submitted = twofa::submit_trusted_device(code, &flow.identity_token, &identity).await?;
     let (status, spd, refreshed) =
-        authenticate_any_identity(&anisette, &mut identity, &flow.account, &flow.password).await?;
+        authenticate_any_identity(&identities, &mut identity, &flow.account, &flow.password)
+            .await?;
     if status.au.is_some() || status.hsc == Some(409) {
         return Err(Error::Message(
             "two-factor is still required after the code was accepted".into(),
@@ -153,14 +154,14 @@ async fn submit_two_factor_async(flow: TwoFactor, code: &str) -> Result<Session>
     }
     let pet = submitted.or(refreshed).or(flow.pet);
     let escrow_pet = escrow_pet(
-        &anisette,
+        &identities,
         &flow.account,
         &flow.password,
         std::env::var("APW_2FA_CODE_WINDOWS").ok(),
     )
     .await?;
     finish_login(
-        &anisette,
+        &identities,
         &mut identity,
         &flow.account,
         spd,
@@ -171,7 +172,7 @@ async fn submit_two_factor_async(flow: TwoFactor, code: &str) -> Result<Session>
 }
 
 async fn finish_login(
-    anisette: &identity::IdentitySource,
+    identities: &identity::IdentitySource,
     identity: &mut Identity,
     account: &str,
     spd: Value,
@@ -202,7 +203,7 @@ async fn finish_login(
     // authorized by the DSID and mmeAuthToken, not the machine identity, so ask
     // again with the macOS client info the GSA exchange had to skip.
     if services.escrow_proxy_url.is_none() {
-        if let Ok(cloud) = anisette.identity_for(Some("macos")).await {
+        if let Ok(cloud) = identities.identity_for(Some("macos")).await {
             if let Ok(richer) =
                 icloud::account_settings(&cloud, &delegates.dsid, &delegates.mme_auth_token).await
             {
@@ -247,21 +248,21 @@ pub async fn refresh_services_async(
     paths: &Paths,
     session: &Session,
 ) -> Result<Session> {
-    let anisette = IdentitySource::from_config(config, paths);
+    let identities = IdentitySource::from_config(config, paths);
     // The map must come from the platform that minted the token: Apple binds
     // `mmeAuthToken` to the device identity, so a Windows-minted session answers
     // 401 for a macOS client. Try macOS first, then merge the default identity's
     // map when Apple refuses it.
     let mut services = icloud::Webservices::default();
     let mut first_error = None;
-    if let Ok(identity) = anisette.identity_for(Some("macos")).await {
+    if let Ok(identity) = identities.identity_for(Some("macos")).await {
         match icloud::account_settings(&identity, &session.dsid, &session.mme_auth_token).await {
             Ok(found) => services = found,
             Err(error) => first_error = Some(error),
         }
     }
     if services.escrow_proxy_url.is_none() {
-        let identity = anisette.identity().await?;
+        let identity = identities.identity().await?;
         match icloud::account_settings(&identity, &session.dsid, &session.mme_auth_token).await {
             Ok(found) => services.fill_from(found),
             Err(error) => {
@@ -312,15 +313,15 @@ fn read_secret(prompt: &str) -> Result<String> {
 /// the Windows identity before giving up; the service map is then whatever that
 /// identity yields, which is what a Windows-only anisette server gives anyway.
 async fn authenticate_any_identity(
-    anisette: &identity::IdentitySource,
+    identities: &identity::IdentitySource,
     identity: &mut Identity,
     account: &str,
     password: &str,
 ) -> Result<(Status, Value, Option<String>)> {
-    match authenticate(anisette, identity, account, password).await {
+    match authenticate(identities, identity, account, password).await {
         Err(error) if matches!(&error, Error::GsaStatus(status) if status.is_server_error()) => {
-            *identity = anisette.identity().await?;
-            authenticate(anisette, identity, account, password).await
+            *identity = identities.identity().await?;
+            authenticate(identities, identity, account, password).await
         }
         result => result,
     }
@@ -333,13 +334,14 @@ async fn authenticate_any_identity(
 /// submit it. Without this the session keeps the macOS PET, which the escrow
 /// proxy rejects with `-3001`.
 async fn escrow_pet(
-    anisette: &identity::IdentitySource,
+    identities: &identity::IdentitySource,
     account: &str,
     password: &str,
     mut code: Option<String>,
 ) -> Result<Option<String>> {
-    let mut windows = anisette.identity_for(None).await?;
-    let (status, spd, header_pet) = authenticate(anisette, &mut windows, account, password).await?;
+    let mut windows = identities.identity_for(None).await?;
+    let (status, spd, header_pet) =
+        authenticate(identities, &mut windows, account, password).await?;
     let spd_pet = gsa::spd_fields(&spd).ok().and_then(|fields| fields.pet);
     if status.au.is_none() && status.hsc != Some(409) {
         return Ok(header_pet.or(spd_pet));
@@ -356,7 +358,7 @@ async fn escrow_pet(
 }
 
 async fn authenticate(
-    anisette: &identity::IdentitySource,
+    identities: &identity::IdentitySource,
     identity: &mut Identity,
     account: &str,
     password: &str,
@@ -371,8 +373,8 @@ async fn authenticate(
             if let Some(machine_data) = &init.status.md_data {
                 // Not every anisette server exposes resync; a fresh identity
                 // is enough to retry when it does not.
-                let _ = anisette.resync(machine_data).await;
-                *identity = anisette.identity().await?;
+                let _ = identities.resync(machine_data).await;
+                *identity = identities.identity().await?;
                 continue;
             }
         }

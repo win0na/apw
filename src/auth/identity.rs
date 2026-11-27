@@ -794,8 +794,8 @@ mod tests {
             return;
         }
         let paths = paths();
-        let anisette = IdentitySource::from_config(&Config::default(), &paths);
-        assert!(matches!(anisette.source, Source::Native { .. }));
+        let identities = IdentitySource::from_config(&Config::default(), &paths);
+        assert!(matches!(identities.source, Source::Native { .. }));
     }
 
     #[test]
@@ -805,8 +805,8 @@ mod tests {
             anisette_url: Some("http://127.0.0.1:6969".into()),
             ..Config::default()
         };
-        let anisette = IdentitySource::from_config(&config, &paths);
-        assert!(matches!(anisette.source, Source::Remote { .. }));
+        let identities = IdentitySource::from_config(&config, &paths);
+        assert!(matches!(identities.source, Source::Remote { .. }));
     }
 
     #[test]

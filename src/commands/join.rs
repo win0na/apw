@@ -99,7 +99,7 @@ fn perform_inner(paths: &Paths, config: &mut Config, passcode: &str) -> Result<J
         .clone()
         .or_else(|| config.account.clone())
         .ok_or_else(|| Error::Invalid("the snapshot has no account".into()))?;
-    let anisette = IdentitySource::from_config(config, paths);
+    let identities = IdentitySource::from_config(config, paths);
     let escrow_url = session.escrow_proxy_url.clone().ok_or_else(|| {
         Error::Message(
             "the session has no escrow URL; run `apw login --refresh` to re-read the \
@@ -109,8 +109,8 @@ fn perform_inner(paths: &Paths, config: &mut Config, passcode: &str) -> Result<J
     })?;
 
     let (peer, trust, sponsor) = block_on(async {
-        let identity = anisette.identity().await?;
-        let mac = anisette
+        let identity = identities.identity().await?;
+        let mac = identities
             .identity_for(Some("macos"))
             .await
             .unwrap_or_else(|_| identity.clone());

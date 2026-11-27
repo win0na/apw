@@ -171,15 +171,15 @@ pub fn group_session(paths: &Paths, config: &mut Config) -> Result<GroupSession>
         .peer
         .clone()
         .ok_or_else(|| Error::Auth("run `apw join` first".into()))?;
-    let anisette = IdentitySource::from_config(config, paths);
+    let identities = IdentitySource::from_config(config, paths);
     let encryption = PeerKeys::from_x963(
         &decode(&peer_state.signing_key)?,
         &decode(&peer_state.encryption_key)?,
     )?;
 
     block_on(async move {
-        let identity = anisette.identity().await?;
-        let mac = anisette
+        let identity = identities.identity().await?;
+        let mac = identities
             .identity_for(Some("macos"))
             .await
             .unwrap_or_else(|_| identity.clone());
@@ -329,7 +329,7 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Resu
         .peer
         .clone()
         .ok_or_else(|| Error::Auth("run `apw join` first".into()))?;
-    let anisette = IdentitySource::from_config(config, paths);
+    let identities = IdentitySource::from_config(config, paths);
 
     let encryption = PeerKeys::from_x963(
         &decode(&peer_state.signing_key)?,
@@ -348,8 +348,8 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Resu
         gateway,
     ) = block_on(async {
         let mut session = session;
-        let identity = anisette.identity().await?;
-        let mac = anisette
+        let identity = identities.identity().await?;
+        let mac = identities
             .identity_for(Some("macos"))
             .await
             .unwrap_or_else(|_| identity.clone());
@@ -611,7 +611,7 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Resu
     let mut group_warnings: Vec<String> = Vec::new();
     if !service_keys.is_empty() {
         let read = block_on(async {
-            let mac = anisette.identity_for(Some("macos")).await?;
+            let mac = identities.identity_for(Some("macos")).await?;
             let mut groups = Vec::new();
             let mut warnings = Vec::new();
             for scope in [
