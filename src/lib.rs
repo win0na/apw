@@ -22,6 +22,17 @@ pub mod tui;
 pub mod vault;
 pub mod wire;
 
+/// Install the rustls provider reqwest expects once per process. apw builds
+/// reqwest without a bundled TLS provider so the binary links ring instead of
+/// AWS-LC, which means every client construction needs this first.
+pub(crate) fn install_tls_provider() {
+    static INSTALL: std::sync::Once = std::sync::Once::new();
+    INSTALL.call_once(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+}
+
 pub fn run() -> i32 {
+    install_tls_provider();
     cli::run()
 }

@@ -8,8 +8,10 @@ secrets it handles.
 The snapshot uses AES-256-GCM with a 32-byte key. The key comes from one of two
 places:
 
-- Secret Service on the session bus, stored under the `apw` service and the
-  `snapshot-key` account.
+- Secret Service on the session bus, stored as an item with
+  `application=apw` and `purpose=snapshot-key`. Items written by the keyring
+  backend use the keyring attributes; `apw` copies that key to the new item on
+  the first read and leaves the old item in place.
 - A passphrase, derived with Argon2id at 64 MiB, three iterations, and one lane.
   The KDF salt is in `config.toml`; the derived key is cached for the process.
 

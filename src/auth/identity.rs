@@ -150,6 +150,7 @@ struct ClientInfo {
 impl IdentitySource {
     pub fn new(base: &str) -> Self {
         let base = base.trim_end_matches('/').to_string();
+        crate::install_tls_provider();
         let client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(30))
@@ -172,6 +173,7 @@ impl IdentitySource {
     }
 
     fn native(paths: &Paths) -> Self {
+        crate::install_tls_provider();
         let client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(30))

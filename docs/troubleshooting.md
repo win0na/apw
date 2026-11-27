@@ -22,9 +22,10 @@ Service entry, restore the original key or rebuild the snapshot from iCloud.
 
 ## `Secret Service is unavailable and stdin is not a terminal`
 
-The keyring is missing and `apw` cannot prompt. Set `APW_PASSPHRASE` for the
-command or for the timer's `sync.env`. For a desktop session, unlock the keyring
-and ensure `DBUS_SESSION_BUS_ADDRESS` points at it.
+The Secret Service backend is missing and `apw` cannot prompt. Set
+`APW_PASSPHRASE` for the command or for the timer's `sync.env`. For a desktop
+session, unlock the Secret Service session and ensure
+`DBUS_SESSION_BUS_ADDRESS` points at it.
 
 ## A build fails looking for Zig or the OpenTUI library
 
@@ -47,7 +48,7 @@ PATH=/path/to/zig-0.17.1:$PATH cargo build --release --locked
 ```
 
 `OPENTUI_LIB_DIR` overrides the native library directory. It must contain
-`opentui.h` and `libopentui.a`.
+`opentui.h` and `libopentui.so` (or `libopentui.a` for a static build).
 
 ## A build fails looking for `dbus`
 
@@ -58,7 +59,7 @@ sudo apt-get install libdbus-1-dev pkg-config   # Debian, Ubuntu
 sudo pacman -S dbus pkgconf                     # Arch
 ```
 
-Build without the keyring backend when you only need passphrase mode:
+Build without the Secret Service backend when you only need passphrase mode:
 
 ```sh
 cargo build --release --locked --no-default-features --features tui

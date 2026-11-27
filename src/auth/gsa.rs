@@ -82,13 +82,16 @@ impl Gsa {
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| DEFAULT_ENDPOINT.to_string());
         Self {
-            client: reqwest::Client::builder()
-                .http1_only()
-                .pool_max_idle_per_host(0)
-                .connect_timeout(Duration::from_secs(10))
-                .timeout(Duration::from_secs(30))
-                .build()
-                .map_err(|error| format!("cannot create the GSA HTTP client: {error}")),
+            client: {
+                crate::install_tls_provider();
+                reqwest::Client::builder()
+                    .http1_only()
+                    .pool_max_idle_per_host(0)
+                    .connect_timeout(Duration::from_secs(10))
+                    .timeout(Duration::from_secs(30))
+                    .build()
+                    .map_err(|error| format!("cannot create the GSA HTTP client: {error}"))
+            },
             endpoint,
             identity,
         }

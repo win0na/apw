@@ -31,10 +31,7 @@
 
         cargoLock.lockFile = ./Cargo.lock;
 
-        # nixpkgs asks aws-lc-sys to link a system AWS-LC that this closure
-        # does not provide. Build it from source instead.
-        AWS_LC_SYS_USE_SYSTEM = "0";
-        nativeBuildInputs = with pkgs; [ cmake perl pkg-config zig ];
+        nativeBuildInputs = with pkgs; [ patchelf pkg-config zig ];
         buildInputs = with pkgs; [ dbus ];
         # The nixpkgs Zig hook claims buildPhase and runs `zig build` at the
         # source root. apw has no root build.zig; its build script drives Zig.
@@ -43,7 +40,6 @@
         dontUseZigInstall = true;
         dontUseZigConfigure = true;
         preBuild = ''
-          export AWS_LC_SYS_USE_SYSTEM=0
           # Zig needs a writable HOME for its global cache; the build sandbox
           # runs with HOME=/homeless-shelter, which is not writable.
           export HOME=$TMPDIR
@@ -53,6 +49,29 @@
         # The CLI tests need a CA store, which the build sandbox does not have.
         # CI runs them on a normal runner.
         doCheck = false;
+
+        postInstall = ''
+          lib=$(find . -path '*/opentui/packages/native/lib/*/libopentui.so' -print -quit)
+          if [ -z "$lib" ]; then
+            echo "libopentui.so was not built" >&2
+            exit 1
+          fi
+          install -Dm755 "$lib" "$out/lib/apw/libopentui.so"
+          # The cargo install hook also copies the build-tree library here.
+          rm -f "$out/lib/libopentui.so"
+          strip --strip-unneeded "$out/bin/apw" "$out/lib/apw/libopentui.so"
+        '';
+
+        # Nix's fixup strip keeps the symbol table. Strip fully here, then put
+        # the relative runpath back after the fixup shrinks it away.
+        dontStrip = true;
+        postFixup = ''
+          rpath=$(patchelf --print-rpath "$out/bin/apw")
+          case ":$rpath:" in
+            *':$ORIGIN/../lib/apw:'*) ;;
+            *) patchelf --add-rpath '$ORIGIN/../lib/apw' "$out/bin/apw" ;;
+          esac
+        '';
 
         meta = {
           description = "Read Apple Passwords on Linux";
@@ -83,8 +102,6 @@
             rustc
             rustfmt
             clippy
-            cmake
-            perl
             pkg-config
             dbus
             zig

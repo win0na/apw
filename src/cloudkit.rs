@@ -396,6 +396,7 @@ impl Gateway {
         scope: Scope,
         bundle: &str,
     ) -> Result<Self> {
+        crate::install_tls_provider();
         let http = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(15))
             .timeout(Duration::from_secs(120))

@@ -4,11 +4,11 @@
 
 ## Build
 
-Rust 1.88 or later. The Secret Service backend links `libdbus-1`; the build also needs `cmake` and `perl` for `aws-lc`.
+Rust 1.88 or later. The Secret Service backend links `libdbus-1`; the TLS stack uses ring. OpenTUI's native library is built with Zig 0.17.1.
 
 ```sh
-sudo apt-get install -y libdbus-1-dev pkg-config cmake perl   # Debian, Ubuntu
-sudo pacman -S --needed dbus cmake perl pkgconf               # Arch
+sudo apt-get install -y libdbus-1-dev pkg-config   # Debian, Ubuntu
+sudo pacman -S --needed dbus pkgconf               # Arch
 cargo build
 cargo run -- --help
 ```
@@ -26,7 +26,7 @@ The suite has two parts:
 server. `tests/adi_provisioning.rs` replays the captured provisioning transcript;
 `tests/adi_live.rs` is ignored and needs `APW_LIVE_ADI=1` plus network access.
 
-Tests isolate the XDG directories with `APW_CONFIG_DIR`, `APW_DATA_DIR`, and `APW_STATE_DIR`, and set `APW_PASSPHRASE` so no keyring is needed. They never touch the network.
+Tests isolate the XDG directories with `APW_CONFIG_DIR`, `APW_DATA_DIR`, and `APW_STATE_DIR`, and set `APW_PASSPHRASE` so no Secret Service is needed. They never touch the network.
 
 ## Checks
 

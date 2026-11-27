@@ -35,9 +35,6 @@ pub enum Error {
     },
     #[error(transparent)]
     Plist(#[from] plist::Error),
-    #[cfg(feature = "keyring")]
-    #[error(transparent)]
-    Keyring(#[from] keyring::Error),
 }
 
 impl Error {

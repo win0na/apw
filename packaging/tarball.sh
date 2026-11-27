@@ -23,10 +23,23 @@ if [[ ! -x "$BIN" ]]; then
   exit 1
 fi
 
+case "$HOST_TARGET" in
+  x86_64-unknown-linux-gnu) LIB_PLATFORM=x86_64-linux ;;
+  aarch64-unknown-linux-gnu) LIB_PLATFORM=aarch64-linux ;;
+  *) echo "error: no OpenTUI library for $HOST_TARGET" >&2; exit 1 ;;
+esac
+LIB="${OPENTUI_LIB_DIR:-${ROOT}/opentui/packages/native/lib/${LIB_PLATFORM}}/libopentui.so"
+if [[ ! -f "$LIB" ]]; then
+  echo "error: no OpenTUI library at $LIB" >&2
+  exit 1
+fi
+
 rm -rf "$STAGE"
-mkdir -p "$STAGE/bin" "$STAGE/docs"
+mkdir -p "$STAGE/bin" "$STAGE/lib/apw" "$STAGE/docs"
 
 install -m 0755 "$BIN" "$STAGE/bin/apw"
+# The executable finds this at $ORIGIN/../lib/apw.
+install -s -m 0755 "$LIB" "$STAGE/lib/apw/libopentui.so"
 install -m 0644 LICENSE README.md "$STAGE/"
 install -m 0644 docs/*.md "$STAGE/docs/"
 

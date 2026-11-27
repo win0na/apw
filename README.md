@@ -19,17 +19,19 @@ the command-line contract, so scripts and the systemd timer continue to work.
   then pushed by the next sync.
 - **Machine output:** JSON on a pipe, stable exit codes, and `--password-only`
   for shell use.
-- **One binary:** the native OpenTUI library is linked into the executable.
+- **Few moving parts:** one executable and the OpenTUI shared library, both in
+  the same archive.
 
 ## Requirements
 
 - Linux on x86_64 or aarch64.
 - Network access to Apple on the first sign-in, for the device identity.
 - Rust 1.88 or newer and Zig 0.17.1 to build from source.
-- `cmake`, `perl`, `libdbus-1-dev`, and `pkg-config` to build with the keyring backend.
+- `libdbus-1-dev` and `pkg-config` to build with the Secret Service backend.
 - An Apple ID with iCloud Passwords enabled.
 
-The built binary does not need Rust, Zig, or the OpenTUI sources at runtime.
+The built executable does not need Rust, Zig, or the OpenTUI sources at
+runtime; it needs the OpenTUI shared library that ships beside it.
 
 ## Install
 
@@ -44,15 +46,31 @@ cargo build --release --locked
 ./target/release/apw --version
 ```
 
-`cargo install --git https://github.com/win0na/apw --locked` also fetches the
-OpenTUI submodule. Zig must be on `PATH`; the build uses it once for the native
-library and reuses the result.
-
-Install the binary somewhere on `PATH`:
+`cargo install` builds only the executable; the OpenTUI library stays in the
+checkout. Clone the repository, install from the checkout, and copy the
+library:
 
 ```sh
-install -m 0755 target/release/apw ~/.local/bin/apw
+git clone --recurse-submodules https://github.com/win0na/apw
+cd apw
+cargo install --path . --locked
+install -s -D -m 0755 opentui/packages/native/lib/x86_64-linux/libopentui.so \
+  "${CARGO_HOME:-$HOME/.cargo}/lib/apw/libopentui.so"
 ```
+
+Zig must be on `PATH`; the build uses it once for the native library and reuses
+the result.
+
+The executable loads `libopentui.so` from `../lib/apw` relative to itself.
+Without Cargo, install both files:
+
+```sh
+install -D -m 0755 target/release/apw ~/.local/bin/apw
+install -s -D -m 0755 opentui/packages/native/lib/x86_64-linux/libopentui.so \
+  ~/.local/lib/apw/libopentui.so
+```
+
+Use `aarch64-linux` in place of `x86_64-linux` on ARM.
 
 Package-specific steps are in [Install](docs/install.md).
 

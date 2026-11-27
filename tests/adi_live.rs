@@ -90,6 +90,7 @@ impl GrandSlamReply {
 }
 
 async fn init(identity: &Identity) -> GrandSlamReply {
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let mut body = Vec::new();
     plist::to_writer_xml(&mut body, &init_body(identity)).unwrap();
     let response = reqwest::Client::new()

@@ -45,6 +45,38 @@ fn run(command: &mut Command, what: &str) {
     assert!(status.success(), "apw: {what} failed with {status}");
 }
 
+/// Copy the shared library into the cargo profile directory and its `deps`
+/// subdirectory, where `$ORIGIN` finds it for `cargo run` and `cargo test`.
+/// A temp file plus rename replaces a mapped copy without truncating it.
+fn copy_library(library: &std::path::Path) {
+    if !env::var("TARGET").unwrap_or_default().contains("-linux") {
+        return;
+    }
+    let source = library.join("libopentui.so");
+    if !source.is_file() {
+        // A static link uses libopentui.a; only the shared build needs a copy.
+        return;
+    }
+    let Ok(out) = env::var("OUT_DIR") else {
+        return;
+    };
+    let out = PathBuf::from(out);
+    let Some(profile) = out
+        .parent()
+        .and_then(std::path::Path::parent)
+        .and_then(std::path::Path::parent)
+    else {
+        return;
+    };
+    for directory in [profile.to_path_buf(), profile.join("deps")] {
+        fs::create_dir_all(&directory).expect("create the cargo profile directory");
+        let temporary = directory.join(".libopentui.so.tmp");
+        fs::copy(&source, &temporary).expect("copy libopentui.so into the build tree");
+        fs::rename(&temporary, directory.join("libopentui.so"))
+            .expect("replace libopentui.so in the build tree");
+    }
+}
+
 fn main() {
     println!("cargo:rerun-if-env-changed=OPENTUI_LIB_DIR");
     println!("cargo:rerun-if-env-changed=PATH");
@@ -68,7 +100,7 @@ fn main() {
             .filter(|output| output.status.success())
             .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
             .unwrap_or_else(|| "unknown".to_string());
-        let stamp = format!("{commit}\n{target}\nvideo=false\n");
+        let stamp = format!("{commit}\n{target}\nvideo=false\noptimize=ReleaseSmall\n");
         let fresh = fs::read_to_string(&stamp_path)
             .map(|old| old == stamp)
             .unwrap_or(false)
@@ -105,7 +137,7 @@ fn main() {
             );
             run(
                 Command::new("zig")
-                    .args(["build", "-Dvideo=false", "-Doptimize=ReleaseFast"])
+                    .args(["build", "-Dvideo=false", "-Doptimize=ReleaseSmall"])
                     .current_dir(&native),
                 "OpenTUI native build",
             );
@@ -123,4 +155,9 @@ fn main() {
         native.join("build.zig.zon").display()
     );
     upstream::run();
+
+    let library = env::var_os("OPENTUI_LIB_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| libdir.clone());
+    copy_library(&library);
 }

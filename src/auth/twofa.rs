@@ -119,6 +119,7 @@ fn base() -> String {
 }
 
 fn client() -> Result<reqwest::Client> {
+    crate::install_tls_provider();
     reqwest::Client::builder()
         .http1_only()
         .pool_max_idle_per_host(0)

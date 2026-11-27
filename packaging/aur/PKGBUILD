@@ -9,29 +9,36 @@ license=('GPL-3.0-only')
 depends=('gcc-libs' 'glibc' 'dbus')
 conflicts=('apw')
 provides=('apw')
-makedepends=('cargo' 'rust' 'cmake' 'perl' 'dbus' 'zig')
+makedepends=('cargo' 'rust' 'dbus' 'zig')
 source=("git+$url.git#tag=v$pkgver")
 sha256sums=('SKIP')
 
 build() {
   cd apw
   git submodule update --init --recursive
-  # Arch's LDFLAGS make rustc drop the aws-lc static archive, which leaves
-  # every aws_lc_* symbol undefined at link time. Clear them for cargo.
   # No --frozen: the crates are not vendored, so cargo fetches them here.
-  LDFLAGS= CFLAGS= CXXFLAGS= cargo build --release --locked
+  cargo build --release --locked
 }
 
 check() {
   cd apw
-  # Same flag problem as build(); build() does not fetch dev-dependencies,
-  # so this cannot be offline.
-  LDFLAGS= CFLAGS= CXXFLAGS= cargo test --release --locked
+  # build() does not fetch dev-dependencies, so this cannot be offline.
+  cargo test --locked
 }
 
 package() {
   cd apw
+  case "$CARCH" in
+    x86_64) lib_platform=x86_64-linux ;;
+    aarch64) lib_platform=aarch64-linux ;;
+    *) echo "error: no OpenTUI library for $CARCH" >&2; exit 1 ;;
+  esac
+
   install -Dm755 "target/release/apw" "$pkgdir/usr/bin/apw"
+  # The executable finds this at $ORIGIN/../lib/apw.
+  install -Dm755 "${OPENTUI_LIB_DIR:-opentui/packages/native/lib/$lib_platform}/libopentui.so" \
+    "$pkgdir/usr/lib/apw/libopentui.so"
+  strip --strip-unneeded "$pkgdir/usr/lib/apw/libopentui.so"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
   install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
   install -d "$pkgdir/usr/share/doc/$pkgname/docs"

@@ -337,6 +337,7 @@ fn setup_base() -> String {
 }
 
 fn client() -> Result<reqwest::Client> {
+    crate::install_tls_provider();
     reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(30))

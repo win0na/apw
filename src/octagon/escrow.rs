@@ -85,13 +85,16 @@ impl Escrow {
         identity: &Identity,
     ) -> Self {
         Self {
-            http: reqwest::Client::builder()
-                .http1_only()
-                .pool_max_idle_per_host(0)
-                .connect_timeout(Duration::from_secs(10))
-                .timeout(Duration::from_secs(60))
-                .build()
-                .unwrap_or_else(|_| reqwest::Client::new()),
+            http: {
+                crate::install_tls_provider();
+                reqwest::Client::builder()
+                    .http1_only()
+                    .pool_max_idle_per_host(0)
+                    .connect_timeout(Duration::from_secs(10))
+                    .timeout(Duration::from_secs(60))
+                    .build()
+                    .unwrap_or_else(|_| reqwest::Client::new())
+            },
             base: base.trim_end_matches('/').to_string(),
             email: email.to_string(),
             dsid: dsid.to_string(),

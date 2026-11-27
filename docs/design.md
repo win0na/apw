@@ -16,8 +16,9 @@ signal handling. The interface does not replace a command or change its output.
 
 The interface is built with the Rust bindings for OpenTUI 0.9.7. A local
 `opentui-sys` shim builds the Zig native library once and then runs the upstream
-build script. The library is linked statically, so the release binary has no
-runtime dependency on the OpenTUI checkout.
+build script. Packages install `libopentui.so` at `lib/apw` and link it with the
+runpath `$ORIGIN/../lib/apw`, so the executable has no runtime dependency on the
+OpenTUI checkout.
 
 ## Startup
 

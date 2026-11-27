@@ -8,12 +8,12 @@ This page installs `apw`, signs in, and starts the hourly sync timer.
 - An Apple ID with two-factor authentication.
 - Network access to Apple on the first sign-in, for the device identity.
 - Secret Service on the session bus, or `APW_PASSPHRASE`.
-- To build: Rust 1.88 or newer, Zig 0.17.1, `cmake`, `perl`, and `libdbus-1`.
+- To build: Rust 1.88 or newer, Zig 0.17.1, and `libdbus-1`.
   On Debian and Ubuntu install `libdbus-1-dev` and `pkg-config`. On Arch install
-  `dbus`, `cmake`, `perl`, and `pkgconf`.
+  `dbus` and `pkgconf`.
 
-The built binary needs glibc and D-Bus for Secret Service. It links the OpenTUI
-native library in, so it does not need Zig at runtime.
+The built executable needs glibc, D-Bus for Secret Service, and the
+`libopentui.so` that ships beside it. It does not need Zig at runtime.
 
 ## Device identity
 
@@ -52,11 +52,17 @@ provision locally.
 With Cargo:
 
 ```sh
-cargo install --git https://github.com/win0na/apw --locked
+git clone --recurse-submodules https://github.com/win0na/apw
+cd apw
+cargo install --path . --locked
+install -s -D -m 0755 opentui/packages/native/lib/x86_64-linux/libopentui.so \
+  "${CARGO_HOME:-$HOME/.cargo}/lib/apw/libopentui.so"
 ```
 
-The install fetches the OpenTUI submodule and builds its native library once.
-Zig 0.17.1 must be on `PATH`.
+`cargo install` builds only the executable; the OpenTUI library stays in the
+checkout. The build fetches the submodule and builds the native library once.
+Zig 0.17.1 must be on `PATH`. Use `aarch64-linux` in place of `x86_64-linux` on
+ARM.
 
 From a checkout:
 
@@ -64,8 +70,12 @@ From a checkout:
 git clone --recurse-submodules https://github.com/win0na/apw
 cd apw
 cargo build --release --locked
-install -m 0755 target/release/apw ~/.local/bin/apw
+install -D -m 0755 target/release/apw ~/.local/bin/apw
+install -s -D -m 0755 opentui/packages/native/lib/x86_64-linux/libopentui.so \
+  ~/.local/lib/apw/libopentui.so
 ```
+
+The executable looks for the library in `../lib/apw` relative to itself.
 
 `apw --version` prints `0.4.0`.
 
@@ -75,7 +85,7 @@ Prebuilt formats build from the same checkout:
 | --- | --- | --- |
 | Tarball | `packaging/tarball.sh` | `dist/apw-0.4.0-<target>.tar.gz` |
 | Debian | `packaging/debian/build.sh` | `dist/apw_0.4.0_<arch>.deb` |
-| Nix | `nix build` | `result/bin/apw` |
+| Nix | `nix build` | `result/bin/apw` and `result/lib/apw/libopentui.so` |
 
 The tarball and Debian scripts build the release binary first. Set
 `APW_SKIP_BUILD=1` to reuse an existing one. The AUR recipe in `packaging/aur/`
@@ -126,7 +136,10 @@ printf 'APW_PASSPHRASE=%s\n' 'your apw passphrase' > ~/.config/apw/sync.env
 ```
 
 Use the apw passphrase here, never the device passcode. In Secret Service mode
-the timer needs an unlocked keyring instead of this file.
+the timer needs an unlocked Secret Service session instead of this file.
+Versions that used the keyring crate also cached the key in the kernel keyring;
+`apw` no longer reads that cache, so set `APW_PASSPHRASE` when the timer has no
+unlocked session.
 
 `Persistent=true` catches up after suspend or a missed run. Enable lingering
 when the user session is not always active:
