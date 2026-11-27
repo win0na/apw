@@ -131,7 +131,7 @@ async fn init(identity: &Identity) -> GrandSlamReply {
 #[ignore = "provisions a device identity and calls Apple"]
 fn native_identities_are_accepted_by_gsa() {
     if std::env::var_os("APW_LIVE_ADI").is_none() {
-        return;
+        panic!("set APW_LIVE_ADI=1: this test calls Apple and provisions a real identity");
     }
     if std::env::var_os("APW_ANISETTE_URL").is_some() {
         panic!("unset APW_ANISETTE_URL: this test exercises the native source");

@@ -99,7 +99,7 @@ creates; export reads the snapshot only.
 | `$XDG_DATA_HOME/apw/snapshot.bin` | Encrypted snapshot |
 | `$XDG_DATA_HOME/apw/snapshot.lock` | Per-operation lock file |
 | `$XDG_STATE_HOME/apw/state.json` | Last sync, source, counts, failures, retry time |
-| `$XDG_STATE_HOME/apw/adi/{macos,windows}.json` | Device identity, mode 0600 |
+| `$XDG_STATE_HOME/apw/adi/{macos,windows}.json` | Device identity files, mode 0600, directory mode 0700 |
 | `$XDG_CONFIG_HOME/apw/config.lock` | Config read-modify-write lock |
 
 The snapshot is written with a mode 0600 temporary file and renamed into place.

@@ -94,11 +94,6 @@ impl Profile {
         if secondary.len() != platform.secondary_len() {
             return Err(Error::Invalid("secondary state has the wrong length"));
         }
-        if option.is_some() || extra_data != [0; 8] {
-            // The 24-byte envelope (DSID -1) and its option field are not
-            // ported; refuse rather than emit a well-formed wrong proof.
-            return Err(Error::Invalid("unsupported ADI profile variant"));
-        }
         let seed = otp::decode_seed(&encrypted_seed)?;
         let key = otp::decode_device_key(platform, &secondary)?;
         Ok(Self {

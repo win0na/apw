@@ -190,8 +190,8 @@ The concrete next experiment for 2 is `icloud.com/passwords` (Apple's web
 Passwords app) and `idmsa.apple.com` browser sign-in: both work without
 anisette headers. If a web session can read the keychain records, apw's escrow
 step disappears along with ADI; if not, escrow still needs a device identity
-and option 1 is the answer. That test needs one interactive account login, so
-it cannot run unattended.
+and option 1 was the answer. That test needed one interactive account login,
+so it could not run unattended.
 
 ## Reproduction
 

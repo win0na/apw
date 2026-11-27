@@ -58,7 +58,7 @@ Package-specific steps are in [Install](docs/install.md).
 
 ## Sign in
 
-Start the interface and choose `login` from the command palette, or run:
+Run the first sign-in from the command line:
 
 ```sh
 apw login

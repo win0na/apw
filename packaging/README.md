@@ -28,7 +28,7 @@ From the repository root:
 nix build
 ```
 
-The binary links `libdbus-1` for the Secret Service backend. The Debian package declares `libdbus-1-3`; the AUR recipe declares `dbus` and builds with `cargo`, `rust`, `dbus`, `cmake`, `perl`, and `zig` as makedepends; the flake uses `dbus` as a build input.
+The binary links `libdbus-1` for the Secret Service backend. The Debian package declares `libdbus-1-3`; the AUR recipe declares `dbus` and builds with `cargo`, `rust`, `cmake`, `perl`, and `zig` as makedepends; the flake uses `dbus` as a build input.
 
 ## Notes
 

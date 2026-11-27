@@ -44,13 +44,25 @@ const WINDOWS_APP_NAME: &str = "Setup";
 const GSA_LOOKUP: &str = "https://gsa.apple.com/grandslam/GsService2/lookup";
 const STATE_VERSION: u32 = 1;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Identity {
     pub headers: BTreeMap<String, String>,
     pub client_info: String,
     pub user_agent: String,
     /// The native platform that minted this identity; `None` for a remote server.
     pub platform: Option<Platform>,
+}
+
+impl std::fmt::Debug for Identity {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Identity")
+            .field("client_info", &self.client_info)
+            .field("user_agent", &self.user_agent)
+            .field("platform", &self.platform)
+            .field("header_names", &self.headers.keys().collect::<Vec<_>>())
+            .finish()
+    }
 }
 
 /// Keep the platform and OS tokens from a client-info string and replace the
@@ -691,6 +703,11 @@ impl AdiState {
     fn save(&self, path: &Path) -> Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
+            }
         }
         let bytes = serde_json::to_vec(self)?;
         write_private(path, &bytes)
@@ -948,9 +965,11 @@ mod tests {
     }
 
     #[test]
-    fn an_unsupported_profile_variant_is_rejected() {
-        let rejected = |extra_data: [u8; 8], option: Option<u32>| {
-            crate::adi::Profile::from_parts(
+    fn a_nonzero_option_and_extra_data_are_accepted() {
+        // These fields are re-serialized into adi.pb and do not choose the
+        // envelope, so a GrandSlam profile may carry them.
+        for (extra_data, option) in [([1; 8], None), ([0; 8], Some(0)), ([0; 8], None)] {
+            assert!(crate::adi::Profile::from_parts(
                 [0x11; 60],
                 vec![0x22; Platform::Mac.secondary_len()],
                 [0x33; 32],
@@ -958,11 +977,8 @@ mod tests {
                 option,
                 Platform::Mac,
             )
-            .is_err()
-        };
-        assert!(rejected([1; 8], None));
-        assert!(rejected([0; 8], Some(0)));
-        assert!(!rejected([0; 8], None));
+            .is_ok());
+        }
     }
 
     #[test]
