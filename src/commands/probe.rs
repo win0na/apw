@@ -25,9 +25,11 @@ pub fn escrow(paths: &Paths, config: &mut Config, json: bool) -> Result<()> {
         .ok_or_else(|| Error::Message("the session has no escrow URL".into()))?;
 
     let records = block_on(async {
-        // The escrow PET is minted by the Windows chain, so the request must
-        // carry that machine's identity.
-        let identity = identities.identity().await?;
+        // The PET only works with the platform claim that minted it.
+        let identity = match session.escrow_platform.as_deref() {
+            Some("macos") => identities.identity_for(Some("macos")).await?,
+            _ => identities.identity().await?,
+        };
         let escrow = Escrow::new(
             &escrow_url,
             &account,

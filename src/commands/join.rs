@@ -109,7 +109,11 @@ fn perform_inner(paths: &Paths, config: &mut Config, passcode: &str) -> Result<J
     })?;
 
     let (peer, trust, sponsor) = block_on(async {
-        let identity = identities.identity().await?;
+        // The PET only works with the platform claim that minted it.
+        let identity = match session.escrow_platform.as_deref() {
+            Some("macos") => identities.identity_for(Some("macos")).await?,
+            _ => identities.identity().await?,
+        };
         let mac = identities
             .identity_for(Some("macos"))
             .await

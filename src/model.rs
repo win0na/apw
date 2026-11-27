@@ -654,6 +654,10 @@ pub struct Session {
     pub ckdatabasews_url: Option<String>,
     #[serde(default)]
     pub escrow_proxy_url: Option<String>,
+    /// Platform whose device identity minted `pet`. Escrow requests must carry
+    /// that platform's client info, so this survives refreshes and restarts.
+    #[serde(default)]
+    pub escrow_platform: Option<String>,
     pub logged_in_at: chrono::DateTime<chrono::Utc>,
 }
 

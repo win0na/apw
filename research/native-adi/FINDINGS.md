@@ -339,8 +339,19 @@ established. The evidence points to a platform-consistency rule instead.
 - Unverified: a full macOS-ADI recovery after Apple's October 2026 change. No
   public report confirms or denies it.
 
-Experiment, needs one interactive sign-in: force a macOS two-factor challenge
-(`request_trusted_device` plus a code) so Apple mints a macOS PET, then call
-`GETRECORDS` with the macOS claim and that PET. A 200 removes the Windows
-identity, the second code, and half the state. Until then the Windows path is
-the tested one.
+Experiment, needs one interactive sign-in:
+
+```sh
+APW_ESCROW_IDENTITY=macos apw login
+apw join            # or: apw probe-escrow
+```
+
+The variable makes the sign-in keep the macOS PET, and the session records which
+platform minted it (`escrow_platform`) so `join`, `probe-escrow`, and later runs
+send the matching claim. Unset keeps the tested Windows path. A macOS PET is
+already forced when the account needs a code; a trusted machine may have one
+without a new code.
+
+If `GETRECORDS` answers 200, macOS covers escrow, and the Windows identity, the
+second code, and half the state can go. Until then the Windows path is the
+tested one.

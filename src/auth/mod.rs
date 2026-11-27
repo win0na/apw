@@ -28,6 +28,24 @@ pub enum LoginStart {
     NeedWindowsCode(Box<WindowsCode>),
 }
 
+/// The platform of the identity that actually completed the sign-in. It can be
+/// Windows even when the macOS chain was requested, because Apple 5xx replies
+/// and a missing macOS identity both fall back to Windows.
+fn chain_platform(identity: &Identity) -> &'static str {
+    match identity.platform {
+        Some(crate::adi::Platform::Mac) => "macos",
+        _ => "windows",
+    }
+}
+
+/// The escrow identity is the Windows one unless the operator opts into the
+/// macOS experiment. A PET only works with the platform claim that minted it.
+fn escrow_identity_is_macos() -> bool {
+    std::env::var("APW_ESCROW_IDENTITY")
+        .map(|value| value.eq_ignore_ascii_case("macos"))
+        .unwrap_or(false)
+}
+
 /// The state a two-factor submission needs, including the password for the SRP replay.
 #[derive(Clone)]
 pub struct TwoFactor {
@@ -178,28 +196,38 @@ async fn login_start_async(
         })));
     }
 
-    let escrow_pet = match escrow_pet(
-        &identities,
-        account,
-        password,
-        std::env::var("APW_2FA_CODE_WINDOWS").ok(),
-        interactive,
-    )
-    .await?
-    {
-        EscrowPet::Ready(pet) => pet,
-        EscrowPet::NeedCode(pending) => {
-            return Ok(LoginStart::NeedWindowsCode(Box::new(WindowsCode {
-                identities,
-                identity,
-                account: account.to_string(),
-                spd,
-                pet,
-                pending,
-            })));
+    let signed_in_as = chain_platform(&identity);
+    let escrow = if escrow_identity_is_macos() {
+        // The signed-in identity already holds a PET here: the branch above
+        // forces a code when it does not.
+        spd_pet
+            .clone()
+            .or_else(|| pet.clone())
+            .map(|pet| (pet, signed_in_as))
+    } else {
+        match escrow_pet(
+            &identities,
+            account,
+            password,
+            std::env::var("APW_2FA_CODE_WINDOWS").ok(),
+            interactive,
+        )
+        .await?
+        {
+            EscrowPet::Ready(pet) => pet.map(|pet| (pet, "windows")),
+            EscrowPet::NeedCode(pending) => {
+                return Ok(LoginStart::NeedWindowsCode(Box::new(WindowsCode {
+                    identities,
+                    identity,
+                    account: account.to_string(),
+                    spd,
+                    pet,
+                    pending,
+                })));
+            }
         }
     };
-    finish_login(&identities, &mut identity, account, spd, pet, escrow_pet)
+    finish_login(&identities, &mut identity, account, spd, pet, escrow)
         .await
         .map(|session| LoginStart::Done(Box::new(session)))
 }
@@ -219,6 +247,9 @@ async fn submit_two_factor_async(
 ) -> Result<LoginStart> {
     let identities = flow.identities;
     let mut identity = flow.identity;
+    // The pre-replay identity mints the submitted PET and any PET carried in
+    // from the first exchange; the replay can swap platforms on a 5xx.
+    let mint_platform = chain_platform(&identity);
     let submitted = twofa::submit_trusted_device(code, &flow.identity_token, &identity).await?;
     let (status, spd, refreshed) =
         authenticate_any_identity(&identities, &mut identity, &flow.account, &flow.password)
@@ -228,38 +259,45 @@ async fn submit_two_factor_async(
             "two-factor is still required after the code was accepted".into(),
         ));
     }
-    let pet = submitted.or(refreshed).or(flow.pet);
-    let escrow_pet = match escrow_pet(
-        &identities,
-        &flow.account,
-        &flow.password,
-        std::env::var("APW_2FA_CODE_WINDOWS").ok(),
-        interactive,
-    )
-    .await?
-    {
-        EscrowPet::Ready(pet) => pet,
-        EscrowPet::NeedCode(pending) => {
-            return Ok(LoginStart::NeedWindowsCode(Box::new(WindowsCode {
-                identities,
-                identity,
-                account: flow.account,
-                spd,
-                pet,
-                pending,
-            })));
+    let refreshed_platform = chain_platform(&identity);
+    let (pet, pet_platform) = if let Some(pet) = submitted {
+        (Some(pet), mint_platform)
+    } else if let Some(pet) = refreshed {
+        (Some(pet), refreshed_platform)
+    } else {
+        (flow.pet, mint_platform)
+    };
+    let escrow = if escrow_identity_is_macos() {
+        pet.clone().map(|pet| (pet, pet_platform))
+    } else {
+        match escrow_pet(
+            &identities,
+            &flow.account,
+            &flow.password,
+            std::env::var("APW_2FA_CODE_WINDOWS").ok(),
+            interactive,
+        )
+        .await?
+        {
+            EscrowPet::Ready(escrow) => match escrow {
+                Some(pet) => Some((pet, "windows")),
+                None => pet.clone().map(|pet| (pet, pet_platform)),
+            },
+            EscrowPet::NeedCode(pending) => {
+                return Ok(LoginStart::NeedWindowsCode(Box::new(WindowsCode {
+                    identities,
+                    identity,
+                    account: flow.account,
+                    spd,
+                    pet,
+                    pending,
+                })));
+            }
         }
     };
-    finish_login(
-        &identities,
-        &mut identity,
-        &flow.account,
-        spd,
-        pet,
-        escrow_pet,
-    )
-    .await
-    .map(|session| LoginStart::Done(Box::new(session)))
+    finish_login(&identities, &mut identity, &flow.account, spd, pet, escrow)
+        .await
+        .map(|session| LoginStart::Done(Box::new(session)))
 }
 
 /// Submit the Windows identity's code and finish the sign-in.
@@ -278,7 +316,7 @@ async fn submit_windows_code_async(mut flow: WindowsCode, code: &str) -> Result<
         &flow.account,
         flow.spd,
         flow.pet,
-        escrow_pet,
+        escrow_pet.map(|pet| (pet, "windows")),
     )
     .await
 }
@@ -289,7 +327,7 @@ async fn finish_login(
     account: &str,
     spd: Value,
     pet: Option<String>,
-    escrow_pet: Option<String>,
+    escrow: Option<(String, &'static str)>,
 ) -> Result<Session> {
     let fields = gsa::spd_fields(&spd)?;
     if std::env::var_os("APW_DEBUG").is_some() {
@@ -300,10 +338,10 @@ async fn finish_login(
         );
     }
     // The `spd` token is the canonical GSA PET; the PE header is a fallback.
-    let pet = fields.pet.or(pet).ok_or_else(|| {
+    let chain_pet = fields.pet.or(pet).ok_or_else(|| {
         Error::Message("GSA returned no PET; sign in again or check the account".into())
     })?;
-    let delegates = icloud::login_delegates(identity, account, &fields.adsid, &pet).await?;
+    let delegates = icloud::login_delegates(identity, account, &fields.adsid, &chain_pet).await?;
     // A platform mismatch here is recoverable: the caller keeps the service
     // URLs and tokens from the previous session.
     let mut services =
@@ -323,9 +361,12 @@ async fn finish_login(
             }
         }
     }
-    // The escrow proxy only accepts the PET minted by the Windows chain.
-    // `escrow_pet` minted that one before this function runs.
-    let pet = escrow_pet.unwrap_or(pet);
+    // The escrow proxy only accepts a PET with the platform claim that minted
+    // it. The caller selected a matching identity before this function runs.
+    let (pet, escrow_platform) = match escrow {
+        Some((pet, platform)) => (pet, platform),
+        None => (chain_pet, chain_platform(identity)),
+    };
     if std::env::var_os("APW_DEBUG").is_some() {
         eprintln!("escrow pet: len={}", pet.len());
     }
@@ -341,6 +382,7 @@ async fn finish_login(
             .unwrap_or(delegates.cloudkit_token),
         ckdatabasews_url: services.ckdatabasews_url,
         escrow_proxy_url: services.escrow_proxy_url,
+        escrow_platform: Some(escrow_platform.to_string()),
         logged_in_at: chrono::Utc::now(),
     })
 }
@@ -586,4 +628,29 @@ async fn authenticate(
     Err(Error::Message(
         "GSA identity resync did not settle; run login again".into(),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn identity(platform: Option<crate::adi::Platform>) -> Identity {
+        Identity {
+            headers: std::collections::BTreeMap::new(),
+            client_info: String::new(),
+            user_agent: String::new(),
+            platform,
+        }
+    }
+
+    #[test]
+    fn the_escrow_claim_follows_the_identity_that_signed_in() {
+        use crate::adi::Platform;
+        assert_eq!(chain_platform(&identity(Some(Platform::Mac))), "macos");
+        assert_eq!(
+            chain_platform(&identity(Some(Platform::Windows))),
+            "windows"
+        );
+        assert_eq!(chain_platform(&identity(None)), "windows");
+    }
 }
