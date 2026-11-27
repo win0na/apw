@@ -34,9 +34,11 @@ to make `apw` provision a new identity.
 Run the first sign-in with `apw login` rather than the interface. The second code
 is prompted on the terminal, which the interface cannot do.
 
-If you used the separate anisette service before this release, run `apw login`
-again. Apple binds the session and escrow tokens to the machine identity that
-minted them, and an old session keeps tokens from the service identity.
+If you used the separate anisette service before this release, delete the
+`anisette_url` line from `~/.config/apw/config.toml` and run `apw login` again.
+The old interface always saved a URL, and with one configured `apw` keeps using
+that server. Apple binds the session and escrow tokens to the machine identity
+that minted them, and an old session keeps tokens from the service identity.
 
 To use an external anisette server instead, set `APW_ANISETTE_URL`, pass
 `--anisette-url`, or set `anisette_url` in the config. The server must return a

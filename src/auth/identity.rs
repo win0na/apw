@@ -49,7 +49,7 @@ pub struct Identity {
     pub headers: BTreeMap<String, String>,
     pub client_info: String,
     pub user_agent: String,
-    /// The native platform that minted this identity; `None` for a remote server.
+    /// The platform or remote backend that minted this identity.
     pub platform: Option<Platform>,
 }
 
@@ -89,13 +89,6 @@ pub fn with_service(client_info: &str, service: &str) -> String {
 
 pub const AOSKIT_SERVICE: &str = "com.apple.AOSKit/282 (com.apple.accountsd/113)";
 pub const SBD_SERVICE: &str = "com.apple.AuthKit/1 (com.apple.sbd/638.100.48)";
-pub const MAC_AOSKIT: &str =
-    "<MacBookPro18,3> <Mac OS X;13.4.1;22F8> <com.apple.AOSKit/282 (com.apple.accountsd/113)>";
-pub const MAC_AUTHKIT: &str =
-    "<MacBookPro18,3> <Mac OS X;13.4.1;22F8> <com.apple.AuthKit/1 (com.apple.akd/1.0)>";
-pub const MAC_CLOUDKIT: &str =
-    "<MacBookPro18,3> <Mac OS X;13.4.1;22F8> <com.apple.cloudkit.CloudKitDaemon/1970 (com.apple.cloudd/1970)>";
-
 impl Identity {
     pub fn header(&self, name: &str) -> Option<&str> {
         self.headers.get(name).map(String::as_str)
@@ -465,7 +458,8 @@ impl IdentitySource {
 fn offline(base: &str, error: impl std::fmt::Display) -> Error {
     Error::Message(format!(
         "cannot use the anisette server at {base}: {error}\nset APW_ANISETTE_URL or configure \
-         anisette_url to a reachable anisette server"
+         anisette_url to a reachable anisette server, or remove anisette_url to use the \
+         native identity"
     ))
 }
 
@@ -685,13 +679,13 @@ impl AdiState {
         })?;
         if state.version != STATE_VERSION {
             return Err(Error::Message(format!(
-                "the native ADI state at {} has an unsupported version",
+                "the native ADI state at {} has an unsupported version; delete it to provision a new identity",
                 path.display()
             )));
         }
         if state.platform != platform.name() {
             return Err(Error::Message(format!(
-                "the native ADI state at {} is for {}, not {}",
+                "the native ADI state at {} is for {}, not {}; delete it to provision a new identity",
                 path.display(),
                 state.platform,
                 platform.name()

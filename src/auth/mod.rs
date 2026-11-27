@@ -6,6 +6,8 @@ pub mod identity;
 pub mod srp;
 pub mod twofa;
 
+use std::io::IsTerminal;
+
 use plist::Value;
 
 use crate::config::{Config, Paths};
@@ -44,7 +46,13 @@ pub fn login(
         Ok(password) if !password.is_empty() => password,
         _ => read_secret("Apple ID password: ")?,
     };
-    match login_start(config, paths, account, &password, true)? {
+    match login_start(
+        config,
+        paths,
+        account,
+        &password,
+        std::io::stdin().is_terminal(),
+    )? {
         LoginStart::Done(session) => Ok(*session),
         LoginStart::NeedCode(flow) => {
             let code = match code.filter(|code| !code.is_empty()) {
@@ -57,7 +65,7 @@ pub fn login(
                         Ok,
                     )?,
             };
-            submit_two_factor(*flow, &code, true)
+            submit_two_factor(*flow, &code, std::io::stdin().is_terminal())
         }
     }
 }
@@ -391,7 +399,7 @@ async fn escrow_pet(
         ));
     }
     if status.au.is_none() && status.hsc != Some(409) {
-        return Ok(header_pet.or(spd_pet));
+        return Ok(spd_pet.or(header_pet));
     }
 
     let fields = gsa::idms_fields(&spd)?;

@@ -21,9 +21,10 @@ cargo test
 
 The suite has two parts:
 
-- Unit tests in `src/`: TOTP vectors from RFC 6238, AES key wrap, snapshot seal and open, SRP round trips, sidecar matching, and the GSA `spd` decrypt.
+- Unit tests in `src/`: TOTP vectors from RFC 6238, AES key wrap, snapshot seal and open, SRP round trips, sidecar matching, the GSA `spd` decrypt, and the ADI OTP vectors in `tests/fixtures/adi/`.
 - Integration tests in `tests/cli.rs`: a fixture sync, `list`, `get`, `wifi`, `otp`, `status`, wrong passphrase, missing snapshot, and an unreachable anisette
-server.
+server. `tests/adi_provisioning.rs` replays the captured provisioning transcript;
+`tests/adi_live.rs` is ignored and needs `APW_LIVE_ADI=1` plus network access.
 
 Tests isolate the XDG directories with `APW_CONFIG_DIR`, `APW_DATA_DIR`, and `APW_STATE_DIR`, and set `APW_PASSPHRASE` so no keyring is needed. They never touch the network.
 
@@ -85,7 +86,8 @@ apw otp example.com
 | --- | --- |
 | `src/cli.rs` | clap definitions and dispatch |
 | `src/commands/` | `login`, `join`, `sync`, `status`, `pw`, `otp`, `units`, `probe` |
-| `src/auth/` | SRP, anisette, GSA, two-factor, token exchange |
+| `src/adi/` | Native device identity, ported from the MIT apple-auth implementation |
+| `src/auth/` | Identity sources, SRP, GSA, two-factor, token exchange |
 | `src/wire.rs` | Protobuf framing and the CloudKit gateway client |
 | `src/octagon/` | Peer keys, escrow, trust join, TLK shares |
 | `src/ckks/` | Zones, records, AES-SIV, item plists |
