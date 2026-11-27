@@ -3,7 +3,7 @@ use std::io::IsTerminal;
 
 use base64::Engine;
 
-use crate::auth::anisette::Anisette;
+use crate::auth::identity::IdentitySource;
 use crate::cloudkit::Gateway;
 use crate::config::{self, Config, Paths};
 use crate::error::{Error, Result};
@@ -99,7 +99,7 @@ fn perform_inner(paths: &Paths, config: &mut Config, passcode: &str) -> Result<J
         .clone()
         .or_else(|| config.account.clone())
         .ok_or_else(|| Error::Invalid("the snapshot has no account".into()))?;
-    let anisette = Anisette::from_config(config, paths);
+    let anisette = IdentitySource::from_config(config, paths);
     let escrow_url = session.escrow_proxy_url.clone().ok_or_else(|| {
         Error::Message(
             "the session has no escrow URL; run `apw login --refresh` to re-read the \

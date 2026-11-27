@@ -10,7 +10,7 @@ use base64::Engine;
 use plist::{Dictionary, Value};
 use rand::RngCore;
 
-use crate::auth::anisette::Identity;
+use crate::auth::identity::Identity;
 use crate::error::{Error, Result};
 
 pub struct Delegates {
@@ -111,9 +111,9 @@ pub async fn account_settings(
         .header("Authorization", format!("Basic {authorization}"))
         .header(
             "X-Mme-Client-Info",
-            crate::auth::anisette::with_service(
+            crate::auth::identity::with_service(
                 &identity.client_info,
-                crate::auth::anisette::AOSKIT_SERVICE,
+                crate::auth::identity::AOSKIT_SERVICE,
             ),
         )
         .send()

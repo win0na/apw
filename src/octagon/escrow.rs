@@ -19,7 +19,7 @@ use plist::{Dictionary, Value};
 use rand::RngCore;
 use sha2::{Digest, Sha256, Sha384};
 
-use crate::auth::anisette::{self, Identity};
+use crate::auth::identity::{self, Identity};
 use crate::auth::srp;
 use crate::error::{Error, Result};
 use crate::octagon::keys::PeerKeys;
@@ -343,7 +343,7 @@ impl Escrow {
             .header("content-type", "application/x-apple-plst")
             .header(
                 "x-mme-client-info",
-                anisette::with_service(&self.identity.client_info, anisette::SBD_SERVICE),
+                identity::with_service(&self.identity.client_info, identity::SBD_SERVICE),
             )
             .header("x-apple-adsid", &self.adsid)
             .body(body.to_vec());

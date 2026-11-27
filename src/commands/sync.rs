@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use base64::Engine;
 
-use crate::auth::anisette::Anisette;
+use crate::auth::identity::IdentitySource;
 use crate::ckks;
 use crate::cloudkit::Gateway;
 use crate::commands::join::block_on;
@@ -171,7 +171,7 @@ pub fn group_session(paths: &Paths, config: &mut Config) -> Result<GroupSession>
         .peer
         .clone()
         .ok_or_else(|| Error::Auth("run `apw join` first".into()))?;
-    let anisette = Anisette::from_config(config, paths);
+    let anisette = IdentitySource::from_config(config, paths);
     let encryption = PeerKeys::from_x963(
         &decode(&peer_state.signing_key)?,
         &decode(&peer_state.encryption_key)?,
@@ -329,7 +329,7 @@ fn sync_live(paths: &Paths, config: &mut Config, json: bool, emit: bool) -> Resu
         .peer
         .clone()
         .ok_or_else(|| Error::Auth("run `apw join` first".into()))?;
-    let anisette = Anisette::from_config(config, paths);
+    let anisette = IdentitySource::from_config(config, paths);
 
     let encryption = PeerKeys::from_x963(
         &decode(&peer_state.signing_key)?,

@@ -1,4 +1,4 @@
-use crate::auth::anisette::Anisette;
+use crate::auth::identity::IdentitySource;
 use crate::commands::join::block_on;
 use crate::config::{Config, Paths};
 use crate::error::{Error, Result};
@@ -18,7 +18,7 @@ pub fn escrow(paths: &Paths, config: &mut Config, json: bool) -> Result<()> {
         .clone()
         .or_else(|| config.account.clone())
         .ok_or_else(|| Error::Invalid("the snapshot has no account".into()))?;
-    let anisette = Anisette::from_config(config, paths);
+    let anisette = IdentitySource::from_config(config, paths);
     let escrow_url = session
         .escrow_proxy_url
         .clone()
@@ -68,7 +68,7 @@ pub fn settings(paths: &Paths, config: &mut Config, json: bool) -> Result<()> {
         .session
         .clone()
         .ok_or_else(|| Error::Auth("run `apw login` first".into()))?;
-    let anisette = Anisette::from_config(config, paths);
+    let anisette = IdentitySource::from_config(config, paths);
 
     let services = block_on(async {
         let identity = anisette.identity().await?;
@@ -98,7 +98,7 @@ pub fn zoneinfo(paths: &Paths, config: &mut Config, zone: &str, json: bool) -> R
         .session
         .clone()
         .ok_or_else(|| Error::Auth("run `apw login` first".into()))?;
-    let anisette = Anisette::from_config(config, paths);
+    let anisette = IdentitySource::from_config(config, paths);
 
     let container =
         std::env::var("APW_PROBE_CONTAINER").unwrap_or_else(|_| crate::cloudkit::CONTAINER.into());
@@ -222,7 +222,7 @@ pub fn zones(paths: &Paths, config: &mut Config, json: bool) -> Result<()> {
         .session
         .clone()
         .ok_or_else(|| Error::Auth("run `apw login` first".into()))?;
-    let anisette = Anisette::from_config(config, paths);
+    let anisette = IdentitySource::from_config(config, paths);
 
     let zones = block_on(async {
         let identity = anisette.identity().await?;
@@ -309,7 +309,7 @@ pub fn group(paths: &Paths, config: &mut Config, zone: &str, json: bool) -> Resu
         .session
         .clone()
         .ok_or_else(|| Error::Auth("run `apw login` first".into()))?;
-    let anisette = Anisette::from_config(config, paths);
+    let anisette = IdentitySource::from_config(config, paths);
 
     let report = block_on(async {
         let identity = anisette.identity().await?;
@@ -624,7 +624,7 @@ pub fn record(
         .session
         .clone()
         .ok_or_else(|| Error::Auth("run `apw login` first".into()))?;
-    let anisette = Anisette::from_config(config, paths);
+    let anisette = IdentitySource::from_config(config, paths);
 
     let record = block_on(async {
         let identity = anisette.identity().await?;

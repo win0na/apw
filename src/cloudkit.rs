@@ -12,7 +12,7 @@ use base64::Engine;
 use rand::RngCore;
 use sha1::{Digest, Sha1};
 
-use crate::auth::anisette::Identity;
+use crate::auth::identity::Identity;
 use crate::error::{Error, Result};
 use crate::model::Session;
 use crate::wire::{self, Reader, Writer};

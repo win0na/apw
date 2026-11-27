@@ -9,7 +9,7 @@ use std::time::Duration;
 use base64::Engine;
 use plist::Value;
 
-use crate::auth::anisette::Identity;
+use crate::auth::identity::Identity;
 use crate::error::{Error, Result};
 
 pub fn identity_token(adsid: &str, idms_token: &str) -> String {

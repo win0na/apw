@@ -9,7 +9,7 @@
 
 use std::path::PathBuf;
 
-use apw::auth::anisette::{Anisette, Identity};
+use apw::auth::identity::{Identity, IdentitySource};
 use apw::config::{Config, Paths};
 use base64::Engine as _;
 use plist::{Dictionary, Value};
@@ -143,7 +143,7 @@ fn native_identities_are_accepted_by_gsa() {
 
     for backend in [Some("macos"), None] {
         let identity = runtime
-            .block_on(Anisette::from_config(&config, &paths).identity_for(backend))
+            .block_on(IdentitySource::from_config(&config, &paths).identity_for(backend))
             .unwrap();
         for required in ["X-Apple-I-MD", "X-Apple-I-MD-M", "X-Apple-I-MD-LU"] {
             assert!(identity.header(required).is_some(), "{required}");

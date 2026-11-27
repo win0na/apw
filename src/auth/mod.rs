@@ -1,8 +1,8 @@
 //! Apple ID sign-in: anisette identity, GSA SRP, two-factor, and token exchange.
 
-pub mod anisette;
 pub mod gsa;
 pub mod icloud;
+pub mod identity;
 pub mod srp;
 pub mod twofa;
 
@@ -12,8 +12,8 @@ use crate::config::{Config, Paths};
 use crate::error::{Error, Result};
 use crate::model::Session;
 
-use self::anisette::{Anisette, Identity};
 use self::gsa::Status;
+use self::identity::{Identity, IdentitySource};
 use self::srp::SrpClient;
 
 /// Where a password sign-in stopped: finished, or waiting for a trusted-device code.
@@ -26,7 +26,7 @@ pub enum LoginStart {
 /// The state a two-factor submission needs, including the password for the SRP replay.
 #[derive(Clone)]
 pub struct TwoFactor {
-    anisette: Anisette,
+    anisette: IdentitySource,
     identity: Identity,
     account: String,
     password: String,
@@ -81,7 +81,7 @@ async fn login_start_async(
     account: &str,
     password: &str,
 ) -> Result<LoginStart> {
-    let anisette = Anisette::from_config(config, paths);
+    let anisette = IdentitySource::from_config(config, paths);
     let windows_identity = anisette.identity().await?;
     // The macOS chain is the primary one: it yields the modern service map and
     // the cloudKitToken. The Windows chain supplies the escrow PET.
@@ -171,7 +171,7 @@ async fn submit_two_factor_async(flow: TwoFactor, code: &str) -> Result<Session>
 }
 
 async fn finish_login(
-    anisette: &anisette::Anisette,
+    anisette: &identity::IdentitySource,
     identity: &mut Identity,
     account: &str,
     spd: Value,
@@ -247,7 +247,7 @@ pub async fn refresh_services_async(
     paths: &Paths,
     session: &Session,
 ) -> Result<Session> {
-    let anisette = Anisette::from_config(config, paths);
+    let anisette = IdentitySource::from_config(config, paths);
     // The map must come from the platform that minted the token: Apple binds
     // `mmeAuthToken` to the device identity, so a Windows-minted session answers
     // 401 for a macOS client. Try macOS first, then merge the default identity's
@@ -312,7 +312,7 @@ fn read_secret(prompt: &str) -> Result<String> {
 /// the Windows identity before giving up; the service map is then whatever that
 /// identity yields, which is what a Windows-only anisette server gives anyway.
 async fn authenticate_any_identity(
-    anisette: &anisette::Anisette,
+    anisette: &identity::IdentitySource,
     identity: &mut Identity,
     account: &str,
     password: &str,
@@ -333,7 +333,7 @@ async fn authenticate_any_identity(
 /// submit it. Without this the session keeps the macOS PET, which the escrow
 /// proxy rejects with `-3001`.
 async fn escrow_pet(
-    anisette: &anisette::Anisette,
+    anisette: &identity::IdentitySource,
     account: &str,
     password: &str,
     mut code: Option<String>,
@@ -356,7 +356,7 @@ async fn escrow_pet(
 }
 
 async fn authenticate(
-    anisette: &anisette::Anisette,
+    anisette: &identity::IdentitySource,
     identity: &mut Identity,
     account: &str,
     password: &str,

@@ -97,7 +97,7 @@ pub fn normalize_client_info(client_info: &str) -> String {
 }
 
 #[derive(Clone)]
-pub struct Anisette {
+pub struct IdentitySource {
     source: Source,
 }
 
@@ -123,7 +123,7 @@ struct ClientInfo {
     user_agent: Option<String>,
 }
 
-impl Anisette {
+impl IdentitySource {
     pub fn new(base: &str) -> Self {
         let base = base.trim_end_matches('/').to_string();
         let client = reqwest::Client::builder()
@@ -755,7 +755,7 @@ impl AdiState {
 #[cfg(test)]
 mod tests {
     use super::{
-        decode_hex, normalize_client_info, platform_for, AdiState, Anisette, DeviceIdentity,
+        decode_hex, normalize_client_info, platform_for, AdiState, DeviceIdentity, IdentitySource,
         Source, MAC_CLIENT_INFO, STATE_VERSION,
     };
     use crate::adi::Platform;
@@ -794,7 +794,7 @@ mod tests {
             return;
         }
         let paths = paths();
-        let anisette = Anisette::from_config(&Config::default(), &paths);
+        let anisette = IdentitySource::from_config(&Config::default(), &paths);
         assert!(matches!(anisette.source, Source::Native { .. }));
     }
 
@@ -805,7 +805,7 @@ mod tests {
             anisette_url: Some("http://127.0.0.1:6969".into()),
             ..Config::default()
         };
-        let anisette = Anisette::from_config(&config, &paths);
+        let anisette = IdentitySource::from_config(&config, &paths);
         assert!(matches!(anisette.source, Source::Remote { .. }));
     }
 

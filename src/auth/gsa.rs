@@ -8,7 +8,7 @@ use hmac::{Hmac, Mac};
 use plist::{Dictionary, Value};
 use sha2::Sha256;
 
-use crate::auth::anisette::Identity;
+use crate::auth::identity::Identity;
 use crate::auth::srp::PasswordScheme;
 use crate::error::{Error, Result};
 
