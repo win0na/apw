@@ -44,7 +44,7 @@ pub fn login(
         Ok(password) if !password.is_empty() => password,
         _ => read_secret("Apple ID password: ")?,
     };
-    match login_start(config, paths, account, &password)? {
+    match login_start(config, paths, account, &password, true)? {
         LoginStart::Done(session) => Ok(*session),
         LoginStart::NeedCode(flow) => {
             let code = match code.filter(|code| !code.is_empty()) {
@@ -57,7 +57,7 @@ pub fn login(
                         Ok,
                     )?,
             };
-            submit_two_factor(*flow, &code)
+            submit_two_factor(*flow, &code, true)
         }
     }
 }
@@ -68,11 +68,18 @@ pub fn login_start(
     paths: &Paths,
     account: &str,
     password: &str,
+    interactive: bool,
 ) -> Result<LoginStart> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    runtime.block_on(login_start_async(config, paths, account, password))
+    runtime.block_on(login_start_async(
+        config,
+        paths,
+        account,
+        password,
+        interactive,
+    ))
 }
 
 async fn login_start_async(
@@ -80,6 +87,7 @@ async fn login_start_async(
     paths: &Paths,
     account: &str,
     password: &str,
+    interactive: bool,
 ) -> Result<LoginStart> {
     let identities = IdentitySource::from_config(config, paths);
     let windows_identity = identities.identity().await?;
@@ -125,6 +133,7 @@ async fn login_start_async(
         account,
         password,
         std::env::var("APW_2FA_CODE_WINDOWS").ok(),
+        interactive,
     )
     .await?;
     finish_login(&identities, &mut identity, account, spd, pet, escrow_pet)
@@ -133,14 +142,18 @@ async fn login_start_async(
 }
 
 /// Submit the trusted-device code and finish the sign-in.
-pub fn submit_two_factor(flow: TwoFactor, code: &str) -> Result<Session> {
+pub fn submit_two_factor(flow: TwoFactor, code: &str, interactive: bool) -> Result<Session> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    runtime.block_on(submit_two_factor_async(flow, code))
+    runtime.block_on(submit_two_factor_async(flow, code, interactive))
 }
 
-async fn submit_two_factor_async(flow: TwoFactor, code: &str) -> Result<Session> {
+async fn submit_two_factor_async(
+    flow: TwoFactor,
+    code: &str,
+    interactive: bool,
+) -> Result<Session> {
     let identities = flow.identities;
     let mut identity = flow.identity;
     let submitted = twofa::submit_trusted_device(code, &flow.identity_token, &identity).await?;
@@ -158,6 +171,7 @@ async fn submit_two_factor_async(flow: TwoFactor, code: &str) -> Result<Session>
         &flow.account,
         &flow.password,
         std::env::var("APW_2FA_CODE_WINDOWS").ok(),
+        interactive,
     )
     .await?;
     finish_login(
@@ -333,28 +347,72 @@ async fn authenticate_any_identity(
 /// `hsc: 409` and no PET, so ask for that machine's own two-factor code and
 /// submit it. Without this the session keeps the macOS PET, which the escrow
 /// proxy rejects with `-3001`.
+///
+/// A failure to obtain the Windows identity is not fatal: the caller keeps the
+/// macOS PET and `join` reports the missing escrow token. A code that Apple
+/// accepts but answers without a PET is fatal, because the session would store
+/// a token the escrow proxy rejects.
 async fn escrow_pet(
     identities: &identity::IdentitySource,
     account: &str,
     password: &str,
     mut code: Option<String>,
+    interactive: bool,
 ) -> Result<Option<String>> {
-    let mut windows = identities.identity_for(None).await?;
+    let debug = std::env::var_os("APW_DEBUG").is_some();
+    let mut windows = match identities.identity_for(None).await {
+        Ok(identity) => identity,
+        Err(error) => {
+            if debug {
+                eprintln!("escrow pet: windows identity unavailable: {error}");
+            }
+            return Ok(None);
+        }
+    };
     let (status, spd, header_pet) =
-        authenticate(identities, &mut windows, account, password).await?;
+        match authenticate(identities, &mut windows, account, password).await {
+            Ok(result) => result,
+            Err(error) => {
+                if debug {
+                    eprintln!("escrow pet: windows sign-in failed: {error}");
+                }
+                return Ok(None);
+            }
+        };
     let spd_pet = gsa::spd_fields(&spd).ok().and_then(|fields| fields.pet);
+    if status.au.as_deref() == Some("secondaryAuth") {
+        return Err(Error::Message(
+            "Apple asked for SMS two-factor, which this build does not support yet".into(),
+        ));
+    }
     if status.au.is_none() && status.hsc != Some(409) {
         return Ok(header_pet.or(spd_pet));
     }
 
-    let code = match code.take().filter(|code| !code.trim().is_empty()) {
-        Some(code) => code,
-        None => read_secret("two-factor code for the Windows identity: ")?,
-    };
     let fields = gsa::idms_fields(&spd)?;
     let identity_token = twofa::identity_token(&fields.adsid, &fields.gs_idms_token);
+    if status.hsc != Some(409) {
+        twofa::request_trusted_device(&identity_token, &windows).await?;
+    }
+    let code = match code.take().filter(|code| !code.trim().is_empty()) {
+        Some(code) => code,
+        None if interactive => read_secret("two-factor code for the Windows identity: ")?,
+        None => {
+            return Err(Error::Message(
+                "the Windows identity needs its own two-factor code; run `apw login` from a \
+                 terminal or set APW_2FA_CODE_WINDOWS"
+                    .into(),
+            ));
+        }
+    };
     let pet = twofa::submit_trusted_device(&code, &identity_token, &windows).await?;
-    Ok(pet.or(spd_pet).or(header_pet))
+    match pet.or(spd_pet).or(header_pet) {
+        Some(pet) => Ok(Some(pet)),
+        None => Err(Error::Message(
+            "Apple accepted the Windows code but returned no escrow PET; run `apw login` again"
+                .into(),
+        )),
+    }
 }
 
 async fn authenticate(
@@ -372,9 +430,14 @@ async fn authenticate(
         if init.status.hsc == Some(434) || init.status.ec == -22421 {
             if let Some(machine_data) = &init.status.md_data {
                 // Not every anisette server exposes resync; a fresh identity
-                // is enough to retry when it does not.
-                let _ = identities.resync(machine_data).await;
-                *identity = identities.identity().await?;
+                // is enough to retry when it does not. Drop and re-fetch only
+                // the platform that failed.
+                let platform = identity.platform;
+                let _ = identities.resync(machine_data, platform).await;
+                *identity = match platform {
+                    Some(platform) => identities.identity_for(Some(platform.name())).await?,
+                    None => identities.identity().await?,
+                };
                 continue;
             }
         }

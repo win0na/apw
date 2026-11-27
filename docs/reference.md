@@ -107,7 +107,7 @@ The snapshot is written with a mode 0600 temporary file and renamed into place.
 ## Configuration
 
 ```toml
-# anisette_url = "http://127.0.0.1:6969"   # optional; native ADI is the default
+# anisette_url = "http://your-anisette-server:6969"   # optional; native ADI is the default
 account = "you@example.com"
 kdf_salt = "..."       # written by apw; leave it alone
 

@@ -210,6 +210,9 @@ fn refresh_services(paths: &Paths, config: &mut Config, account: &str, json: boo
         .escrow_proxy_url
         .clone()
         .or_else(|| session.escrow_proxy_url.clone());
+    if let Some(token) = services.cloudkit_token.clone() {
+        session.cloudkit_token = token;
+    }
     snapshot.session = Some(session.clone());
     vault::save(paths, config, &snapshot)?;
 

@@ -25,7 +25,7 @@ emulate, or download an Apple binary.
 The first sign-in provisions a macOS profile and a Windows profile against
 `gsa.apple.com`. If Apple asks for two-factor codes, the first is for the macOS
 identity and the second is for the Windows identity; both are one-time. The
-The Windows identity authorizes escrow recovery, and later sign-ins ask for
+Windows identity authorizes escrow recovery, and later sign-ins ask for
 neither. `apw` writes the profiles to `$XDG_STATE_HOME/apw/adi/macos.json` and
 `windows.json` with mode 0600, then reuses them on later runs. Delete those files
 to make `apw` provision a new identity.

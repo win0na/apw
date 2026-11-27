@@ -49,6 +49,8 @@ pub struct Identity {
     pub headers: BTreeMap<String, String>,
     pub client_info: String,
     pub user_agent: String,
+    /// The native platform that minted this identity; `None` for a remote server.
+    pub platform: Option<Platform>,
 }
 
 /// Keep the platform and OS tokens from a client-info string and replace the
@@ -217,6 +219,7 @@ impl IdentitySource {
         Ok(Identity {
             headers,
             client_info,
+            platform: None,
             user_agent: info
                 .user_agent
                 .filter(|value| !value.is_empty())
@@ -265,14 +268,20 @@ impl IdentitySource {
         Ok(response.json().await?)
     }
 
-    pub async fn resync(&self, machine_data: &[u8]) -> Result<()> {
+    pub async fn resync(&self, machine_data: &[u8], platform: Option<Platform>) -> Result<()> {
         match &self.source {
             // Apple asks for a resync when its copy of the device data is
             // stale. apw cannot replay that state, so drop the stored identity
-            // and let the next request provision a fresh one.
+            // and let the next request provision a fresh one. Only the chain
+            // that failed is dropped; the other keeps its trusted code state.
             Source::Native { paths, .. } => {
-                for platform in [Platform::Mac, Platform::Windows] {
-                    let path = state_path(paths, platform);
+                let platforms: &[Platform] = match platform {
+                    Some(Platform::Mac) => &[Platform::Mac],
+                    Some(Platform::Windows) => &[Platform::Windows],
+                    None => &[Platform::Mac, Platform::Windows],
+                };
+                for platform in platforms {
+                    let path = state_path(paths, *platform);
                     match std::fs::remove_file(&path) {
                         Ok(()) => {}
                         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -748,6 +757,7 @@ impl AdiState {
             headers,
             client_info,
             user_agent: self.identity.user_agent.clone(),
+            platform: Some(platform),
         })
     }
 }
