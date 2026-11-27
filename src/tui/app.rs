@@ -11,7 +11,7 @@ use crate::error::{Error, Result};
 
 use super::data::{Category, DashboardPhase, Row, RowSource, VaultView, CATEGORIES};
 use super::secret::{SecretField, SecretValue};
-use super::theme::{Chrome, HINTS_BROWSER, HINTS_DASHBOARD, WORDMARK, WORDMARK_COMPACT};
+use super::theme::{Chrome, Tokens, HINTS_BROWSER, HINTS_DASHBOARD, WORDMARK, WORDMARK_COMPACT};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Screen {
@@ -494,9 +494,11 @@ struct Ui {
 }
 
 pub fn run(view: VaultView) -> Result<()> {
-    let options = AppOptions::default().with_theme(Theme::terminal());
+    let mut options = AppOptions::default().with_theme(Theme::terminal());
+    options.palette_size = 16;
     let app = App::new(options).map_err(|error| Error::Message(error.to_string()))?;
-    let ui = Ui::build(app.clone(), view);
+    let tokens = Tokens::system(app.palette().as_ref());
+    let ui = Ui::build(app.clone(), view, tokens);
     ui.wire();
     let (width, height) = app.size();
     if width > 0 && height > 0 {
@@ -507,8 +509,8 @@ pub fn run(view: VaultView) -> Result<()> {
 }
 
 impl Ui {
-    fn build(app: App, view: VaultView) -> Self {
-        let chrome = Chrome::terminal();
+    fn build(app: App, view: VaultView, tokens: Tokens) -> Self {
+        let chrome = Chrome::from(&tokens);
         let root = app.root();
         root.column();
 
@@ -3455,7 +3457,7 @@ mod tests {
     }
 
     fn ui(app: &TestApp) -> Ui {
-        let ui = Ui::build((**app).clone(), view());
+        let ui = Ui::build((**app).clone(), view(), Tokens::fallback());
         ui.wire();
         ui.resize(100, 30);
         ui.refresh();
@@ -3463,7 +3465,7 @@ mod tests {
     }
 
     fn ui_sized(app: &TestApp, width: u16, height: u16) -> Ui {
-        let ui = Ui::build((**app).clone(), view());
+        let ui = Ui::build((**app).clone(), view(), Tokens::fallback());
         ui.wire();
         ui.resize(width, height);
         ui.refresh();
@@ -3774,7 +3776,7 @@ mod tests {
             ..Entry::default()
         });
         let app = TestApp::new(100, 30);
-        let ui = Ui::build((*app).clone(), view);
+        let ui = Ui::build((*app).clone(), view, Tokens::fallback());
         ui.wire();
         ui.resize(100, 30);
         ui.refresh();
@@ -3810,7 +3812,7 @@ mod tests {
     fn adding_and_trashing_an_entry_persists_to_the_snapshot() {
         let (_dir, view) = temp_view();
         let app = TestApp::new(100, 30);
-        let ui = Ui::build((*app).clone(), view);
+        let ui = Ui::build((*app).clone(), view, Tokens::fallback());
         ui.wire();
         ui.resize(100, 30);
         ui.refresh();
@@ -3865,7 +3867,7 @@ mod tests {
         view.config.tui.split = Some(true);
         view.config.save(&view.paths).unwrap();
         let app = TestApp::new(100, 30);
-        let ui = Ui::build((*app).clone(), view);
+        let ui = Ui::build((*app).clone(), view, Tokens::fallback());
         ui.wire();
         ui.resize(100, 30);
         ui.refresh();
@@ -3888,7 +3890,7 @@ mod tests {
         std::fs::write(&view.paths.config_file, "kdf_salt = 5\n").unwrap();
         let before = std::fs::read(&view.paths.config_file).unwrap();
         let app = TestApp::new(100, 30);
-        let ui = Ui::build((*app).clone(), view);
+        let ui = Ui::build((*app).clone(), view, Tokens::fallback());
         ui.wire();
         ui.resize(100, 30);
         ui.refresh();
@@ -3910,7 +3912,7 @@ mod tests {
         disk.save(&view.paths).unwrap();
         view.config = crate::config::Config::default();
         let app = TestApp::new(100, 30);
-        let ui = Ui::build((*app).clone(), view);
+        let ui = Ui::build((*app).clone(), view, Tokens::fallback());
         ui.wire();
         ui.resize(100, 30);
         ui.refresh();
@@ -3934,7 +3936,7 @@ mod tests {
             name: Some("Family".into()),
             shared: true,
         }];
-        let ui = Ui::build(app.clone(), view);
+        let ui = Ui::build(app.clone(), view, Tokens::fallback());
         ui.wire();
         ui.resize(100, 30);
         ui.refresh();
