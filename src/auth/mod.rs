@@ -6,8 +6,6 @@ pub mod identity;
 pub mod srp;
 pub mod twofa;
 
-use std::io::IsTerminal;
-
 use plist::Value;
 
 use crate::config::{Config, Paths};
@@ -57,8 +55,7 @@ pub fn login(
         Ok(password) if !password.is_empty() => password,
         _ => read_secret("Apple ID password: ")?,
     };
-    let interactive = std::io::stdin().is_terminal();
-    let mut next = login_start(config, paths, account, &password, interactive)?;
+    let mut next = login_start(config, paths, account, &password)?;
     loop {
         match next {
             LoginStart::Done(session) => return Ok(*session),
@@ -68,12 +65,9 @@ pub fn login(
                     None => std::env::var("APW_2FA_CODE")
                         .ok()
                         .filter(|code| !code.is_empty())
-                        .map_or_else(
-                            || read_secret("two-factor code for the macOS identity: "),
-                            Ok,
-                        )?,
+                        .map_or_else(|| read_secret("two-factor code: "), Ok)?,
                 };
-                next = submit_two_factor(*flow, &code, interactive)?;
+                next = submit_two_factor(*flow, &code)?;
             }
         }
     }
@@ -85,7 +79,6 @@ pub fn login_start(
     paths: &Paths,
     account: &str,
     password: &str,
-    _interactive: bool,
 ) -> Result<LoginStart> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -157,7 +150,7 @@ async fn login_start_async(
 }
 
 /// Submit the trusted-device code and finish the sign-in.
-pub fn submit_two_factor(flow: TwoFactor, code: &str, _interactive: bool) -> Result<LoginStart> {
+pub fn submit_two_factor(flow: TwoFactor, code: &str) -> Result<LoginStart> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;

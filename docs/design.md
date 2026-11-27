@@ -105,7 +105,7 @@ editing, paste, and focus without exposing the text.
 
 The interface collects Apple ID credentials in a wizard and calls a stepwise
 login API. The password and two-factor code stay in the process, and the
-escrow passcode is sent once for a join. The wizard asks for the macOS code when
+escrow passcode is sent once for a join. The wizard asks for the code when
 Apple requests one.
 
 ## Sync

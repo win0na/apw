@@ -2076,9 +2076,8 @@ impl Ui {
                 let proxy = self.app.proxy();
                 let attempt = self.state.borrow().auth_attempt;
                 std::thread::spawn(move || {
-                    let result =
-                        crate::auth::login_start(&config, &paths, &account, &password, false)
-                            .map_err(|error| error.message().to_string());
+                    let result = crate::auth::login_start(&config, &paths, &account, &password)
+                        .map_err(|error| error.message().to_string());
                     let _ = proxy.send(AuthEvent::Started {
                         attempt,
                         account,
@@ -2110,7 +2109,7 @@ impl Ui {
                 let proxy = self.app.proxy();
                 let attempt = self.state.borrow().auth_attempt;
                 std::thread::spawn(move || {
-                    let result = crate::auth::submit_two_factor(flow, &code, false)
+                    let result = crate::auth::submit_two_factor(flow, &code)
                         .map_err(|error| error.message().to_string());
                     let _ = proxy.send(AuthEvent::Started {
                         attempt,

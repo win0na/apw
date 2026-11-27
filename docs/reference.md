@@ -134,7 +134,7 @@ binary can read a newer file.
 | `APW_ANISETTE_URL` | Anisette server URL; unset uses the native device identity |
 | `APW_PASSPHRASE` | Derive the snapshot key from this passphrase |
 | `APW_PASSWORD` | Apple ID password for `login` |
-| `APW_2FA_CODE` | Trusted-device code for the macOS identity |
+| `APW_2FA_CODE` | Trusted-device code for the device identity |
 | `APW_ESCROW_PASSCODE` | Escrow passcode for `join` |
 | `APW_FIXTURE` | Fixture file for `sync` |
 | `APW_CONFIG_DIR` | Override the config directory |

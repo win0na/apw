@@ -28,8 +28,8 @@ The macOS identity authorizes account requests and escrow recovery, so later
 sign-ins ask for no code. `apw` writes the profile to
 `$XDG_STATE_HOME/apw/adi/macos.json` with mode 0600 in a mode 0700 directory,
 then reuses it on later runs. Delete the file
-to make `apw` provision a new identity. When Apple or a configured server cannot
-serve a macOS identity, `apw` falls back to Windows and stores `windows.json`.
+to make `apw` provision a new identity. When the macOS identity cannot be
+provisioned, `apw` falls back to Windows and stores `windows.json`.
 
 `apw login` and the interface both ask for the code when Apple requests one.
 

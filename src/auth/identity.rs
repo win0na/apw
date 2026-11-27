@@ -103,6 +103,23 @@ pub fn normalize_client_info(client_info: &str) -> String {
     client_info.replace("<macOS;", "<Mac OS X;")
 }
 
+/// The platform named by a client-info string. Servers can ignore
+/// `?backend=macos`, so the reported platform comes from what they served.
+fn platform_from_client_info(client_info: &str) -> Option<Platform> {
+    let lower = client_info.to_ascii_lowercase();
+    if lower.contains("<mac os x;")
+        || lower.contains("<macos;")
+        || lower.contains("macbook")
+        || lower.contains("<imac")
+    {
+        Some(Platform::Mac)
+    } else if lower.contains("<windows;") || lower.contains("windows nt") {
+        Some(Platform::Windows)
+    } else {
+        None
+    }
+}
+
 #[derive(Clone)]
 pub struct IdentitySource {
     source: Source,
@@ -209,22 +226,28 @@ impl IdentitySource {
         }
 
         let info = self.client_info(&query).await.unwrap_or_default();
-        let client_info = normalize_client_info(
-            &info
-                .client_info
-                .filter(|value| !value.is_empty())
-                .unwrap_or_else(|| FALLBACK_CLIENT_INFO.to_string()),
-        );
+        let served = info.client_info.filter(|value| !value.is_empty());
+        let client_info = normalize_client_info(served.as_deref().unwrap_or(FALLBACK_CLIENT_INFO));
         let mut headers = headers;
         for (name, value) in headers.iter_mut() {
             if name.eq_ignore_ascii_case("X-MMe-Client-Info") {
                 *value = normalize_client_info(value);
             }
         }
+        let platform = served
+            .as_deref()
+            .and_then(platform_from_client_info)
+            .or_else(|| {
+                headers
+                    .iter()
+                    .find(|(name, _)| name.eq_ignore_ascii_case("X-MMe-Client-Info"))
+                    .and_then(|(_, value)| platform_from_client_info(value))
+            })
+            .or_else(|| Some(platform_for(backend)));
         Ok(Identity {
             headers,
             client_info,
-            platform: Some(platform_for(backend)),
+            platform,
             user_agent: info
                 .user_agent
                 .filter(|value| !value.is_empty())
@@ -776,11 +799,73 @@ impl AdiState {
 #[cfg(test)]
 mod tests {
     use super::{
-        decode_hex, normalize_client_info, platform_for, AdiState, DeviceIdentity, IdentitySource,
-        Source, MAC_CLIENT_INFO, STATE_VERSION,
+        decode_hex, normalize_client_info, platform_for, platform_from_client_info, AdiState,
+        DeviceIdentity, IdentitySource, Source, MAC_CLIENT_INFO, STATE_VERSION,
     };
     use crate::adi::Platform;
     use crate::config::{Config, Paths};
+
+    #[test]
+    fn a_remote_server_that_ignores_the_backend_is_labelled_by_what_it_serves() {
+        use std::io::{BufRead, BufReader, Write as _};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().take(2) {
+                let mut stream = stream.unwrap();
+                let mut request = String::new();
+                {
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    loop {
+                        let mut line = String::new();
+                        if reader.read_line(&mut line).unwrap() == 0 {
+                            break;
+                        }
+                        request.push_str(&line);
+                        if line == "\r\n" {
+                            break;
+                        }
+                    }
+                }
+                let body = if request.starts_with("GET /v3/client_info") {
+                    r#"{"client_info":"<PC> <Windows;6.2(0,0);9200>","user_agent":"test"}"#
+                } else {
+                    r#"{"X-Apple-I-MD":"proof","X-Apple-I-MD-M":"machine"}"#
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+            }
+        });
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let source = IdentitySource::new(&format!("http://{address}"));
+        let identity = runtime
+            .block_on(source.identity_for(Some("macos")))
+            .unwrap();
+        assert_eq!(identity.platform, Some(Platform::Windows));
+    }
+
+    #[test]
+    fn the_platform_comes_from_the_served_client_info() {
+        assert_eq!(
+            platform_from_client_info("<MacBookPro18,3> <Mac OS X;13.1;22C65>"),
+            Some(Platform::Mac)
+        );
+        assert_eq!(
+            platform_from_client_info("<PC> <Windows;6.2(0,0);9200>"),
+            Some(Platform::Windows)
+        );
+        assert_eq!(platform_from_client_info("<iPhone> <iOS;17.0>"), None);
+    }
 
     #[test]
     fn the_macos_platform_token_is_relabelled() {
