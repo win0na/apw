@@ -11,6 +11,8 @@ live gate are in [CONTRIBUTING.md](CONTRIBUTING.md); do not repeat them here.
   claim.
 - MUST NOT use marketing adjectives, "simply", "just", "easy", emoji,
   exclamation marks, or em dashes.
+- MUST describe the interface action first (`/login`, `/sync`, a key) and the
+  command-line equivalent second; the CLI serves scripts and the timer.
 - MUST cut a sentence that restates the title or the heading.
 
 ## README

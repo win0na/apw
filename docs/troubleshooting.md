@@ -10,8 +10,8 @@ prints help and exits. Run it in a terminal, or use a subcommand.
 
 ## `no snapshot at ...; run apw login first`
 
-The snapshot file is missing. Run `apw login`, then `apw sync`; in the
-interface, use `/login` and `/sync`.
+The snapshot file is missing. Run `apw`, then `/login` and `/sync`; a script
+runs `apw login` and `apw sync`.
 
 ## `apw` asks for a passphrase and then cannot decrypt
 
@@ -67,8 +67,8 @@ cargo build --release --locked --no-default-features --features tui
 Apple rejected the device identity, or a configured anisette server did not
 answer. If `APW_ANISETTE_URL` or `anisette_url` is set, check that the server is
 reachable. Otherwise delete `$XDG_STATE_HOME/apw/adi/` and sign in again; `apw`
-provisions a new identity. Then run `apw login --refresh` to re-read the service
-URLs.
+provisions a new identity. Then run `/login --refresh` in the interface, or
+`apw login --refresh`, to re-read the service URLs.
 
 ## `apw login` reports `GSA answered HTTP 503`
 
@@ -86,8 +86,9 @@ and Apple returns that entry only to a macOS client. A session created while
 `apw` sent the literal `<macOS;` token signed in as a Windows client, so its map
 lists dataclasses only and the escrow proxy is missing.
 
-Sign in again with `apw login` or `/login` to obtain a macOS session. If the URL
-is still missing, the macOS identity is being refused; check for a 503 as above.
+Sign in again with `/login` in the interface, or `apw login`, to obtain a macOS
+session. If the URL is still missing, the macOS identity is being refused; check
+for a 503 as above.
 
 ## The two-factor code is rejected
 
@@ -108,13 +109,14 @@ The previous sync finished less than 300 seconds ago. Wait, or use `--force` /
 
 ## `sync` says the session expired
 
-The stored tokens are no longer accepted. Run `apw login` again. The peer is
-kept, so the join is not repeated unless you pass `--join`.
+The stored tokens are no longer accepted. Run `/login` in the interface, or
+`apw login`. The peer is kept, so the join is not repeated unless you pass
+`--join`.
 
 ## A shared group is empty
 
-Shared items appear only after a sync reads them back. Run `apw sync`, then open
-**Groups** or `apw group show <group>`. A group whose protection cannot be opened
+Shared items appear only after a sync reads them back. Run `/sync` in the
+interface, or `apw sync`, then open **Groups** or run `apw group show <group>`. A group whose protection cannot be opened
 still appears by name when `apw` journaled it.
 
 ## The timer does not fire

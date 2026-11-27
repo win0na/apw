@@ -90,5 +90,5 @@ If the snapshot cannot decrypt, the key changed or the file is damaged. Keep a
 copy of the key or the passphrase before changing passphrase mode.
 
 If the escrow record is exhausted, sign in on an Apple device, reset the iCloud
-Security Code, and join again. If the snapshot is lost, run `apw login` and
-`apw sync` to rebuild it from iCloud.
+Security Code, and join again. If the snapshot is lost, run `/login` and `/sync`
+in the interface, or `apw login` and `apw sync`, to rebuild it from iCloud.

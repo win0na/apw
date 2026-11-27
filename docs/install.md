@@ -34,15 +34,13 @@ The AUR recipe in `packaging/aur/` is updated by hand, and the published
 
 ## Sign in
 
-```sh
-apw login
-apw sync
-```
+Run `apw` and type `/login` in the palette. The wizard asks for the Apple ID
+password, a two-factor code when Apple asks, and your escrow passcode, then
+joins the Octagon trust circle and syncs. Later sign-ins usually ask only for
+the password.
 
-The first sign-in asks for the Apple ID password, a two-factor code, and your
-escrow passcode, then joins the Octagon trust circle and syncs. Later sign-ins
-usually ask only for the password; `--refresh` re-reads the service URLs without
-signing in.
+For a headless host or a script, `apw login` runs the same steps. `--refresh`
+re-reads the service URLs without signing in.
 
 The escrow passcode is your device passcode, or the iCloud Security Code when
 you set one. It is used once, never stored, and is not the snapshot passphrase.

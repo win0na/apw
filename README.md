@@ -31,14 +31,12 @@ packages are x86_64; on aarch64 use Cargo. Every method needs `libdbus-1`.
 
 ## Sign in
 
-```sh
-apw login
-apw sync
-```
-
-The first sign-in asks for the Apple ID password, a two-factor code, and your
-escrow passcode. The passcode spends one of about ten attempts and is never
+Run `apw` and type `/login`. The wizard asks for the Apple ID password, a
+two-factor code when Apple asks, and your escrow passcode, then joins the trust
+circle and syncs. The passcode spends one of about ten attempts and is never
 stored.
+
+For scripts and the timer, `apw login` and `apw sync` run the same steps.
 
 ## Use the interface
 

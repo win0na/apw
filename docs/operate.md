@@ -60,9 +60,12 @@ Open **Pending** and keep the local change or take the remote version, or run
 
 ## Read and write
 
-The interface reads and writes the same snapshot as the CLI, so an item added
-in one appears in the other. Writes change the snapshot and queue a CloudKit
-operation; they do not touch the network.
+Add and edit from the item pane: `e` opens the form, `t` moves an item to
+Recently Deleted, and `s` restores it. The interface reads and writes the same
+snapshot as the CLI, so an item added in one appears in the other. Writes change
+the snapshot and queue a CloudKit operation; they do not touch the network.
+
+The same operations for scripts and the timer:
 
 ```sh
 apw status
@@ -89,13 +92,8 @@ optional join. The anisette field is optional and empty by default, which uses
 the native device identity. `/join` asks for the escrow passcode and spends one
 attempt.
 
-```sh
-apw login
-apw sync
-```
-
-`apw login` keeps the existing peer; `--refresh` re-reads the service URLs
-without a password.
+A script runs `apw login`; it keeps the existing peer, and `--refresh` re-reads
+the service URLs without a password.
 
 ## Shared groups
 
