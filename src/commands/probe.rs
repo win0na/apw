@@ -30,6 +30,12 @@ pub fn escrow(paths: &Paths, config: &mut Config, json: bool) -> Result<()> {
             Some("macos") => identities.identity_for(Some("macos")).await?,
             _ => identities.identity().await?,
         };
+        if std::env::var_os("APW_DEBUG").is_some() {
+            eprintln!(
+                "escrow identity: platform={:?} identity={:?}",
+                session.escrow_platform, identity.platform
+            );
+        }
         let escrow = Escrow::new(
             &escrow_url,
             &account,
