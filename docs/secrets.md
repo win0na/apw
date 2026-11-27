@@ -59,7 +59,7 @@ automatic logins stop retrying until you run `apw join` again.
 ## Device identity
 
 `apw` holds the device identity Apple associates with account requests, in
-`$XDG_STATE_HOME/apw/adi/` with mode 0600. It can link requests from every client
+`$XDG_STATE_HOME/apw/adi/` (directory mode 0700, files mode 0600). It can link requests from every client
 that uses the same identity, so treat the directory as sensitive. Deleting it
 makes `apw` provision a new identity on the next sign-in.
 

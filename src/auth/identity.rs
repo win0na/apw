@@ -947,6 +947,12 @@ mod tests {
 
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
+        let directory = std::fs::metadata(path.parent().unwrap())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(directory, 0o700);
         let loaded = AdiState::load(&path, Platform::Mac).unwrap().unwrap();
         assert_eq!(loaded, state);
     }

@@ -79,7 +79,7 @@ installs `/usr/bin/apw`.
 
 ## Sign in
 
-Run `apw` and choose `login`, or use the command line:
+Run `apw login` for the first sign-in; open `apw` and choose `login` for later ones:
 
 ```sh
 apw login --account you@example.com
