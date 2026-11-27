@@ -336,7 +336,7 @@ mod secret_service {
     /// copy runs on a connection that never prompts, because it can be reached
     /// from a read command, and it is skipped while the default collection is
     /// locked. The old item is not deleted: it is the fallback for readers that
-    /// still run 0.4.0.
+    /// still use the keyring item.
     fn copy(key: &[u8; KEY_LEN]) {
         let Ok(service) = SecretService::connect_with_max_prompt_timeout(EncryptionType::Dh, 0)
         else {

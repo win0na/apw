@@ -6,8 +6,8 @@ relative to itself.
 
 | Artifact | Source | Output |
 | --- | --- | --- |
-| Tarball | `packaging/tarball.sh` | `dist/apw-0.4.0-<host-target>.tar.gz` |
-| Debian package | `packaging/debian/build.sh` | `dist/apw_0.4.0_<arch>.deb` |
+| Tarball | `packaging/tarball.sh` | `dist/apw-0.5.0-<host-target>.tar.gz` |
+| Debian package | `packaging/debian/build.sh` | `dist/apw_0.5.0_<arch>.deb` |
 | AUR | `packaging/aur/PKGBUILD` | `makepkg -si` output |
 | Nix flake | `flake.nix` | `nix build` output |
 
@@ -38,7 +38,11 @@ installs the library at `/usr/lib/apw`; the AUR recipe's makedepends are
 ## Notes
 
 - The AUR package is `apw-cli` (`ssh://aur@aur.archlinux.org/apw-cli.git`); `packaging/aur/` holds the tracked copies of `PKGBUILD` and `.SRCINFO`. The binary is `/usr/bin/apw`; the recipe declares `provides=('apw')` and `conflicts=('apw')` because an unrelated wrapper already owns that path.
-- On a release, tag first, then run `updpkgsums` and regenerate `.SRCINFO` with `makepkg --printsrcinfo`, then push both to `ssh://aur@aur.archlinux.org/apw-cli.git`. The checksum in both files must match the `vX.Y.Z` archive.
+- `release.yml` builds the tarball, the Debian package, their `.sha256` files,
+  and `install.sh` on a `vX.Y.Z` tag, then publishes a pre-release.
+- To update the AUR package, bump `pkgver` in `PKGBUILD` and `.SRCINFO`, then
+  push both to `ssh://aur@aur.archlinux.org/apw-cli.git`. The source checksums
+  stay `SKIP` because the recipe builds from the git tag.
 - The TLS provider is ring, so the aws-lc archive and the Arch `LDFLAGS`
   workaround are gone. The tests run in the default profile because the release
   profile aborts on panic. The tests are not run offline: `build()` does not

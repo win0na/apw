@@ -112,10 +112,15 @@ apw otp example.com
 
 ## Release
 
-1. Bump `version` in `Cargo.toml`, run `cargo check` to refresh `Cargo.lock`, and update the version in `docs/install.md` and `packaging/README.md`.
-2. Commit, tag `vX.Y.Z`, and push the branch and the tag. CI runs on the tag and checks that the tag matches `Cargo.toml`.
-3. Run `packaging/tarball.sh` and `packaging/debian/build.sh`, then attach the artifacts to the GitHub release.
-4. In `packaging/aur`, run `updpkgsums`, then `makepkg --printsrcinfo > .SRCINFO`, and push both to `ssh://aur@aur.archlinux.org/apw-cli.git`.
+1. Bump `version` in `Cargo.toml`, run `cargo check` to refresh `Cargo.lock`,
+   add the `## [X.Y.Z]` section to `CHANGELOG.md`, and update the versioned
+   names in `docs/install.md` and `packaging/README.md`.
+2. Commit and push, then tag `vX.Y.Z` and push the tag. `release.yml` builds the
+   tarball, the Debian package, their checksums, and `install.sh`, then
+   publishes a pre-release from the CHANGELOG section.
+3. Bump `pkgver` in `packaging/aur/PKGBUILD` and `.SRCINFO`, then push both to
+   `ssh://aur@aur.archlinux.org/apw-cli.git`. The source checksums stay `SKIP`
+   because the recipe builds from the git tag.
 
 ## License
 

@@ -1,6 +1,6 @@
 # Reference
 
-This page lists commands, files, environment variables, and output formats.
+Commands, files, environment variables, and output formats.
 
 ## Commands
 
@@ -38,10 +38,10 @@ apw pending
 apw trash [QUERY]
 ```
 
-`get` accepts a login or Wi-Fi network. An exact match wins over a partial match.
+`get` accepts a login or a Wi-Fi network; an exact match wins over a partial one.
 `--password-only` prints one password per match, with no JSON and no labels.
-`otp QUERY` prints one code. `otp` without a query lists every code. The TUI
-shows the remaining seconds next to the code.
+`otp QUERY` prints one code; `otp` without a query lists every code and the
+seconds left in the TUI.
 
 ### Write
 
@@ -57,13 +57,13 @@ apw restore [QUERY] [--id ID] [--dry-run]
 apw resolve ID [--local|--remote]
 ```
 
-`--generate` writes a 20-character password and prints it on stderr. `--password-stdin` reads one line. An empty
-`--title` clears the title. `rm` requires `--yes`; the item moves to Recently
-Deleted for 30 days.
+`--generate` writes a 20-character password and prints it on stderr.
+`--password-stdin` reads one line. An empty `--title` clears the title. `rm`
+requires `--yes`; the item moves to Recently Deleted for 30 days.
 
 `resolve --local` clears a blocked pending operation and marks it forced.
-`resolve --remote` drops the operation without pushing it. A sync with queued
-work is allowed even inside the floor.
+`resolve --remote` drops the operation without pushing it. `--local` pushes on
+the next sync even inside the floor.
 
 ### Groups
 
@@ -86,9 +86,9 @@ apw passkey import FILE [--dry-run]
 apw passkey export FILE [--force]
 ```
 
-`import` reads a Credential Exchange Format 1.0 JSON file. `export` writes one.
-Export refuses to overwrite without `--force`. Passkey import is local and queues
-creates; export reads the snapshot only.
+`import` reads a Credential Exchange Format 1.0 JSON file; `export` writes one
+and refuses to overwrite without `--force`. Import is local and queues creates;
+export reads the snapshot only.
 
 ## Files
 
@@ -99,10 +99,10 @@ creates; export reads the snapshot only.
 | `$XDG_DATA_HOME/apw/snapshot.bin` | Encrypted snapshot |
 | `$XDG_DATA_HOME/apw/snapshot.lock` | Per-operation lock file |
 | `$XDG_STATE_HOME/apw/state.json` | Last sync, source, counts, failures, retry time |
-| `$XDG_STATE_HOME/apw/adi/{macos,windows}.json` | Device identity files, mode 0600, directory mode 0700 |
+| `$XDG_STATE_HOME/apw/adi/{macos,windows}.json` | Device identity files, mode 0600 in a mode 0700 directory |
 | `$XDG_CONFIG_HOME/apw/config.lock` | Config read-modify-write lock |
 
-The snapshot is written with a mode 0600 temporary file and renamed into place.
+The snapshot is written to a mode 0600 temporary file and renamed into place.
 
 ## Configuration
 
@@ -122,10 +122,10 @@ show_wordmark = true
 ```
 
 `[tui].last_category` accepts `logins`, `notes`, `wifi`, `passkeys`, `groups`,
-`trash`, or `pending`. `split = true` requests the list/detail split on screens
-wide enough for it; `split = false` requests the stacked layout. `show_wordmark =
-false` hides the dashboard wordmark. Unknown keys are ignored, so an older
-binary can read a newer file.
+`trash`, or `pending`. `split = true` requests the list/detail split on wide
+screens; `split = false` requests the stacked layout. `show_wordmark = false`
+hides the dashboard wordmark. Unknown keys are ignored, so an older binary can
+read a newer file.
 
 ## Environment
 
@@ -158,9 +158,9 @@ Failure:
 {"status":2,"error":{"code":"usage","message":"a note title is required"}}
 ```
 
-`data` is an object for status, add, edit, delete, and restore. Query commands
-return an array, including one match. Error codes are
-`usage`, `not_found`, `auth`, `network`, `locked`, `cloudkit`, and `error`.
+`data` is an object for status, add, edit, delete, and restore; query commands
+return an array, including one match. Error codes are `usage`, `not_found`,
+`auth`, `network`, `locked`, `cloudkit`, and `error`.
 
 Exit codes:
 
@@ -185,9 +185,9 @@ Secret Service or derived from a passphrase with Argon2id at 64 MiB, three
 iterations, and one lane.
 
 The vault stores entries, groups, session tokens, the peer, Recently Deleted,
-pending operations, sync keys, and group operations. Entries keep the original
-CloudKit plist payload beside the parsed fields so a write can preserve unknown
-Apple keys.
+pending operations, sync keys, and group operations. Each entry keeps the
+original CloudKit plist payload beside the parsed fields, so a write can
+preserve unknown Apple keys.
 
 ## Limits
 

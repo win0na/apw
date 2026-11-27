@@ -1,31 +1,37 @@
 # Troubleshooting
 
-This page covers the failures you are most likely to see. Each entry names the
-message and the next action.
+The failures you are most likely to see, with the message and the next action.
 
 ## `apw` exits without opening the interface
 
 Bare `apw` opens the interface only when stdin and stdout are terminals and
 `TERM` is not `dumb`. In a pipe, a script, or a terminal that reports `dumb`, it
-prints help and exits. Run it directly in a terminal, or use a subcommand.
+prints help and exits. Run it in a terminal, or use a subcommand.
 
 ## `no snapshot at ...; run apw login first`
 
-The snapshot file is missing. Run `apw login`, then `apw sync`. In the interface,
-use `/login` and `/sync`.
+The snapshot file is missing. Run `apw login`, then `apw sync`; in the
+interface, use `/login` and `/sync`.
 
 ## `apw` asks for a passphrase and then cannot decrypt
 
 The passphrase derives a different key from the one that wrote the snapshot. Use
-the passphrase that created it. If you changed `kdf_salt` or replaced the Secret
-Service entry, restore the original key or rebuild the snapshot from iCloud.
+the passphrase that created it. If `kdf_salt` changed or the Secret Service entry
+was replaced, restore the original key or rebuild the snapshot from iCloud.
 
 ## `Secret Service is unavailable and stdin is not a terminal`
 
 The Secret Service backend is missing and `apw` cannot prompt. Set
-`APW_PASSPHRASE` for the command or for the timer's `sync.env`. For a desktop
-session, unlock the Secret Service session and ensure
-`DBUS_SESSION_BUS_ADDRESS` points at it.
+`APW_PASSPHRASE` for the command or in the timer's `sync.env`. On a desktop
+session, unlock the collection and check that `DBUS_SESSION_BUS_ADDRESS` points
+at it.
+
+## `error while loading shared libraries: libopentui.so`
+
+The executable loads the library from `../lib/apw` relative to itself. The
+install script puts both files in place; a Cargo install needs the library copy
+from [Install](install.md#cargo). Do not move the executable away from its
+`lib/apw` directory.
 
 ## A build fails looking for Zig or the OpenTUI library
 
@@ -38,16 +44,14 @@ zig version
 ```
 
 The first build prepares the vendored Zig dependencies and compiles the native
-library into `opentui/packages/native/lib/`. Later builds reuse it. A changed
-submodule commit triggers a rebuild.
-
-If Zig is not on `PATH`, point at it for the build:
+library into `opentui/packages/native/lib/`; later builds reuse it, and a changed
+submodule commit triggers a rebuild. If Zig is not on `PATH`:
 
 ```sh
 PATH=/path/to/zig-0.17.1:$PATH cargo build --release --locked
 ```
 
-`OPENTUI_LIB_DIR` overrides the native library directory. It must contain
+`OPENTUI_LIB_DIR` overrides the native library directory and must contain
 `opentui.h` and `libopentui.so` (or `libopentui.a` for a static build).
 
 ## A build fails looking for `dbus`
@@ -75,26 +79,22 @@ URLs.
 
 ## `apw login` reports `GSA answered HTTP 503`
 
-Apple's edge rejects the literal `<macOS;` platform token in `X-MMe-Client-Info`
-with HTTP 503. `apw` rewrites it to `<Mac OS X;` before sending, and retries with
-the Windows identity if the macOS one is still refused. Seeing this error means
-both were refused. If you configured an anisette server, check that it is
-reachable and restart it if its identity is stale. Otherwise delete
-`$XDG_STATE_HOME/apw/adi/` so the next sign-in provisions a new identity.
-
-A freshly provisioned identity can be refused for a few minutes; retry after a
-short wait.
+Apple's edge refuses the literal `<macOS;` platform token in `X-MMe-Client-Info`
+with HTTP 503. `apw` rewrites it to `<Mac OS X;` before sending and retries with
+the Windows identity when the macOS one is still refused, so seeing this error
+means both were refused. Check a configured anisette server, or delete
+`$XDG_STATE_HOME/apw/adi/` so the next sign-in provisions a new identity. A
+fresh identity can be refused for a few minutes; retry after a short wait.
 
 ## `the session has no escrow URL`
 
 The escrow proxy URL comes from the `keychainsync` entry of Apple's service map,
-and Apple only returns that entry to a macOS client. A session created while
-`apw` still sent the literal `<macOS;` token was signed in as a Windows client,
-so its map lists dataclasses only and the escrow proxy is missing.
+and Apple returns that entry only to a macOS client. A session created while
+`apw` sent the literal `<macOS;` token signed in as a Windows client, so its map
+lists dataclasses only and the escrow proxy is missing.
 
-Sign in again with `apw login` (or `/login`) to obtain a macOS session. If the
-URL is still missing afterwards, the macOS identity itself is being refused;
-check for a 503 as described above.
+Sign in again with `apw login` or `/login` to obtain a macOS session. If the URL
+is still missing, the macOS identity is being refused; check for a 503 as above.
 
 ## The two-factor code is rejected
 
@@ -111,7 +111,7 @@ passcode before trying again; repeated failures can exhaust the recovery record.
 ## `sync` refuses because of the floor
 
 The previous sync finished less than 300 seconds ago. Wait, or use `--force` /
-`/sync --force` when you know the previous run is done.
+`/sync --force` when the previous run is done.
 
 ## `sync` says the session expired
 
@@ -145,7 +145,7 @@ can be missed. Run `/sync` or restart the interface.
 ## Copying a password does nothing
 
 `apw` uses the system clipboard when it can and falls back to OSC 52. Your
-terminal must allow clipboard writes. Over SSH, enable clipboard integration in
+terminal must allow clipboard writes; over SSH, enable clipboard integration in
 the terminal. If both paths fail, select the text after pressing `r`.
 
 ## The interface is too narrow

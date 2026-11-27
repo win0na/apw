@@ -1,0 +1,52 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.17.1
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+      - name: tag matches Cargo.toml
+        run: test "v$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml)" = "$GITHUB_REF_NAME"
+      - run: packaging/tarball.sh
+      - run: packaging/debian/build.sh
+      - name: checksums
+        run: |
+          cd dist
+          for file in apw-*.tar.gz apw_*.deb; do
+            sha256sum "$file" > "$file.sha256"
+          done
+      - name: notes from CHANGELOG.md
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v version="$version" '
+            index($0, "## [" version "]") == 1 { found = 1; next }
+            found && (index($0, "## [") == 1 || index($0, "[") == 1) { exit }
+            found { print }
+          ' CHANGELOG.md > /tmp/notes.md
+          cat /tmp/notes.md
+          printf '\nFull history: https://github.com/%s/blob/%s/CHANGELOG.md\n' \
+            "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME" >> /tmp/notes.md
+      - uses: softprops/action-gh-release@v2
+        with:
+          prerelease: true
+          body_path: /tmp/notes.md
+          files: |
+            dist/apw-*.tar.gz
+            dist/apw-*.tar.gz.sha256
+            dist/apw_*.deb
+            dist/apw_*.deb.sha256
+            scripts/install.sh
