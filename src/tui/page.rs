@@ -196,7 +196,12 @@ fn draw_home(painter: &mut Painter<'_>, tokens: &Tokens, width: u32, height: u32
         if let Some(last) = home.wordmark.last() {
             let row = y + home.wordmark.len() as u32;
             if row < height {
-                painter.text(word_x as i32, row as i32, last, Style::new().fg(tokens.shadow));
+                painter.text(
+                    word_x as i32,
+                    row as i32,
+                    last,
+                    Style::new().fg(tokens.shadow),
+                );
             }
         }
         for (index, line) in home.wordmark.iter().enumerate() {
