@@ -205,21 +205,23 @@ A centered column, like opencode's home:
 3. One blank row.
 4. A centered status line in `text.muted`: account, then ` · `, then signed in
    or out. Warnings follow on their own line in the warning color.
-5. One blank row.
-6. The filter prompt, capped at 75 cells and centered.
-7. One blank row.
-8. `Recent` in bold `text.base`, then up to six rows. A row is a title in
+5. The counts, joined with ` · ` and wrapped to the column width. Under 44
+   columns they wrap again inside the narrower column.
+6. One blank row.
+7. The filter prompt, capped at 75 cells and centered.
+8. One blank row.
+9. `Recent` in bold `text.base`, then up to six rows. The heading stays when
+   there are no rows; the empty line is muted. A row is a title in
    `text.base`, an inline ` · ` and muted metadata, and a right-aligned relative
    time in `text.muted`. The selected row gets the fill and rail.
-9. Growing spacer.
-10. The footer bar.
+10. Growing spacer.
+11. The footer bar.
 
-The wordmark uses opencode's letterform: block glyphs with shadow cells. The
-source string uses `_` for a space with the shadow background, `^` for `▀` over
-a shadow cell, `~` for `▀` in the shadow color, and `,` for `▄` in the shadow
-color. Shadow is `tint(background.base, text.base, 0.25)`. A single-word name
-renders as one run in bold `text.base`; the two-tone muted left and bold right
-split is reserved for names with two halves. opencode's own art, for reference:
+The wordmark is a five-row block `apw` in bold `text.base`. Its shadow is a
+one-cell drop: every glyph cell also paints at one column right and one row
+down in `text.shadow`, unless the next row already covers that cell. Below 44
+columns the wordmark collapses to the three letters `apw`; below 12 rows it is
+hidden. opencode's own art, for reference:
 
 ```text
 █▀▀█ █▀▀█ █▀▀█ █▀▀▄   █▀▀▀ █▀▀█ █▀▀█ █▀▀█
@@ -301,8 +303,8 @@ Dialogs are flat rectangles on the scrim: no border, no title bar rule.
 - Header: title in `text.base`, bold only if the row itself needs emphasis;
   `esc` at the right in `text.muted`; optional muted description line.
 - One blank row between header, body, and footer.
-- Footer: a band in `background.raised.high` that bleeds 3 cells left and right
-  and 1 row down, padded 1 row and 2 cells, with `gap 2`. Secondary actions sit
+- Footer: a band in `background.raised.high` across the dialog body, padded 1
+  row and 2 cells, with `gap 2`. Secondary actions sit
   left, primary actions right. Under 60 columns the groups stack.
 - Action labels are `title key`, for example `Cancel esc` and `Confirm enter`.
   Disabled actions use `text.action.primary.disabled`.
@@ -347,12 +349,12 @@ shortcut column of 17 cells in `text.base`, then the description in
 
 One row at the bottom, page padding, `gap 2`:
 
-- Left: location or scope in `text.muted`, for example `Logins · 42 items`.
+- Left: location or scope in `text.muted`: `apw` on the dashboard, `help` in
+  the help dialog, and `vault / <category>` with ` / <query>` while filtering.
 - Right: hints as `key label`, each key in `text.base` and each label in
   `text.muted`, groups joined by ` · `.
-- Below 44 columns the hints keep two entries and the location collapses to the
-  category; on the dashboard, the left slot holds counts joined by ` · ` and the
-  right slot holds `apw <version>`.
+- Below 60 columns the hints keep two or three entries and shrink to the
+  available width. The location keeps at most 28 cells.
 
 ### Prompt
 
@@ -383,9 +385,9 @@ The composer is opencode's prompt, not a bordered input.
 | `enter` | Open, run, or submit |
 | `esc` | Unwind one layer |
 | `tab` `shift+tab` | Move focus |
-| `ctrl+c` | Clear text, then close the dialog; at the base screen, quit |
+| `ctrl+c` | Close the palette or dialog; at the base screen, quit |
 | `ctrl+z` | Suspend |
-| `y` | Copy the password |
+| `y` | Copy the password, from the detail pane |
 | `o` | Copy the one-time code |
 | `r` | Reveal the password for 20 seconds |
 | `e` | Edit the item |
@@ -394,6 +396,9 @@ The composer is opencode's prompt, not a bordered input.
 | `g` | Add or remove a group |
 | `u` | Undo the last trash |
 | `l` `v` | Keep the local change or take the remote version |
+
+Typing in the list filters it. The single-key vault actions above run while
+the detail pane has focus; `tab` moves there from the list.
 
 Modal layers are a stack, not flags. Opening a dialog pushes a modal layer that
 removes every base layer from reach; closing it restores focus to the widget

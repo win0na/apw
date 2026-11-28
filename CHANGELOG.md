@@ -3,6 +3,17 @@
 Changes worth knowing between releases. 0.5.0 covers everything since `v0.3.0`;
 0.4.0 was never tagged.
 
+## [Unreleased]
+
+### Changed
+
+- The terminal interface is rebuilt on opencode's chrome and the terminal
+  System palette: a single `┃` rail, flat dialogs on a scrim, one line per item
+  with an inline description and right-aligned metadata, a 12-cell detail label
+  column, a grouped command palette, and footer hints drawn from the live keys.
+- The dashboard is a centered column: wordmark, status, counts, prompt, then
+  `Recent`. The category strip carries counts and overflow markers.
+
 ## [0.5.1] - 2026-11-27
 
 ### Changed

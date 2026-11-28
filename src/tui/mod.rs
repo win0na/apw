@@ -5,8 +5,10 @@
 
 pub mod app;
 pub mod data;
+pub mod page;
 pub mod secret;
 pub mod theme;
+pub mod view;
 
 use crate::config::Paths;
 use crate::error::Result;

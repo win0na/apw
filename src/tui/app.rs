@@ -10,8 +10,12 @@ use opentui::prelude::*;
 use crate::error::{Error, Result};
 
 use super::data::{Category, DashboardPhase, Row, RowSource, VaultView, CATEGORIES};
+use super::page::{
+    home_layout, palette_rect, Browser, Help, Home, Page, PageHandle, PageModel, PageView, Palette,
+};
 use super::secret::{SecretField, SecretValue};
-use super::theme::{Chrome, Tokens, HINTS_BROWSER, HINTS_DASHBOARD, WORDMARK, WORDMARK_COMPACT};
+use super::theme::{Tokens, WORDMARK, WORDMARK_COMPACT};
+use super::view::Line;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Screen {
@@ -164,32 +168,6 @@ impl Command {
     }
 }
 
-const HELP_TEXT: &str = "\
-Keys
-  up / down      move through a list
-  enter          open the selected item
-  tab            move focus
-  /              command palette
-  ctrl+p         command palette
-  esc            back
-  ctrl+c         quit
-
-Item actions
-  e edit          t trash          s restore
-  y copy password o copy otp       r reveal 20s
-  l keep local    v take remote    u undo trash
-  a new login
-
-Commands
-  list     notes     wifi      passkeys
-  groups   trash     pending   sync
-  add      add wifi  add note  edit
-  rm       restore   resolve   login
-  join     passkey   status    get
-  help     quit
-
-Every command works from the palette. Type to filter.";
-
 #[derive(Clone)]
 struct SyncFinished(std::result::Result<crate::commands::sync::SyncOutcome, String>);
 
@@ -240,7 +218,7 @@ impl AuthEvent {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum FocusTarget {
     Composer,
     List,
@@ -446,51 +424,65 @@ struct UiState {
     auth_attempt: u64,
     last_trash: Option<(String, String)>,
     snapshot_mtime: Option<SystemTime>,
+    focus: FocusTarget,
+    recent_selected: usize,
+    detail_scroll: usize,
+    help_scroll: usize,
+    palette_selected: usize,
 }
 
 #[derive(Clone)]
 struct Ui {
     state: Rc<RefCell<UiState>>,
     app: App,
-    chrome: Chrome,
-    dashboard: View,
-    browser: View,
-    wordmark: Text,
-    columns: View,
-    left: View,
-    right: View,
-    status: Text,
-    counts: Text,
-    warnings: Text,
-    actions: Text,
-    recents: Select,
-    activity: Text,
-    tabs: TabSelect,
-    split: View,
-    list_pane: View,
-    list: Select,
-    detail_pane: View,
-    detail: ScrollBox,
-    detail_text: Text,
-    detail_actions: Text,
-    help: View,
-    palette: View,
-    palette_select: Select,
-    banner: Text,
-    composer: Input,
-    breadcrumb: Text,
+    tokens: Tokens,
+    page_view: Custom<PageView>,
+    page: PageHandle,
+    prompt_box: View,
+    prompt_row: View,
+    prompt_rail: View,
+    prompt: Input,
+    prompt_cap: Custom<PromptCap>,
+    location: Text,
     hints: Text,
-    sync: Text,
     overlay: View,
     modal: View,
     modal_title: Text,
     modal_body: Text,
-    modal_action: View,
+    modal_band: View,
     modal_error: Text,
     modal_help: Text,
     rows: Vec<FormRow>,
     secret: Custom<SecretField>,
     secret_value: SecretValue,
+    toast: View,
+    toast_text: Text,
+    toast_more: Text,
+    toast_start: Text,
+    toast_end: Text,
+}
+
+struct PromptCap {
+    rail: Color,
+    surface: Color,
+}
+
+impl Component for PromptCap {
+    fn paint(&self, painter: &mut Painter<'_>) {
+        let (width, _) = painter.size();
+        if width == 0 {
+            return;
+        }
+        painter.cell(0, 0, '╹', Style::new().fg(self.rail));
+        if width > 1 {
+            painter.text(
+                1,
+                0,
+                &"▀".repeat(width.saturating_sub(1) as usize),
+                Style::new().fg(self.surface),
+            );
+        }
+    }
 }
 
 pub fn run(view: VaultView) -> Result<()> {
@@ -510,7 +502,6 @@ pub fn run(view: VaultView) -> Result<()> {
 
 impl Ui {
     fn build(app: App, view: VaultView, tokens: Tokens) -> Self {
-        let chrome = Chrome::from(&tokens);
         let root = app.root();
         root.column();
 
@@ -551,107 +542,63 @@ impl Ui {
             auth_attempt: 0,
             last_trash: None,
             snapshot_mtime: None,
+            focus: FocusTarget::Composer,
+            recent_selected: 0,
+            detail_scroll: 0,
+            help_scroll: 0,
+            palette_selected: 0,
         }));
 
-        let dashboard = View::new(&app).column().grow(1.0).padding(1).gap(1);
-        let wordmark = Text::new(&app, WORDMARK)
-            .fg(chrome.fg)
-            .bold()
-            .align(Alignment::Center)
-            .width(Length::percent(100.0));
-        dashboard.add(&wordmark);
+        let (page_view, page) = PageView::new(&app, &tokens);
+        page_view.grow(1.0).focusable(true);
+        root.add(&page_view);
 
-        let columns = View::new(&app).row().gap(2).grow(1.0);
-        let left = View::new(&app).column().gap(1).width(Length::percent(40.0));
-        let right = View::new(&app).column().gap(1).grow(1.0);
-        let status = Text::new(&app, "").fg(chrome.muted);
-        let counts = Text::new(&app, "").fg(chrome.fg).wrap(WrapMode::None);
-        let warnings = Text::new(&app, "").fg(chrome.warning);
-        let actions = Text::new(&app, "sync   search   add   groups   trash").fg(chrome.muted);
-        left.add(&status);
-        left.add(&counts);
-        left.add(&warnings);
-        left.add(&actions);
-
-        let recent_label = Text::new(&app, "RECENT").fg(chrome.muted).bold();
-        let recents = Select::new(&app)
-            .height(Length::Cells(12.0))
-            .show_description(true)
-            .selected_colors(chrome.selected_fg, chrome.selected_bg)
-            .description_colors(chrome.muted, chrome.selected_fg);
-        let activity_label = Text::new(&app, "ACTIVITY").fg(chrome.muted).bold();
-        let activity = Text::new(&app, "").fg(chrome.muted).wrap(WrapMode::Word);
-        right.add(&recent_label);
-        right.add(&recents);
-        right.add(&activity_label);
-        right.add(&activity);
-
-        columns.add(&left);
-        columns.add(&right);
-        dashboard.add(&columns);
-
-        let browser = View::new(&app).column().grow(1.0).padding(1).gap(1);
-        let tabs = TabSelect::new(&app)
-            .options(CATEGORIES.iter().map(|category| category.label()))
-            .tab_width(12)
-            // The composer is the only text target on this screen. A focusable
-            // tab bar takes the keyboard on Tab or a click and swallows typing.
-            .focusable(false)
-            .selected_colors(chrome.selected_fg, chrome.selected_bg)
-            .description_color(chrome.muted);
-        let split = View::new(&app).row().gap(2).grow(1.0);
-        let list = Select::new(&app)
-            .grow(1.0)
-            .height(Length::percent(100.0))
-            .show_description(true)
-            .selected_colors(chrome.selected_fg, chrome.selected_bg)
-            .description_colors(chrome.muted, chrome.selected_fg);
-        let list_pane = View::new(&app).width(Length::percent(42.0)).child(&list);
-        let detail = ScrollBox::new(&app).grow(1.0).padding_x(2).focusable(true);
-        let detail_text = Text::new(&app, "").fg(chrome.fg).wrap(WrapMode::Word);
-        detail.add(&detail_text);
-        let detail_actions = Text::new(&app, "")
-            .fg(chrome.muted)
+        let footer = View::new(&app)
+            .row()
             .height(1)
-            .truncate(true);
-        let detail_pane = View::new(&app).column().grow(1.0);
-        detail_pane.add(&detail);
-        detail_pane.add(&detail_actions);
-        split.add(&list_pane);
-        split.add(&detail_pane);
-        browser.add(&tabs);
-        browser.add(&split);
+            .padding_x(2)
+            .gap(2)
+            .justify(Justify::SpaceBetween);
+        let location = Text::new(&app, "").fg(tokens.muted).truncate(true);
+        let hints = Text::new(&app, "")
+            .fg(tokens.muted)
+            .truncate(true)
+            .shrink(1.0);
+        footer.add(&location);
+        footer.add(&hints);
+        root.add(&footer);
 
-        let composer_box = View::new(&app)
-            .border(BorderStyle::Single)
-            .border_color(chrome.border)
-            .padding_x(1)
-            .height(3);
-        let composer = Input::new(&app).placeholder("Search the vault, or type / for commands");
-        composer_box.add(&composer);
-
-        let palette = View::new(&app)
+        let prompt_box = View::new(&app).column().absolute().height(3).visible(false);
+        let prompt_row = View::new(&app)
             .column()
-            .border(BorderStyle::Single)
-            .border_color(chrome.border)
-            .padding(1)
-            .gap(1)
-            .height(12)
-            .visible(false);
-        let palette_title = Text::new(&app, "COMMANDS").fg(chrome.muted).bold();
-        let palette_select = Select::new(&app)
-            .grow(1.0)
-            .show_description(true)
-            .selected_colors(chrome.selected_fg, chrome.selected_bg)
-            .description_colors(chrome.muted, chrome.selected_fg);
-        palette.add(&palette_title);
-        palette.add(&palette_select);
-
-        let help = View::new(&app).column().padding(1).grow(1.0).visible(false);
-        let help_text = Text::new(&app, HELP_TEXT)
-            .fg(chrome.fg)
-            .wrap(WrapMode::Word);
-        help.add(&help_text);
+            .height(2)
+            .padding_edge(Edge::Top, 1)
+            .bg(tokens.panel);
+        let prompt_rail = View::new(&app)
+            .row()
+            .height(1)
+            .padding_edge(Edge::Left, 2)
+            .border(BorderStyle::Heavy)
+            .border_sides(Sides::LEFT)
+            .border_color(tokens.rail)
+            .grow(1.0);
+        let prompt = Input::new(&app)
+            .placeholder("Search the vault, or type / for commands")
+            .colors(tokens.text, tokens.panel)
+            .focused_colors(tokens.text, tokens.panel)
+            .grow(1.0);
+        prompt_rail.add(&prompt);
+        prompt_row.add(&prompt_rail);
+        let prompt_cap = Custom::new(
+            &app,
+            PromptCap {
+                rail: tokens.rail,
+                surface: tokens.panel,
+            },
+        );
+        prompt_box.add(&prompt_row);
+        prompt_box.add(&prompt_cap);
+        root.add(&prompt_box);
 
         let secret_value = SecretValue::new("");
         let secret = Custom::new(&app, SecretField::new(secret_value.clone()))
@@ -663,69 +610,78 @@ impl Ui {
             .size(Length::percent(100.0), Length::percent(100.0))
             .row()
             .justify(Justify::Center)
-            .align_items(Align::Center)
+            .align_items(Align::Start)
             .z_index(100)
             .visible(false);
-        let scrim = Custom::new(&app, Scrim)
-            .absolute()
-            .size(Length::percent(100.0), Length::percent(100.0));
-        overlay.add(&scrim);
+        overlay.add(&Custom::new(&app, Scrim));
         let modal = View::new(&app)
             .column()
-            .border(BorderStyle::Single)
-            .border_color(chrome.border)
-            .bg(Color::DEFAULT_BACKGROUND)
-            .padding(1)
+            .bg(tokens.dialog)
+            .padding_y(1)
+            .padding_x(3)
             .gap(1)
-            .width(Length::Cells(64.0));
-        let modal_title = Text::new(&app, "").fg(chrome.accent).bold();
+            .width(Length::Cells(60.0));
+        let modal_header = View::new(&app)
+            .row()
+            .height(1)
+            .justify(Justify::SpaceBetween);
+        let modal_title = Text::new(&app, "").fg(tokens.text).bold();
+        let modal_close = Text::new(&app, "esc").fg(tokens.muted);
+        modal_header.add(&modal_title);
+        modal_header.add(&modal_close);
         let modal_body = Text::new(&app, "")
-            .fg(chrome.fg)
+            .fg(tokens.muted)
             .wrap(WrapMode::Word)
             .visible(false);
-        let modal_action = View::new(&app).height(1).visible(false);
-        let modal_action_text = Text::new(&app, "review and save").fg(chrome.accent);
+        let modal_action = View::new(&app)
+            .row()
+            .height(3)
+            .bg(tokens.hover)
+            .padding_y(1)
+            .padding_x(2)
+            .justify(Justify::End)
+            .visible(false);
+        let modal_action_text = Text::new(&app, "review and save").fg(tokens.text);
         modal_action.add(&modal_action_text);
         let modal_error = Text::new(&app, "")
-            .fg(chrome.error)
+            .fg(tokens.error)
             .wrap(WrapMode::Word)
             .visible(false);
         let mut rows = Vec::new();
         for index in 0..6 {
-            let row = View::new(&app)
-                .row()
-                .height(if index == 5 {
-                    Length::Cells(4.0)
-                } else {
-                    Length::Cells(1.0)
-                })
-                .gap(1);
-            let label = Text::new(&app, "")
-                .fg(chrome.muted)
-                .width(Length::Cells(16.0));
-            row.add(&label);
+            let field = View::new(&app).column().gap(0).height(Length::Cells(2.0));
+            let label = Text::new(&app, "").fg(tokens.text).height(1);
+            field.add(&label);
             let (input, textarea) = if index == 3 {
-                row.add(&secret);
+                field.add(&secret);
                 (None, None)
             } else if index == 5 {
-                let textarea = Textarea::new(&app).grow(1.0).height(Length::Cells(3.0));
-                row.add(&textarea);
+                let textarea = Textarea::new(&app)
+                    .grow(1.0)
+                    .height(Length::Cells(3.0))
+                    .colors(tokens.text, tokens.panel)
+                    .focused_colors(tokens.text, tokens.panel)
+                    .placeholder("Notes");
+                field.add(&textarea);
                 (None, Some(textarea))
             } else {
-                let input = Input::new(&app).grow(1.0);
-                row.add(&input);
+                let input = Input::new(&app)
+                    .grow(1.0)
+                    .colors(tokens.text, tokens.panel)
+                    .focused_colors(tokens.text, tokens.panel);
+                field.add(&input);
                 (Some(input), None)
             };
             rows.push(FormRow {
-                view: row,
+                view: field,
                 label,
                 input,
                 textarea,
                 secret: index == 3,
             });
         }
-        let modal_help = Text::new(&app, "").fg(chrome.muted);
-        modal.add(&modal_title);
+        let modal_help = Text::new(&app, "").fg(tokens.muted);
+        modal.add(&modal_header);
         modal.add(&modal_body);
         for row in &rows {
             modal.add(&row.view);
@@ -734,190 +690,163 @@ impl Ui {
         modal.add(&modal_error);
         modal.add(&modal_help);
         overlay.add(&modal);
-
-        let banner = Text::new(&app, "")
-            .fg(chrome.warning)
-            .padding_x(1)
-            .visible(false);
-
-        let footer = View::new(&app).row().height(1).padding_x(1).gap(1);
-        let breadcrumb = Text::new(&app, "")
-            .fg(chrome.muted)
-            .width(Length::Cells(12.0))
-            .truncate(true);
-        let hints = Text::new(&app, HINTS_DASHBOARD)
-            .fg(chrome.muted)
-            .align(Alignment::Center)
-            .grow(1.0)
-            .truncate(true);
-        let sync = Text::new(&app, "")
-            .fg(chrome.muted)
-            .align(Alignment::Right)
-            .width(Length::Cells(14.0))
-            .truncate(true);
-        footer.add(&breadcrumb);
-        footer.add(&hints);
-        footer.add(&sync);
-
-        root.add(&dashboard);
-        root.add(&browser);
-        root.add(&help);
-        root.add(&palette);
-        root.add(&banner);
-        root.add(&composer_box);
-        root.add(&footer);
         root.add(&overlay);
+
+        let toast = View::new(&app)
+            .absolute()
+            .position(Edge::Right, 2)
+            .position(Edge::Top, 1)
+            .column()
+            .bg(tokens.hover)
+            .padding_y(1)
+            .padding_x(2)
+            .width(Length::Cells(60.0))
+            .z_index(200)
+            .visible(false);
+        let toast_text = Text::new(&app, "")
+            .fg(tokens.text)
+            .wrap(WrapMode::Word)
+            .grow(1.0);
+        let toast_more = Text::new(&app, "").fg(tokens.muted);
+        let toast_row = View::new(&app).row().gap(1);
+        let toast_rail = Text::new(&app, "┃").fg(tokens.text);
+        let toast_end = Text::new(&app, "┃").fg(tokens.text);
+        toast_row.add(&toast_rail);
+        toast_row.add(&toast_text);
+        toast_row.add(&toast_end);
+        toast.add(&toast_row);
+        toast.add(&toast_more);
+        root.add(&toast);
 
         let ui = Self {
             state,
             app,
-            chrome,
-            dashboard,
-            browser,
-            wordmark,
-            columns,
-            left,
-            right,
-            status,
-            counts,
-            warnings,
-            actions,
-            recents,
-            activity,
-            tabs,
-            split,
-            list_pane,
-            list,
-            detail_pane,
-            detail,
-            detail_text,
-            detail_actions,
-            help,
-            palette,
-            palette_select,
-            banner,
-            composer,
-            breadcrumb,
+            tokens,
+            page_view,
+            page,
+            prompt_box,
+            prompt_row,
+            prompt_rail,
+            prompt,
+            prompt_cap,
+            location,
             hints,
-            sync,
             overlay,
             modal,
             modal_title,
             modal_body,
-            modal_action,
+            modal_band: modal_action,
             modal_error,
             modal_help,
             rows,
             secret,
             secret_value,
+            toast,
+            toast_text,
+            toast_more,
+            toast_start: toast_rail,
+            toast_end,
         };
         ui.apply_layout();
         ui
     }
 
-    fn apply_layout(&self) {
-        let (width, height, detail_open, split_pref, wordmark_pref) = {
-            let state = self.state.borrow();
-            (
-                state.size.0,
-                state.size.1,
-                state.detail_open,
-                state.view.config.tui.split,
-                state.view.config.tui.show_wordmark,
-            )
-        };
-        let wide = split_pref.unwrap_or(width >= 96) && width >= 60;
-        let two_columns = width >= 96;
-        let compact = width < 60;
-        let modal_width = width.min(64).saturating_sub(4).max(16);
-        self.modal.width(Length::Cells(f32::from(modal_width)));
-        if height < 24 {
-            self.modal.padding(0).gap(0);
-        } else {
-            self.modal.padding(1).gap(1);
+    fn focus(&self, target: FocusTarget) {
+        self.state.borrow_mut().focus = target;
+        match target {
+            FocusTarget::Composer => self.prompt.focus(),
+            FocusTarget::List | FocusTarget::Detail => self.page_view.focus(),
         }
-        let notes_height = if height < 20 { 1.0 } else { 4.0 };
+    }
+
+    fn apply_layout(&self) {
+        let (width, height) = {
+            let state = self.state.borrow();
+            state.size
+        };
+        let w = u32::from(width);
+        let h = u32::from(height);
+        let prompt_height = 3;
+        let footer_top = h.saturating_sub(1);
+        let pad = if w < 44 { 1 } else { 2 };
+        let column = w.saturating_sub(pad * 2).min(75);
+        let x = w.saturating_sub(column) / 2;
+        let palette_open = self.state.borrow().palette_open;
+        if palette_open {
+            let rect = palette_rect(w, h);
+            self.prompt_box
+                .position(Edge::Left, Length::Cells((rect.x + 2) as f32))
+                .position(Edge::Top, Length::Cells(rect.y as f32))
+                .width(Length::Cells((rect.width.saturating_sub(10)) as f32))
+                .height(Length::Cells(1.0));
+            self.prompt_row
+                .height(Length::Cells(1.0))
+                .padding_edge(Edge::Top, 0)
+                .bg(self.tokens.dialog);
+            self.prompt_rail
+                .padding_edge(Edge::Left, 0)
+                .border_sides(Sides::NONE)
+                .bg(self.tokens.dialog);
+            self.prompt_cap.visible(false);
+            self.prompt
+                .placeholder("Search commands")
+                .colors(self.tokens.text, self.tokens.dialog)
+                .focused_colors(self.tokens.text, self.tokens.dialog);
+        } else {
+            let screen = self.state.borrow().screen;
+            let (prompt_y, prompt_width) = match screen {
+                Screen::Dashboard => {
+                    let home = self.home_model();
+                    let layout = home_layout(w, h, &home);
+                    (layout.prompt.y, layout.prompt.width)
+                }
+                _ => (footer_top.saturating_sub(prompt_height), column),
+            };
+            self.prompt_box
+                .position(Edge::Left, Length::Cells(x as f32))
+                .position(Edge::Top, Length::Cells(prompt_y as f32))
+                .width(Length::Cells(prompt_width as f32))
+                .height(Length::Cells(3.0));
+            self.prompt_row
+                .height(Length::Cells(2.0))
+                .padding_edge(Edge::Top, 1)
+                .bg(self.tokens.panel);
+            self.prompt_rail
+                .padding_edge(Edge::Left, 2)
+                .border_sides(Sides::LEFT)
+                .border_color(self.tokens.rail)
+                .bg(self.tokens.panel);
+            self.prompt_cap.visible(true);
+            self.prompt
+                .placeholder("Search the vault, or type / for commands")
+                .colors(self.tokens.text, self.tokens.panel)
+                .focused_colors(self.tokens.text, self.tokens.panel);
+        }
+        self.prompt_box.visible(true);
+
+        let notes_height = if height < 20 { 2.0 } else { 4.0 };
         self.rows[5].view.height(Length::Cells(notes_height));
         if let Some(textarea) = &self.rows[5].textarea {
             textarea.height(Length::Cells((notes_height - 1.0).max(1.0)));
         }
-        if height < 20 {
-            self.dashboard.padding(0).gap(0);
-        } else {
-            self.dashboard.padding(1).gap(1);
-        }
-        let mark = if compact || height < 24 {
-            WORDMARK_COMPACT
-        } else {
-            WORDMARK
-        };
-        self.wordmark.set_text(mark);
-        self.wordmark.visible(wordmark_pref != Some(false));
-        self.status.shrink(0.0);
-        self.counts.shrink(0.0);
-        self.warnings
-            .shrink(0.0)
-            .visible(width >= 60 || height >= 18);
-        self.actions.visible(height >= 12);
-        if two_columns {
-            self.columns.row();
-            self.left.width(Length::percent(42.0));
-            self.right.width(Length::Auto).grow(1.0);
-        } else {
-            self.columns.column();
-            self.left.width(Length::percent(100.0));
-            self.right.width(Length::percent(100.0)).grow(1.0);
-        }
-        self.right.visible(true);
-        self.recents
-            .height(Length::Cells(if height < 20 { 8.0 } else { 12.0 }));
-        if wide {
-            self.split.row();
-            self.list_pane
-                .width(Length::percent(42.0))
-                .height(Length::percent(100.0));
-        } else {
-            self.split.column();
-            self.list_pane.width(Length::percent(100.0));
-            let visible = !compact || detail_open;
-            self.list_pane
-                .height(Length::percent(if visible { 50.0 } else { 100.0 }));
-        }
-        self.list_pane.visible(!(compact && detail_open));
-        self.detail_pane.visible(!compact || detail_open);
-        self.detail.visible(!compact || detail_open);
-        self.tabs.visible(true);
-        self.tabs.tab_width((u32::from(width) / 7).clamp(5, 12));
+        self.modal
+            .width(Length::Cells((w.saturating_sub(2)).min(60) as f32))
+            .margin_edge(Edge::Top, h / 4);
+        self.location.width(Length::Cells((w / 2).min(28) as f32));
     }
 
     fn resize(&self, width: u16, height: u16) {
         self.state.borrow_mut().size = (width, height);
         self.apply_layout();
-        self.refresh_dashboard();
-        self.refresh_footer();
+        self.refresh();
     }
 
     fn wire(&self) {
         let ui = self.clone();
-        self.composer
+        self.prompt
             .on_change(move |_cx, value| ui.set_query(value.to_string()));
         let ui = self.clone();
-        self.composer.on_submit(move |cx, _| ui.submit(cx));
-        let ui = self.clone();
-        self.tabs
-            .on_change(move |_cx, index, _| ui.set_category(index));
-        let ui = self.clone();
-        self.list
-            .on_change(move |_cx, index, _| ui.select_row(index));
-        let ui = self.clone();
-        self.list
-            .on_select(move |_cx, index, _| ui.activate_row(index));
-        let ui = self.clone();
-        self.recents
-            .on_select(move |_cx, index, _| ui.open_recent(index));
-        let ui = self.clone();
-        self.palette_select
-            .on_select(move |cx, index, _| ui.run_palette(cx, index));
+        self.prompt.on_submit(move |cx, _| ui.submit(cx));
         let ui = self.clone();
         self.app
             .on_key_capture(move |cx, key| ui.modal_key(cx, key));
@@ -937,7 +866,7 @@ impl Ui {
         self.app
             .on_message(move |_cx, message: &AuthEvent| ui.auth_event(message));
         let ui = self.clone();
-        self.modal_action
+        self.modal_band
             .on_click(move |_cx, _event| ui.review_form());
         let ui = self.clone();
         self.app.on_mouse(move |cx, event| {
@@ -955,34 +884,18 @@ impl Ui {
                 cx.prevent_default();
             }
         });
-        if self.app.size().0 >= 60 {
-            self.composer.focus();
-        }
+        self.focus(FocusTarget::Composer);
     }
 
     fn current_focus(&self) -> FocusTarget {
-        if self.detail.is_focused() {
-            FocusTarget::Detail
-        } else if self.list.is_focused() {
-            FocusTarget::List
-        } else {
-            FocusTarget::Composer
-        }
+        self.state.borrow().focus
     }
 
     fn refresh(&self) {
-        let (screen, palette_open, modal_open) = {
-            let state = self.state.borrow();
-            (state.screen, state.palette_open, state.modal_open)
-        };
-        self.dashboard.visible(screen == Screen::Dashboard);
-        self.browser.visible(screen == Screen::Browser);
-        self.help.visible(screen == Screen::Help);
-        self.palette.visible(palette_open);
+        let modal_open = self.state.borrow().modal_open;
         self.overlay.visible(modal_open);
         self.apply_layout();
-        self.refresh_rows();
-        self.refresh_dashboard();
+        self.refresh_page();
         self.refresh_footer();
     }
 
@@ -1079,11 +992,11 @@ impl Ui {
         }
         self.modal_title.set_text(kind.title());
         self.modal_body.visible(false);
-        self.modal_action.visible(true);
+        self.modal_band.visible(true);
         self.modal_error.visible(false);
         self.modal_help
             .set_text("enter next   ctrl+s review   esc cancel");
-        self.modal_action.visible(true);
+        self.modal_band.visible(true);
         self.overlay.visible(true);
         let focus_target = self.current_focus();
         {
@@ -1113,9 +1026,9 @@ impl Ui {
         for (index, key) in keys.iter().enumerate() {
             let row = &self.rows[key.index()];
             row.label.fg(if index == focus {
-                self.chrome.accent
+                self.tokens.info
             } else {
-                self.chrome.muted
+                self.tokens.muted
             });
             if index == focus {
                 if row.secret {
@@ -1372,7 +1285,7 @@ impl Ui {
             form.error = None;
         }
         self.modal_body.visible(false);
-        self.modal_action.visible(true);
+        self.modal_band.visible(true);
         self.modal_error.visible(false);
         self.modal_help
             .set_text("enter next   ctrl+s review   esc cancel");
@@ -1409,7 +1322,7 @@ impl Ui {
                 }
                 self.modal_body.set_text(lines.join("\n"));
                 self.modal_body.visible(true);
-                self.modal_action.visible(false);
+                self.modal_band.visible(false);
                 self.modal_error.visible(false);
                 self.modal_help.set_text("enter save   esc back");
                 if let Some(form) = self.state.borrow_mut().form.as_mut() {
@@ -1694,7 +1607,7 @@ impl Ui {
         }
         self.overlay.visible(false);
         self.modal_body.visible(false);
-        self.modal_action.visible(false);
+        self.modal_band.visible(false);
         self.modal_error.visible(false);
         for row in &self.rows {
             row.view.visible(false);
@@ -1703,25 +1616,13 @@ impl Ui {
             let state = self.state.borrow();
             (state.screen, state.size.0 < 60, state.detail_open)
         };
-        match self.state.borrow().modal_focus {
-            FocusTarget::Detail => {
-                if screen == Screen::Browser {
-                    self.detail.focus();
-                } else {
-                    self.composer.focus();
-                }
-            }
-            FocusTarget::List => {
-                if screen == Screen::Browser && !(compact && detail_open) {
-                    self.list.focus();
-                } else if screen == Screen::Browser {
-                    self.detail.focus();
-                } else {
-                    self.composer.focus();
-                }
-            }
-            FocusTarget::Composer => self.composer.focus(),
-        }
+        let target = match self.state.borrow().modal_focus {
+            FocusTarget::Detail if screen != Screen::Browser => FocusTarget::Composer,
+            FocusTarget::List if screen != Screen::Browser => FocusTarget::Composer,
+            FocusTarget::List if compact && detail_open => FocusTarget::Detail,
+            other => other,
+        };
+        self.focus(target);
     }
 
     fn show_confirm(&self, title: &str, body: &str, action: PendingAction) {
@@ -1741,7 +1642,7 @@ impl Ui {
         self.modal_title.set_text(title);
         self.modal_body.set_text(body);
         self.modal_body.visible(true);
-        self.modal_action.visible(false);
+        self.modal_band.visible(false);
         self.modal_error.visible(false);
         self.modal_help.set_text(if discard {
             "enter keep editing   right discard   esc keep"
@@ -2621,125 +2522,235 @@ impl Ui {
         }
     }
 
-    fn refresh_rows(&self) {
-        let (rows, selected, reveal) = {
-            let state = self.state.borrow();
-            let rows = state.category.rows(&state.view, &state.query);
-            let selected = state.selected.min(rows.len().saturating_sub(1));
-            (rows, selected, state.revealed)
-        };
-        let detail = rows
-            .get(selected)
-            .map(|row| row.detail_rows(Utc::now(), reveal));
-        self.list.options(
-            rows.iter()
-                .map(|row| SelectOption::new(row.title.clone(), row.subtitle.clone())),
-        );
-        self.list.select(selected);
-        self.detail_text.set_text(detail_text(detail.as_ref()));
-        self.detail_actions
-            .set_text(action_text(rows.get(selected)));
-        let mut state = self.state.borrow_mut();
-        state.rows = rows;
-        state.selected = selected;
-    }
-
-    fn refresh_dashboard(&self) {
-        let dashboard = self.state.borrow().view.dashboard(Utc::now());
+    fn home_model(&self) -> Home {
+        let state = self.state.borrow();
+        let dashboard = state.view.dashboard(Utc::now());
         let account = dashboard.account.as_deref().unwrap_or("not signed in");
         let phase = match dashboard.phase {
             DashboardPhase::NoSnapshot => "no vault yet",
-            DashboardPhase::SignedOut if dashboard.account.is_some() => "signed out",
-            DashboardPhase::SignedOut => "",
+            DashboardPhase::SignedOut => "signed out",
             DashboardPhase::Empty => "empty vault",
-            DashboardPhase::Ready => "",
+            DashboardPhase::Ready => "signed in",
         };
-        let sync = if phase.is_empty() {
-            sync_label(dashboard.last_sync).to_string()
+        let status = format!("{account} · {phase}");
+        let counts = count_lines(&dashboard.counts, (state.size.0.saturating_sub(4)).max(20));
+        let needle = state.query.to_lowercase();
+        let recents = dashboard
+            .recents
+            .iter()
+            .filter(|row| {
+                needle.is_empty()
+                    || row.title.to_lowercase().contains(&needle)
+                    || row.subtitle.to_lowercase().contains(&needle)
+            })
+            .map(|row| {
+                Line::item(row.title.clone(), row.subtitle.clone()).with_right(row.trailing.clone())
+            })
+            .collect::<Vec<_>>();
+        let selected = if state.focus == FocusTarget::List && !recents.is_empty() {
+            Some(state.recent_selected.min(recents.len() - 1))
         } else {
-            phase.to_string()
+            None
         };
-        self.status.set_text(if sync.is_empty() {
-            account.to_string()
+        Home {
+            wordmark: wordmark_lines(state.size),
+            status,
+            counts: counts.lines().map(str::to_string).collect(),
+            warnings: dashboard.warnings,
+            recents,
+            selected,
+            empty: "No items yet · press / to add one".into(),
+        }
+    }
+
+    fn browser_model(&self) -> Browser {
+        let state = self.state.borrow();
+        let items = state
+            .rows
+            .iter()
+            .map(|row| {
+                Line::item(row.title.clone(), row.subtitle.clone()).with_right(row.trailing.clone())
+            })
+            .collect::<Vec<_>>();
+        let current = if state.detail_open {
+            Some(state.selected)
         } else {
-            format!("{account}   {sync}")
-        });
-        let width = self.state.borrow().size.0;
-        let left_width = if width >= 96 {
-            (u32::from(width) * 42 / 100).saturating_sub(2) as u16
-        } else {
-            width.saturating_sub(2)
+            None
         };
-        self.counts
-            .set_text(count_lines(&dashboard.counts, left_width));
-        self.warnings.set_text(dashboard.warnings.join("\n"));
-        self.recents
-            .height(Length::Cells(
-                (dashboard.recents.len().min(6) * 2).max(2) as f32
-            ))
-            .options(
-                dashboard
-                    .recents
-                    .iter()
-                    .map(|row| SelectOption::new(row.title.clone(), row.subtitle.clone())),
-            );
-        self.activity.set_text(dashboard.activity.join("\n"));
-        let recents = dashboard.recents;
-        self.state.borrow_mut().recents = recents;
+        let detail = state
+            .rows
+            .get(state.selected)
+            .map(|row| {
+                row.detail_rows(Utc::now(), state.revealed)
+                    .into_iter()
+                    .map(|(label, value)| (short_label(&label), value))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let title = state
+            .rows
+            .get(state.selected)
+            .map(|row| row.title.clone())
+            .unwrap_or_default();
+        Browser {
+            tabs: CATEGORIES
+                .iter()
+                .map(|category| format!("{} {}", category.label(), category.count(&state.view)))
+                .collect(),
+            active_tab: state.category.index(),
+            items,
+            selected: state.selected,
+            current,
+            empty: format!("No {} yet", state.category.label().to_lowercase()),
+            detail,
+            detail_title: title,
+            detail_scroll: state.detail_scroll,
+        }
+    }
+
+    fn palette_model(&self) -> Palette {
+        let state = self.state.borrow();
+        let selected = state
+            .palette_selected
+            .min(state.palette_commands.len().saturating_sub(1));
+        let mut rows = Vec::new();
+        let mut selected_row = 0;
+        let mut group: Option<String> = None;
+        for (index, command) in state.palette_commands.iter().enumerate() {
+            let category = command
+                .category()
+                .map(|category| category.label().to_string())
+                .unwrap_or_else(|| "Commands".into());
+            if group.as_deref() != Some(category.as_str()) {
+                if !rows.is_empty() {
+                    rows.push(Line::Blank);
+                }
+                rows.push(Line::Heading(category.clone()));
+                group = Some(category.clone());
+            }
+            if index == selected {
+                selected_row = rows.len();
+            }
+            rows.push(Line::item(command.name(), command.description()));
+        }
+        Palette {
+            rows,
+            selected: selected_row,
+            empty: if state.query.trim().is_empty() {
+                "No items available".into()
+            } else {
+                "No results found".into()
+            },
+        }
+    }
+
+    fn refresh_page(&self) {
+        let (screen, palette_open) = {
+            let state = self.state.borrow();
+            (state.screen, state.palette_open)
+        };
+        let mut model = PageModel {
+            page: Some(match screen {
+                Screen::Dashboard => Page::Dashboard,
+                Screen::Browser => Page::Browser,
+                Screen::Help => Page::Help,
+            }),
+            ..PageModel::default()
+        };
+        match screen {
+            Screen::Dashboard => model.home = self.home_model(),
+            Screen::Browser => {
+                {
+                    let mut state = self.state.borrow_mut();
+                    let rows = state.category.rows(&state.view, &state.query);
+                    state.selected = state.selected.min(rows.len().saturating_sub(1));
+                    state.rows = rows;
+                }
+                model.browser = self.browser_model();
+            }
+            Screen::Help => {
+                model.help = Some(Help {
+                    groups: help_groups(),
+                    scroll: self.state.borrow().help_scroll,
+                })
+            }
+        }
+        if palette_open {
+            model.palette = Some(self.palette_model());
+        }
+        self.page.set(model);
     }
 
     fn refresh_footer(&self) {
         let state = self.state.borrow();
-        let breadcrumb = match state.screen {
-            Screen::Dashboard => "dashboard".to_string(),
+        let width = state.size.0;
+        let location = match state.screen {
+            Screen::Dashboard => "apw".to_string(),
             Screen::Help => "help".to_string(),
             Screen::Browser => {
                 let mut text = format!("vault / {}", state.category.label());
-                if !state.query.is_empty() {
+                if !state.query.is_empty() && !state.palette_open {
                     text.push_str(" / ");
                     text.push_str(&state.query);
                 }
                 text
             }
         };
-        let hints = match (state.screen, state.size.0) {
-            (Screen::Dashboard, 90..) => HINTS_DASHBOARD,
-            (Screen::Dashboard, 60..) => "type /   tab   ctrl+c",
-            (Screen::Dashboard, _) => "/  tab  ^c",
-            (Screen::Browser, 90..) => HINTS_BROWSER,
-            (Screen::Browser, 60..) => "↑↓   enter   /   esc   ctrl+c",
-            (Screen::Browser, _) => "↑↓  enter  /  esc",
-            (Screen::Help, _) => "esc back",
-        };
-        let sync = if state.syncing {
-            "syncing".to_string()
-        } else {
-            sync_label(state.view.last_sync())
-        };
-        let width = state.size.0;
-        let show_sync = state.screen != Screen::Dashboard && width >= 64;
+        let mut hints = match state.screen {
+            Screen::Dashboard => "type to search · ctrl+p commands · tab focus",
+            Screen::Browser => "↑↓ move · enter open · / commands · esc back",
+            Screen::Help => "↑↓ scroll · esc back",
+        }
+        .to_string();
+        if state.syncing {
+            hints.push_str(" · syncing");
+        }
+        if width < 60 {
+            hints = match state.screen {
+                Screen::Dashboard => "type · ctrl+p",
+                Screen::Browser => "↑↓ · enter · /",
+                Screen::Help => "↑↓ · esc",
+            }
+            .to_string();
+        }
         drop(state);
-        self.breadcrumb
-            .set_text(breadcrumb)
-            .width(Length::Cells(if width >= 60 { 16.0 } else { 12.0 }));
-        self.hints.set_text(hints);
-        self.sync.set_text(sync).visible(show_sync);
+        self.location.set_text(location);
+        self.hints.set_text(hint_content(&hints, &self.tokens));
     }
 
     fn set_query(&self, query: String) {
-        let palette = query.starts_with('/');
+        let palette_open = self.state.borrow().palette_open;
+        if palette_open {
+            {
+                let mut state = self.state.borrow_mut();
+                state.query = query;
+                state.palette_selected = 0;
+            }
+            self.refresh_palette();
+            self.refresh_page();
+            self.refresh_footer();
+            return;
+        }
+        if let Some(rest) = query.strip_prefix('/') {
+            {
+                let mut state = self.state.borrow_mut();
+                state.palette_open = true;
+                state.query = rest.to_string();
+                state.palette_selected = 0;
+            }
+            self.prompt.set_value(rest);
+            self.refresh_palette();
+            self.refresh_page();
+            self.apply_layout();
+            self.refresh_footer();
+            return;
+        }
         {
             let mut state = self.state.borrow_mut();
             state.query = query;
-            state.palette_open = palette;
             state.selected = 0;
         }
-        if palette {
-            self.refresh_palette();
-        } else {
-            self.palette.visible(false);
-            self.refresh_rows();
-        }
+        self.refresh_page();
         self.refresh_footer();
     }
 
@@ -2754,6 +2765,9 @@ impl Ui {
             .filter(|command| {
                 command.name().contains(&term)
                     || command.description().to_lowercase().contains(&term)
+                    || command
+                        .category()
+                        .is_some_and(|category| category.label().to_lowercase().contains(&term))
             })
             .map(|command| {
                 let name = command.name();
@@ -2774,33 +2788,69 @@ impl Ui {
             .into_iter()
             .map(|(_, command)| command)
             .collect::<Vec<_>>();
-        self.palette_select.options(
-            commands
-                .iter()
-                .map(|command| SelectOption::new(command.name(), command.description())),
-        );
-        self.palette_select.select(0);
-        self.palette.visible(true);
-        self.state.borrow_mut().palette_commands = commands;
-        self.composer.focus();
+        let count = commands.len();
+        {
+            let mut state = self.state.borrow_mut();
+            state.palette_commands = commands;
+            state.palette_selected = state.palette_selected.min(count.saturating_sub(1));
+            state.palette_open = true;
+        }
+        self.refresh_page();
+        self.apply_layout();
+        self.prompt.focus();
     }
 
     fn close_palette(&self) {
         self.state.borrow_mut().palette_open = false;
-        self.palette.visible(false);
-        self.composer.set_value("");
+        self.prompt.set_value("");
         self.set_query(String::new());
-        self.composer.focus();
+        self.prompt.focus();
     }
 
-    fn move_palette(&self, step: isize) {
-        let count = self.palette_select.option_count();
-        if count == 0 {
+    fn jump_palette_group(&self, step: isize) {
+        let (commands, selected) = {
+            let state = self.state.borrow();
+            (state.palette_commands.clone(), state.palette_selected)
+        };
+        if commands.is_empty() {
             return;
         }
-        let current = self.palette_select.selected() as isize;
-        let next = (current + step).rem_euclid(count as isize) as usize;
-        self.palette_select.select(next);
+        let group = |command: &Command| {
+            command
+                .category()
+                .map(|category| category.label())
+                .unwrap_or("Commands")
+        };
+        let current = group(&commands[selected]);
+        let target = if step > 0 {
+            commands
+                .iter()
+                .enumerate()
+                .skip(selected + 1)
+                .find(|(_, command)| group(command) != current)
+                .map(|(index, _)| index)
+        } else {
+            let start = commands[..=selected]
+                .iter()
+                .rposition(|command| group(command) == current)
+                .unwrap_or(selected);
+            let Some(previous) = commands[..start]
+                .iter()
+                .rposition(|command| group(command) != current)
+            else {
+                return;
+            };
+            Some(
+                commands[..=previous]
+                    .iter()
+                    .rposition(|command| group(command) == group(&commands[previous]))
+                    .unwrap_or(previous),
+            )
+        };
+        if let Some(target) = target {
+            self.state.borrow_mut().palette_selected = target;
+            self.refresh_page();
+        }
     }
 
     fn run_palette(&self, cx: &mut Cx<'_>, index: usize) {
@@ -2820,8 +2870,7 @@ impl Ui {
             state.palette_open = false;
             state.query.clear();
         }
-        self.palette.visible(false);
-        self.composer.set_value("");
+        self.prompt.set_value("");
         self.set_notice(None, false);
         match command {
             Command::Sync => self.start_sync(false),
@@ -2850,17 +2899,17 @@ impl Ui {
             Command::Help => {
                 self.state.borrow_mut().screen = Screen::Help;
                 self.refresh();
-                self.composer.focus();
+                self.focus(FocusTarget::Composer);
             }
             Command::Status => {
                 self.state.borrow_mut().screen = Screen::Dashboard;
                 self.refresh();
-                self.composer.focus();
+                self.focus(FocusTarget::Composer);
             }
             Command::Get => {
                 self.state.borrow_mut().screen = Screen::Browser;
                 self.refresh();
-                let index = self.list.selected();
+                let index = self.state.borrow().selected;
                 self.activate_row(index);
             }
             _ => {
@@ -2873,10 +2922,9 @@ impl Ui {
                         state.detail_open = false;
                         state.revealed = false;
                     }
-                    self.tabs.select(category.index());
                     self.save_category(category);
                     self.refresh();
-                    self.list.focus();
+                    self.focus(FocusTarget::List);
                 }
             }
         }
@@ -2893,7 +2941,7 @@ impl Ui {
             state.revealed = false;
         }
         self.save_category(category);
-        self.refresh_rows();
+        self.refresh_page();
         self.refresh_footer();
     }
 
@@ -2925,14 +2973,14 @@ impl Ui {
             }
             state.selected = index;
         }
-        self.refresh_rows();
+        self.refresh_page();
     }
 
     fn activate_row(&self, index: usize) {
         self.select_row(index);
         self.state.borrow_mut().detail_open = true;
         self.apply_layout();
-        self.detail.focus();
+        self.focus(FocusTarget::Detail);
     }
 
     fn selected_entry(&self) -> Option<crate::model::Entry> {
@@ -2975,11 +3023,11 @@ impl Ui {
             return;
         }
         self.state.borrow_mut().revealed = true;
-        self.refresh_rows();
+        self.refresh_page();
         let ui = self.clone();
         self.app.set_timeout(Duration::from_secs(20), move |_cx| {
             ui.state.borrow_mut().revealed = false;
-            ui.refresh_rows();
+            ui.refresh_page();
         });
     }
 
@@ -3056,16 +3104,30 @@ impl Ui {
     fn set_notice(&self, text: Option<String>, error: bool) {
         match text {
             Some(text) => {
-                self.banner.set_text(text);
-                self.banner.fg(if error {
-                    self.chrome.error
+                self.toast_text.set_text(text).fg(if error {
+                    self.tokens.error
                 } else {
-                    self.chrome.accent
+                    self.tokens.text
                 });
-                self.banner.visible(true);
+                self.toast_more.set_text("");
+                self.toast_start.fg(if error {
+                    self.tokens.error
+                } else {
+                    self.tokens.info
+                });
+                self.toast_end.fg(if error {
+                    self.tokens.error
+                } else {
+                    self.tokens.info
+                });
+                self.toast.visible(true);
+                let ui = self.clone();
+                self.app.set_timeout(Duration::from_secs(5), move |_cx| {
+                    ui.toast.visible(false);
+                });
             }
             None => {
-                self.banner.visible(false);
+                self.toast.visible(false);
             }
         }
     }
@@ -3094,19 +3156,18 @@ impl Ui {
             state.detail_open = state.size.0 < 60;
             state.revealed = false;
         }
-        self.tabs.select(category.index());
-        self.composer.set_value(row.title.clone());
+        self.prompt.set_value(row.title.clone());
         self.refresh();
         if self.state.borrow().detail_open {
-            self.detail.focus();
+            self.focus(FocusTarget::Detail);
         } else {
-            self.list.focus();
+            self.focus(FocusTarget::List);
         }
     }
 
     fn submit(&self, cx: &mut Cx<'_>) {
         if self.state.borrow().palette_open {
-            let index = self.palette_select.selected();
+            let index = self.state.borrow().palette_selected;
             self.run_palette(cx, index);
             return;
         }
@@ -3115,23 +3176,23 @@ impl Ui {
             Screen::Dashboard => {
                 self.state.borrow_mut().screen = Screen::Browser;
                 self.refresh();
-                self.list.focus();
+                self.focus(FocusTarget::List);
             }
             Screen::Browser => {
-                self.list.focus();
+                self.focus(FocusTarget::List);
             }
             Screen::Help => {
                 self.state.borrow_mut().screen = Screen::Dashboard;
                 self.refresh();
-                self.composer.focus();
+                self.focus(FocusTarget::Composer);
             }
         }
     }
 
     fn open_palette(&self) {
-        self.composer.set_value("/");
+        self.prompt.set_value("/");
         self.set_query("/".into());
-        self.composer.focus();
+        self.focus(FocusTarget::Composer);
     }
 
     fn back(&self) {
@@ -3148,32 +3209,38 @@ impl Ui {
             self.close_palette();
             return;
         }
-        if compact && detail_open {
-            self.state.borrow_mut().detail_open = false;
-            self.apply_layout();
-            self.list.focus();
-            return;
+        if detail_open {
+            let focus = self.state.borrow().focus;
+            if compact {
+                self.state.borrow_mut().detail_open = false;
+                self.apply_layout();
+            }
+            if focus == FocusTarget::Detail {
+                self.focus(FocusTarget::List);
+                self.refresh_page();
+                return;
+            }
         }
         match screen {
             Screen::Help => {
                 self.state.borrow_mut().screen = Screen::Dashboard;
                 self.refresh();
-                self.composer.focus();
+                self.focus(FocusTarget::Composer);
             }
             Screen::Browser => {
                 if !self.state.borrow().query.is_empty() {
-                    self.composer.set_value("");
+                    self.prompt.set_value("");
                     self.set_query(String::new());
-                    self.composer.focus();
+                    self.focus(FocusTarget::Composer);
                 } else {
                     self.state.borrow_mut().screen = Screen::Dashboard;
                     self.refresh();
-                    self.composer.focus();
+                    self.focus(FocusTarget::Composer);
                 }
             }
             Screen::Dashboard => {
                 if !self.state.borrow().query.is_empty() {
-                    self.composer.set_value("");
+                    self.prompt.set_value("");
                     self.set_query(String::new());
                 }
             }
@@ -3184,29 +3251,14 @@ impl Ui {
         if self.state.borrow().modal_open {
             return;
         }
+        if key.matches("ctrl+c") && self.state.borrow().palette_open {
+            self.close_palette();
+            cx.stop_propagation();
+            return;
+        }
         if key.matches("ctrl+c") {
             cx.quit();
             return;
-        }
-        if !self.composer.is_focused() && !self.state.borrow().palette_open {
-            if let KeyCode::Char(character) = key.code {
-                if !key.modifiers.contains(Modifiers::CTRL)
-                    && !key.modifiers.contains(Modifiers::ALT)
-                    && character != '/'
-                    && character != 'q'
-                    && matches!(
-                        self.state.borrow().screen,
-                        Screen::Dashboard | Screen::Browser
-                    )
-                {
-                    self.state.borrow_mut().screen = Screen::Browser;
-                    self.composer.focus();
-                    self.composer.insert(character.to_string());
-                    self.refresh();
-                    cx.stop_propagation();
-                    return;
-                }
-            }
         }
         if key.matches("ctrl+z") {
             self.app.suspend();
@@ -3218,89 +3270,78 @@ impl Ui {
             } else {
                 self.back();
             }
+            cx.stop_propagation();
             return;
         }
-        if self.state.borrow().palette_open {
+        let (screen, palette_open, focus) = {
+            let state = self.state.borrow();
+            (state.screen, state.palette_open, state.focus)
+        };
+        if palette_open {
+            let page = self.state.borrow().palette_commands.len();
             if key.matches("enter") {
-                let index = self.palette_select.selected();
+                let index = self.state.borrow().palette_selected;
                 self.run_palette(cx, index);
                 cx.stop_propagation();
                 return;
             }
-            if key.matches("down") {
-                self.move_palette(1);
+            if key.matches("alt+down") || key.matches("alt+up") {
+                self.jump_palette_group(if key.matches("alt+down") { 1 } else { -1 });
                 cx.stop_propagation();
                 return;
             }
-            if key.matches("up") {
-                self.move_palette(-1);
+            let step = if key.matches("down") {
+                Some(1)
+            } else if key.matches("up") {
+                Some(-1)
+            } else if key.matches("pagedown") {
+                Some(10)
+            } else if key.matches("pageup") {
+                Some(-10)
+            } else {
+                None
+            };
+            if let Some(step) = step {
+                if page > 0 {
+                    let mut state = self.state.borrow_mut();
+                    state.palette_selected =
+                        (state.palette_selected as isize + step).rem_euclid(page as isize) as usize;
+                }
+                self.refresh_page();
                 cx.stop_propagation();
                 return;
             }
+            if key.matches("home") {
+                self.state.borrow_mut().palette_selected = 0;
+                self.refresh_page();
+                cx.stop_propagation();
+                return;
+            }
+            if key.matches("end") {
+                let last = page.saturating_sub(1);
+                self.state.borrow_mut().palette_selected = last;
+                self.refresh_page();
+                cx.stop_propagation();
+                return;
+            }
+            return;
         }
         if key.matches("ctrl+p") {
             self.open_palette();
             cx.stop_propagation();
             return;
         }
-        let (browser, palette_open) = {
-            let state = self.state.borrow();
-            (state.screen == Screen::Browser, state.palette_open)
-        };
-        if browser && !palette_open && !self.composer.is_focused() && self.detail.is_focused() {
-            if key.matches("y") {
-                self.copy_password();
-                cx.stop_propagation();
-                return;
-            }
-            if key.matches("o") {
-                let _ = self.copy_otp();
-                cx.stop_propagation();
-                return;
-            }
-            if key.matches("r") {
-                self.reveal_password();
-                cx.stop_propagation();
-                return;
-            }
-            if key.matches("e") {
-                self.start_edit();
-                cx.stop_propagation();
-                return;
-            }
-            if key.matches("a") {
-                self.open_form(FormKind::AddLogin);
-                cx.stop_propagation();
-                return;
-            }
-            if key.matches("g") {
-                self.start_group();
-                cx.stop_propagation();
-                return;
-            }
-            if key.matches("t") {
-                self.start_remove();
-                cx.stop_propagation();
-                return;
-            }
-            if key.matches("s") {
-                self.start_restore();
-                cx.stop_propagation();
-                return;
-            }
-            if key.matches("l") {
-                self.start_resolve(true);
-                cx.stop_propagation();
-                return;
-            }
-            if key.matches("v") {
-                self.start_resolve(false);
-                cx.stop_propagation();
-                return;
-            }
-        }
-        if key.matches("u") && !self.composer.is_focused() && self.detail.is_focused() {
-            self.undo_trash();
+        if key.matches("tab") {
+            let next = match (screen, focus) {
+                (Screen::Dashboard, FocusTarget::Composer) => FocusTarget::List,
+                (Screen::Dashboard, _) => FocusTarget::Composer,
+                (Screen::Browser, FocusTarget::Composer) => FocusTarget::List,
+                (Screen::Browser, FocusTarget::List) => FocusTarget::Detail,
+                (Screen::Browser, _) => FocusTarget::Composer,
+                (Screen::Help, _) => FocusTarget::Composer,
+            };
+            self.focus(next);
+            self.refresh_page();
             cx.stop_propagation();
             return;
         }
@@ -3314,22 +3355,260 @@ impl Ui {
             cx.stop_propagation();
             return;
         }
-        if key.matches("/") && !self.composer.is_focused() {
+        if screen == Screen::Help {
+            if key.matches("down") || key.matches("pagedown") {
+                let step = if key.matches("pagedown") { 10 } else { 1 };
+                self.state.borrow_mut().help_scroll += step;
+                self.refresh_page();
+            } else if key.matches("up") || key.matches("pageup") {
+                let step = if key.matches("pageup") { 10 } else { 1 };
+                let mut state = self.state.borrow_mut();
+                state.help_scroll = state.help_scroll.saturating_sub(step);
+                drop(state);
+                self.refresh_page();
+            }
+            return;
+        }
+        if focus == FocusTarget::List {
+            if let KeyCode::Char(character) = key.code {
+                if !key.modifiers.contains(Modifiers::CTRL)
+                    && !key.modifiers.contains(Modifiers::ALT)
+                    && character != '/'
+                    && character != 'q'
+                {
+                    self.focus(FocusTarget::Composer);
+                    self.prompt.insert(character.to_string());
+                    cx.stop_propagation();
+                    return;
+                }
+            }
+        }
+        let mut moved = false;
+        if key.matches("down") {
+            moved = self.move_selection(1);
+        } else if key.matches("up") {
+            moved = self.move_selection(-1);
+        } else if key.matches("pagedown") {
+            moved = self.move_selection(10);
+        } else if key.matches("pageup") {
+            moved = self.move_selection(-10);
+        } else if key.matches("home") {
+            moved = self.move_selection(isize::MIN / 2);
+        } else if key.matches("end") {
+            moved = self.move_selection(isize::MAX / 2);
+        }
+        if moved {
+            cx.stop_propagation();
+            return;
+        }
+        if key.matches("enter") {
+            match screen {
+                Screen::Dashboard if focus == FocusTarget::List => {
+                    let index = self.state.borrow().recent_selected;
+                    self.open_recent(index);
+                }
+                Screen::Browser if focus == FocusTarget::List => {
+                    let index = self.state.borrow().selected;
+                    self.activate_row(index);
+                    self.focus(FocusTarget::Detail);
+                    self.refresh_page();
+                }
+                _ => {}
+            }
+            cx.stop_propagation();
+            return;
+        }
+        if screen == Screen::Browser && focus == FocusTarget::Detail {
+            let action = if key.matches("y") {
+                Some("copy")
+            } else if key.matches("o") {
+                Some("otp")
+            } else if key.matches("r") {
+                Some("reveal")
+            } else if key.matches("e") {
+                Some("edit")
+            } else if key.matches("a") {
+                Some("add")
+            } else if key.matches("g") {
+                Some("group")
+            } else if key.matches("t") {
+                Some("remove")
+            } else if key.matches("s") {
+                Some("restore")
+            } else if key.matches("u") {
+                Some("undo")
+            } else if key.matches("l") {
+                Some("local")
+            } else if key.matches("v") {
+                Some("remote")
+            } else {
+                None
+            };
+            match action {
+                Some("copy") => self.copy_password(),
+                Some("otp") => {
+                    let _ = self.copy_otp();
+                }
+                Some("reveal") => self.reveal_password(),
+                Some("edit") => self.start_edit(),
+                Some("add") => self.open_form(FormKind::AddLogin),
+                Some("group") => self.start_group(),
+                Some("remove") => self.start_remove(),
+                Some("restore") => self.start_restore(),
+                Some("undo") => self.undo_trash(),
+                Some("local") => self.start_resolve(true),
+                Some("remote") => self.start_resolve(false),
+                _ => {}
+            }
+            if action.is_some() {
+                cx.stop_propagation();
+                return;
+            }
+        }
+        if key.matches("/") && focus != FocusTarget::Composer {
             self.open_palette();
             cx.stop_propagation();
             return;
         }
-        if key.matches("q") && !self.composer.is_focused() {
+        if key.matches("q") && focus != FocusTarget::Composer {
             cx.quit();
+        }
+    }
+
+    fn move_selection(&self, step: isize) -> bool {
+        let (screen, focus) = {
+            let state = self.state.borrow();
+            (state.screen, state.focus)
+        };
+        if focus == FocusTarget::Composer {
+            return false;
+        }
+        match screen {
+            Screen::Dashboard => {
+                let count = self.state.borrow().recents.len();
+                if count == 0 {
+                    return false;
+                }
+                let mut state = self.state.borrow_mut();
+                let next = if step == isize::MIN / 2 {
+                    0
+                } else if step == isize::MAX / 2 {
+                    count - 1
+                } else {
+                    (state.recent_selected as isize + step).rem_euclid(count as isize) as usize
+                };
+                state.recent_selected = next;
+                drop(state);
+                self.refresh_page();
+                true
+            }
+            Screen::Browser => {
+                let count = self.state.borrow().rows.len();
+                if count == 0 {
+                    return false;
+                }
+                let mut state = self.state.borrow_mut();
+                let next = if step == isize::MIN / 2 {
+                    0
+                } else if step == isize::MAX / 2 {
+                    count - 1
+                } else {
+                    (state.selected as isize + step).rem_euclid(count as isize) as usize
+                };
+                state.selected = next;
+                state.revealed = false;
+                state.detail_scroll = 0;
+                drop(state);
+                self.refresh_page();
+                true
+            }
+            Screen::Help => false,
         }
     }
 
     fn cycle_category(&self, step: isize) {
         let index = self.state.borrow().category.index() as isize;
         let next = (index + step).rem_euclid(CATEGORIES.len() as isize) as usize;
-        self.tabs.select(next);
         self.set_category(next);
     }
+}
+
+fn hint_content(text: &str, tokens: &Tokens) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    for (index, group) in text.split(" · ").enumerate() {
+        if index > 0 {
+            spans.push(Span::raw(" · ").fg(tokens.faint));
+        }
+        let mut parts = group.splitn(2, ' ');
+        let key = parts.next().unwrap_or_default();
+        let label = parts.next().unwrap_or_default();
+        spans.push(Span::raw(key.to_string()).fg(tokens.text));
+        if !label.is_empty() {
+            spans.push(Span::raw(format!(" {label}")).fg(tokens.muted));
+        }
+    }
+    spans
+}
+
+fn short_label(label: &str) -> String {
+    match label {
+        "One-time code" => "Code".into(),
+        "Created" => "Created".into(),
+        "Last modified" => "Modified".into(),
+        other => other.to_string(),
+    }
+}
+
+fn wordmark_lines(size: (u16, u16)) -> Vec<String> {
+    let (width, height) = size;
+    if height < 12 {
+        return Vec::new();
+    }
+    if width < 44 {
+        return vec![WORDMARK_COMPACT.to_string()];
+    }
+    WORDMARK.lines().map(str::to_string).collect()
+}
+
+fn help_groups() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
+    vec![
+        (
+            "Vault",
+            vec![
+                ("y", "copy the password"),
+                ("o", "copy the one-time code"),
+                ("r", "reveal for 20 seconds"),
+                ("e", "edit the item"),
+                ("t", "move to Recently Deleted"),
+                ("s", "restore an item"),
+                ("g", "change the group"),
+                ("a", "add a login"),
+                ("u", "undo the last delete"),
+                ("l / v", "keep local or remote"),
+            ],
+        ),
+        (
+            "Navigation",
+            vec![
+                ("↑ ↓", "move"),
+                ("enter", "open"),
+                ("tab", "switch focus"),
+                ("ctrl+tab", "next category"),
+                ("esc", "back"),
+                ("ctrl+p", "commands"),
+                ("/", "commands"),
+                ("ctrl+c", "quit"),
+            ],
+        ),
+        (
+            "Sync",
+            vec![
+                ("/sync", "sync now"),
+                ("/login", "sign in again"),
+                ("/join", "join the trust circle"),
+            ],
+        ),
+    ]
 }
 
 fn count_lines(counts: &[(&str, usize)], width: u16) -> String {
@@ -3350,60 +3629,6 @@ fn count_lines(counts: &[(&str, usize)], width: u16) -> String {
         lines.push(line);
     }
     lines.join("\n")
-}
-
-fn detail_text(rows: Option<&Vec<(String, String)>>) -> String {
-    let Some(rows) = rows else {
-        return String::new();
-    };
-    rows.iter()
-        .map(|(label, value)| format!("{label:<14} {value}"))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn action_text(row: Option<&Row>) -> String {
-    let Some(row) = row else {
-        return String::new();
-    };
-    let mut actions = Vec::new();
-    let (entry, shared) = match &row.source {
-        RowSource::Entry(entry) => (Some(entry.as_ref()), entry.group.is_some()),
-        RowSource::Trash(trash) => (Some(&trash.entry), false),
-        RowSource::Pending(_) => (None, false),
-        RowSource::Group(_) => (None, false),
-    };
-    if let Some(entry) = entry {
-        if entry.password.is_some() {
-            actions.push("y copy");
-            actions.push("r reveal");
-        }
-        if entry.totp.is_some() {
-            actions.push("o otp");
-        }
-    }
-    match &row.source {
-        RowSource::Entry(_) if shared => actions.push("g leave"),
-        RowSource::Entry(_) => {
-            actions.push("e edit");
-            actions.push("t trash");
-            actions.push("g group");
-        }
-        RowSource::Trash(_) => actions.push("s restore"),
-        RowSource::Pending(_) => {
-            actions.push("l local");
-            actions.push("v remote");
-        }
-        RowSource::Group(_) => {}
-    }
-    actions.join("   ")
-}
-
-fn sync_label(last: Option<chrono::DateTime<Utc>>) -> String {
-    match last {
-        Some(at) => format!("synced {}", super::data::relative(at, Utc::now())),
-        None => "no sync yet".to_string(),
-    }
 }
 
 #[cfg(test)]
@@ -3512,19 +3737,19 @@ mod tests {
         let app = TestApp::new(100, 30);
         let _ui = ui(&app);
         let text = app.render().text();
-        assert!(text.contains("RECENT"), "{text}");
+        assert!(text.contains("Recent"), "{text}");
         assert!(text.contains("2 logins"), "{text}");
-        assert!(text.contains("Example"), "{text}");
     }
 
     #[test]
     fn typing_filters_the_list() {
         let app = TestApp::new(100, 30);
         let ui = ui(&app);
+        ui.state.borrow_mut().screen = Screen::Browser;
         ui.set_query("exam".into());
-        assert_eq!(ui.list.option_count(), 1);
+        assert_eq!(ui.state.borrow().rows.len(), 1);
         ui.set_query("nobody".into());
-        assert_eq!(ui.list.option_count(), 0);
+        assert_eq!(ui.state.borrow().rows.len(), 0);
     }
 
     #[test]
@@ -3533,11 +3758,11 @@ mod tests {
         let ui = ui(&app);
         ui.set_query("/".into());
         assert!(ui.state.borrow().palette_open);
-        assert_eq!(ui.palette_select.option_count(), COMMANDS.len());
+        assert_eq!(ui.state.borrow().palette_commands.len(), COMMANDS.len());
         ui.set_query("/qui".into());
-        assert_eq!(ui.palette_select.option_count(), 1);
+        assert_eq!(ui.state.borrow().palette_commands.len(), 1);
         ui.set_query("/not".into());
-        assert_eq!(ui.palette_select.option_count(), 2);
+        assert_eq!(ui.state.borrow().palette_commands.len(), 2);
         ui.back();
         assert!(!ui.state.borrow().palette_open);
         assert!(ui.state.borrow().query.is_empty());
@@ -3628,7 +3853,7 @@ mod tests {
         let _ui = ui_sized(&app, 53, 34);
         let frame = app.render();
         let text = frame.text();
-        for needle in ["apw", "RECENT", "ACTIVITY", "0 pending", "0 passkeys"] {
+        for needle in ["apw", "Recent", "0 pending", "0 passkeys"] {
             assert!(text.contains(needle), "53x34 lost {needle:?}\n{text}");
         }
         for y in 0..34u32 {
@@ -3642,7 +3867,7 @@ mod tests {
         let app = TestApp::new(40, 16);
         let _ui = ui_sized(&app, 40, 16);
         let text = app.render().text();
-        for needle in ["0 pending", "0 passkeys", "sync", "trash", "dashboard"] {
+        for needle in ["apw", "0 pending", "0 passkeys", "ctrl+p"] {
             assert!(text.contains(needle), "40x16 lost {needle:?}\n{text}");
         }
     }
@@ -3651,9 +3876,9 @@ mod tests {
     fn enter_in_the_composer_opens_the_browser() {
         let app = TestApp::new(100, 30);
         let ui = ui(&app);
-        ui.composer.set_value("exam");
+        ui.prompt.set_value("exam");
         ui.set_query("exam".into());
-        ui.composer.focus();
+        ui.focus(FocusTarget::Composer);
         app.press("enter");
         assert_eq!(ui.state.borrow().screen, Screen::Browser);
         assert_eq!(ui.state.borrow().query, "exam");
@@ -3663,7 +3888,7 @@ mod tests {
     fn typing_returns_focus_to_the_composer() {
         let app = TestApp::new(53, 34);
         let ui = ui_sized(&app, 53, 34);
-        ui.list.focus();
+        ui.focus(FocusTarget::List);
         app.type_text("abc");
         assert_eq!(ui.state.borrow().query, "abc");
     }
@@ -3692,11 +3917,7 @@ mod tests {
         ui.set_field(RowKey::Site, "example.com");
         ui.set_field(RowKey::Password, "hunter2");
         app.render();
-        let rect = ui.modal_action.rect();
-        println!(
-            "ACTION RECT {rect:?} VISIBLE {}",
-            ui.modal_action.is_shown()
-        );
+        let rect = ui.modal_band.rect();
         app.click(rect.screen_x as u16 + 2, rect.screen_y as u16);
         assert!(ui
             .state
@@ -3957,7 +4178,7 @@ mod tests {
         let app = TestApp::new(100, 30);
         let ui = ui(&app);
         ui.set_query("/login".into());
-        assert!(ui.palette_select.option_count() >= 3);
+        assert!(ui.state.borrow().palette_commands.len() >= 3);
         assert_eq!(
             ui.state.borrow().palette_commands.first().map(|c| c.name()),
             Some("login")
@@ -4078,13 +4299,7 @@ mod tests {
             let _ui = ui_sized(&app, width, height);
             let frame = app.render();
             println!("--- {width}x{height} ---");
-            println!(
-                "columns {:?} left {:?} right {:?} split {:?}",
-                _ui.columns.rect(),
-                _ui.left.rect(),
-                _ui.right.rect(),
-                _ui.split.rect()
-            );
+            println!("page {:?}", _ui.page_view.rect());
             for y in 0..height as u32 {
                 println!("{y:02}|{}|", frame.row(y));
             }

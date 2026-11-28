@@ -15,6 +15,9 @@ recent items, and the last sync. Category tabs open the vault.
 
 | Key | Action |
 | --- | --- |
+The single-key actions below apply while the detail pane has focus. `tab`
+moves there from the list; typing in the list filters it.
+
 | `y` | Copy the password |
 | `o` | Copy the current one-time code |
 | `r` | Reveal the password for 20 seconds |
