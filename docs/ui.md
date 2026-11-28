@@ -217,11 +217,10 @@ A centered column, like opencode's home:
 10. Growing spacer.
 11. The footer bar.
 
-The wordmark is a five-row block `apw` in bold `text.base`. Its shadow is a
-one-cell drop: every glyph cell also paints at one column right and one row
-down in `text.shadow`, unless the next row already covers that cell. Below 44
-columns the wordmark collapses to the three letters `apw`; below 12 rows it is
-hidden. opencode's own art, for reference:
+The wordmark is a five-row block `apw` in bold `text.base`. Its shadow repeats
+the final row one cell below in `text.shadow`, so the letters sit on a dark
+base. Below 44 columns the wordmark collapses to the three letters `apw`; below
+12 rows it is hidden. opencode's own art, for reference:
 
 ```text
 █▀▀█ █▀▀█ █▀▀█ █▀▀▄   █▀▀▀ █▀▀█ █▀▀█ █▀▀█

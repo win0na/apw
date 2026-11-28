@@ -193,31 +193,10 @@ fn draw_home(painter: &mut Painter<'_>, tokens: &Tokens, width: u32, height: u32
             .max()
             .unwrap_or(0) as u32;
         let word_x = width.saturating_sub(widest) / 2;
-        for (index, line) in home.wordmark.iter().enumerate() {
-            let row = y + index as u32;
-            if row + 1 >= height {
-                continue;
-            }
-            let below = home
-                .wordmark
-                .get(index + 1)
-                .map(|next| next.chars().collect::<Vec<_>>());
-            for (column, glyph) in line.chars().enumerate() {
-                if glyph == ' ' {
-                    continue;
-                }
-                let covered = below
-                    .as_ref()
-                    .and_then(|next| next.get(column + 1))
-                    .is_some_and(|next| *next != ' ');
-                if !covered && word_x + column as u32 + 1 < width {
-                    painter.text(
-                        (word_x + column as u32 + 1) as i32,
-                        (row + 1) as i32,
-                        &glyph.to_string(),
-                        Style::new().fg(tokens.shadow),
-                    );
-                }
+        if let Some(last) = home.wordmark.last() {
+            let row = y + home.wordmark.len() as u32;
+            if row < height {
+                painter.text(word_x as i32, row as i32, last, Style::new().fg(tokens.shadow));
             }
         }
         for (index, line) in home.wordmark.iter().enumerate() {
