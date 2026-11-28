@@ -15,7 +15,7 @@ use super::page::{
 };
 use super::secret::{SecretField, SecretValue};
 use super::theme::{Tokens, WORDMARK, WORDMARK_COMPACT};
-use super::view::Line;
+use super::view::{truncate, Line};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Screen {
@@ -321,15 +321,6 @@ struct FormRow {
     secret: bool,
 }
 
-struct Scrim;
-
-impl Component for Scrim {
-    fn paint(&self, painter: &mut Painter<'_>) {
-        let (width, height) = painter.size();
-        painter.color_matrix(0, 0, width, height, &ColorMatrix::gain(0.35));
-    }
-}
-
 impl FormKind {
     fn rows(self) -> &'static [RowKey] {
         match self {
@@ -404,6 +395,7 @@ impl RowKey {
 struct UiState {
     view: VaultView,
     screen: Screen,
+    help_return: Screen,
     category: Category,
     query: String,
     rows: Vec<Row>,
@@ -446,12 +438,14 @@ struct Ui {
     location: Text,
     hints: Text,
     overlay: View,
+    scrim: View,
     modal: View,
     modal_title: Text,
     modal_body: Text,
     modal_band: View,
     modal_error: Text,
     modal_help: Text,
+    form_scroll: ScrollBox,
     rows: Vec<FormRow>,
     secret: Custom<SecretField>,
     secret_value: SecretValue,
@@ -515,6 +509,7 @@ impl Ui {
         let state = Rc::new(RefCell::new(UiState {
             view,
             screen: Screen::Dashboard,
+            help_return: Screen::Dashboard,
             category: initial_category,
             query: String::new(),
             rows: Vec::new(),
@@ -613,17 +608,21 @@ impl Ui {
             .align_items(Align::Start)
             .z_index(100)
             .visible(false);
-        overlay.add(&Custom::new(&app, Scrim));
+        let scrim = View::new(&app)
+            .absolute()
+            .size(Length::percent(100.0), Length::percent(100.0))
+            .bg(Color::rgba(0, 0, 0, 150));
+        overlay.add(&scrim);
         let modal = View::new(&app)
             .column()
             .bg(tokens.dialog)
             .padding_y(1)
-            .padding_x(3)
             .gap(1)
             .width(Length::Cells(60.0));
         let modal_header = View::new(&app)
             .row()
             .height(1)
+            .padding_x(3)
             .justify(Justify::SpaceBetween);
         let modal_title = Text::new(&app, "").fg(tokens.text).bold();
         let modal_close = Text::new(&app, "esc").fg(tokens.muted);
@@ -632,6 +631,7 @@ impl Ui {
         let modal_body = Text::new(&app, "")
             .fg(tokens.muted)
             .wrap(WrapMode::Word)
+            .padding_x(3)
             .visible(false);
         let modal_action = View::new(&app)
             .row()
@@ -646,10 +646,22 @@ impl Ui {
         let modal_error = Text::new(&app, "")
             .fg(tokens.error)
             .wrap(WrapMode::Word)
+            .padding_x(3)
+            .visible(false);
+        let form_scroll = ScrollBox::new(&app)
+            .column()
+            .gap(1)
+            .scrollbars(true)
+            .scrollbar_colors(tokens.faint, tokens.hover)
+            .shrink(1.0)
             .visible(false);
         let mut rows = Vec::new();
         for index in 0..6 {
-            let field = View::new(&app).column().gap(0).height(Length::Cells(2.0));
+            let field = View::new(&app)
+                .column()
+                .gap(0)
+                .padding_x(3)
+                .height(Length::Cells(2.0));
             let label = Text::new(&app, "").fg(tokens.text).height(1);
             field.add(&label);
             let (input, textarea) = if index == 3 {
@@ -680,12 +692,17 @@ impl Ui {
                 secret: index == 3,
             });
         }
-        let modal_help = Text::new(&app, "").fg(tokens.muted);
+        let modal_help = Text::new(&app, "")
+            .fg(tokens.muted)
+            .padding_x(3)
+            .height(1)
+            .truncate(true);
         modal.add(&modal_header);
         modal.add(&modal_body);
         for row in &rows {
-            modal.add(&row.view);
+            form_scroll.add(&row.view);
         }
+        modal.add(&form_scroll);
         modal.add(&modal_action);
         modal.add(&modal_error);
         modal.add(&modal_help);
@@ -732,12 +749,14 @@ impl Ui {
             location,
             hints,
             overlay,
+            scrim,
             modal,
             modal_title,
             modal_body,
             modal_band: modal_action,
             modal_error,
             modal_help,
+            form_scroll,
             rows,
             secret,
             secret_value,
@@ -771,7 +790,10 @@ impl Ui {
         let pad = if w < 44 { 1 } else { 2 };
         let column = w.saturating_sub(pad * 2).min(75);
         let x = w.saturating_sub(column) / 2;
-        let palette_open = self.state.borrow().palette_open;
+        let (palette_open, screen, modal_open) = {
+            let state = self.state.borrow();
+            (state.palette_open, state.screen, state.modal_open)
+        };
         if palette_open {
             let rect = palette_rect(w, h);
             self.prompt_box
@@ -793,7 +815,6 @@ impl Ui {
                 .colors(self.tokens.text, self.tokens.dialog)
                 .focused_colors(self.tokens.text, self.tokens.dialog);
         } else {
-            let screen = self.state.borrow().screen;
             let (prompt_y, prompt_width) = match screen {
                 Screen::Dashboard => {
                     let home = self.home_model();
@@ -822,16 +843,62 @@ impl Ui {
                 .colors(self.tokens.text, self.tokens.panel)
                 .focused_colors(self.tokens.text, self.tokens.panel);
         }
-        self.prompt_box.visible(true);
+        self.prompt_box
+            .visible(palette_open || (!modal_open && screen != Screen::Help));
+        self.location.visible(!modal_open);
+        self.hints.visible(!modal_open);
 
         let notes_height = if height < 20 { 2.0 } else { 4.0 };
         self.rows[5].view.height(Length::Cells(notes_height));
         if let Some(textarea) = &self.rows[5].textarea {
             textarea.height(Length::Cells((notes_height - 1.0).max(1.0)));
         }
+
+        let (form_open, auth_open, confirm_open, picker_open) = {
+            let state = self.state.borrow();
+            (
+                state.form.is_some(),
+                state.auth.is_some(),
+                state.confirm.is_some(),
+                state.picker.is_some(),
+            )
+        };
+        let form_like = (form_open || auth_open) && !confirm_open && !picker_open;
+        let fields_height = if form_open {
+            let keys = self.visible_keys();
+            let rows = keys
+                .iter()
+                .map(|key| {
+                    if *key == RowKey::Notes {
+                        notes_height as u32
+                    } else {
+                        2
+                    }
+                })
+                .sum::<u32>();
+            (rows + keys.len().saturating_sub(1) as u32).max(1)
+        } else if auth_open {
+            2
+        } else {
+            0
+        };
+        let available = h.saturating_sub(2);
+        let chrome = 10;
+        let viewport = fields_height.min(available.saturating_sub(chrome)).max(1);
+        self.form_scroll
+            .height(Length::Cells(viewport as f32))
+            .visible(form_like);
         self.modal
             .width(Length::Cells((w.saturating_sub(2)).min(60) as f32))
-            .margin_edge(Edge::Top, h / 4);
+            .max_height(Length::Cells(available as f32))
+            .margin_edge(
+                Edge::Top,
+                if form_like {
+                    (h / 4).min(h.saturating_sub(viewport + chrome))
+                } else {
+                    h / 4
+                },
+            );
         self.location.width(Length::Cells((w / 2).min(28) as f32));
     }
 
@@ -865,6 +932,8 @@ impl Ui {
         let ui = self.clone();
         self.app
             .on_message(move |_cx, message: &AuthEvent| ui.auth_event(message));
+        let ui = self.clone();
+        self.scrim.on_click(move |_cx, _event| ui.dismiss_dialog());
         let ui = self.clone();
         self.modal_band
             .on_click(move |_cx, _event| ui.review_form());
@@ -1014,7 +1083,9 @@ impl Ui {
                 original,
             });
         }
+        self.apply_layout();
         self.focus_form(0);
+        self.form_scroll.scroll_to(0.0, 0.0);
     }
 
     fn focus_form(&self, focus: usize) {
@@ -1039,6 +1110,7 @@ impl Ui {
                     input.focus();
                     input.perform(EditorAction::SelectAll);
                 }
+                self.form_scroll.scroll_into_view(&row.view);
             }
         }
         if let Some(form) = self.state.borrow_mut().form.as_mut() {
@@ -1079,6 +1151,10 @@ impl Ui {
     }
 
     fn modal_key(&self, cx: &mut Cx<'_>, key: &KeyEvent) {
+        if self.palette_nav(key) {
+            cx.stop_propagation();
+            return;
+        }
         if !self.state.borrow().modal_open {
             return;
         }
@@ -1596,6 +1672,47 @@ impl Ui {
         }
     }
 
+    fn dismiss_dialog(&self) {
+        let (modal_open, confirm, reviewing) = {
+            let state = self.state.borrow();
+            (
+                state.modal_open,
+                state
+                    .confirm
+                    .as_ref()
+                    .map(|confirm| matches!(confirm.action, PendingAction::DiscardForm)),
+                state
+                    .form
+                    .as_ref()
+                    .is_some_and(|form| form.review.is_some()),
+            )
+        };
+        if !modal_open {
+            return;
+        }
+        if let Some(discard) = confirm {
+            if discard {
+                self.back_to_form();
+            } else {
+                self.close_modal();
+            }
+            return;
+        }
+        if reviewing {
+            self.back_to_form();
+            return;
+        }
+        if self.form_dirty() {
+            self.show_confirm(
+                "DISCARD CHANGES?",
+                "The values you entered will be lost.",
+                PendingAction::DiscardForm,
+            );
+        } else {
+            self.close_modal();
+        }
+    }
+
     fn close_modal(&self) {
         {
             let mut state = self.state.borrow_mut();
@@ -1623,6 +1740,7 @@ impl Ui {
             other => other,
         };
         self.focus(target);
+        self.apply_layout();
     }
 
     fn show_confirm(&self, title: &str, body: &str, action: PendingAction) {
@@ -1653,6 +1771,7 @@ impl Ui {
             row.view.visible(false);
         }
         self.overlay.visible(true);
+        self.apply_layout();
     }
 
     fn refresh_confirm(&self, armed: bool) {
@@ -1810,6 +1929,7 @@ impl Ui {
         for row in &self.rows {
             row.view.visible(false);
         }
+        self.apply_layout();
         self.modal_body.visible(false);
         self.modal_error.visible(false);
         let (step, busy, error, anisette, account, password, code, escrow, join_only) = {
@@ -2343,6 +2463,7 @@ impl Ui {
         }
         self.overlay.visible(true);
         self.render_picker();
+        self.apply_layout();
     }
 
     fn render_picker(&self) {
@@ -2683,7 +2804,7 @@ impl Ui {
 
     fn refresh_footer(&self) {
         let state = self.state.borrow();
-        let width = state.size.0;
+        let width = usize::from(state.size.0);
         let location = match state.screen {
             Screen::Dashboard => "apw".to_string(),
             Screen::Help => "help".to_string(),
@@ -2696,22 +2817,35 @@ impl Ui {
                 text
             }
         };
-        let mut hints = match state.screen {
-            Screen::Dashboard => "type to search · ctrl+p commands · tab focus",
-            Screen::Browser => "↑↓ move · enter open · / commands · esc back",
-            Screen::Help => "↑↓ scroll · esc back",
-        }
-        .to_string();
+        let wide = width >= 60;
+        let mut groups: Vec<&str> = match state.screen {
+            Screen::Dashboard if wide => vec!["type to search", "ctrl+p commands", "tab focus"],
+            Screen::Dashboard => vec!["type search", "ctrl+p commands", "tab focus"],
+            Screen::Browser => vec!["↑↓ move", "enter open", "/ commands", "esc back"],
+            Screen::Help => vec!["↑↓ scroll", "enter close", "esc back"],
+        };
         if state.syncing {
-            hints.push_str(" · syncing");
+            groups.push("syncing");
         }
-        if width < 60 {
-            hints = match state.screen {
-                Screen::Dashboard => "type · ctrl+p",
-                Screen::Browser => "↑↓ · enter · /",
-                Screen::Help => "↑↓ · esc",
+        let location = truncate(&location, (width / 2).min(28));
+        let available = width
+            .saturating_sub(4)
+            .saturating_sub(location.chars().count() + 2);
+        let mut hints = String::new();
+        for group in groups {
+            let candidate = if hints.is_empty() {
+                group.to_string()
+            } else {
+                format!("{hints} · {group}")
+            };
+            if candidate.chars().count() <= available {
+                hints = candidate;
+            } else {
+                if hints.is_empty() {
+                    hints = truncate(group, available);
+                }
+                break;
             }
-            .to_string();
         }
         drop(state);
         self.location.set_text(location);
@@ -2800,10 +2934,58 @@ impl Ui {
         self.prompt.focus();
     }
 
+    fn palette_nav(&self, key: &KeyEvent) -> bool {
+        let (open, page) = {
+            let state = self.state.borrow();
+            (state.palette_open, state.palette_commands.len())
+        };
+        if !open {
+            return false;
+        }
+        if key.matches("alt+down") || key.matches("alt+up") {
+            self.jump_palette_group(if key.matches("alt+down") { 1 } else { -1 });
+            return true;
+        }
+        let step = if key.matches("down") {
+            Some(1)
+        } else if key.matches("up") {
+            Some(-1)
+        } else if key.matches("pagedown") {
+            Some(10)
+        } else if key.matches("pageup") {
+            Some(-10)
+        } else {
+            None
+        };
+        if let Some(step) = step {
+            if page > 0 {
+                let mut state = self.state.borrow_mut();
+                state.palette_selected =
+                    (state.palette_selected as isize + step).rem_euclid(page as isize) as usize;
+            }
+            self.refresh_page();
+            return true;
+        }
+        if key.matches("home") {
+            self.state.borrow_mut().palette_selected = 0;
+            self.refresh_page();
+            return true;
+        }
+        if key.matches("end") {
+            self.state.borrow_mut().palette_selected = page.saturating_sub(1);
+            self.refresh_page();
+            return true;
+        }
+        false
+    }
+
     fn close_palette(&self) {
         self.state.borrow_mut().palette_open = false;
         self.prompt.set_value("");
         self.set_query(String::new());
+        self.apply_layout();
+        self.refresh_page();
+        self.refresh_footer();
         self.prompt.focus();
     }
 
@@ -2865,12 +3047,7 @@ impl Ui {
             cx.quit();
             return;
         }
-        {
-            let mut state = self.state.borrow_mut();
-            state.palette_open = false;
-            state.query.clear();
-        }
-        self.prompt.set_value("");
+        self.close_palette();
         self.set_notice(None, false);
         match command {
             Command::Sync => self.start_sync(false),
@@ -2897,7 +3074,11 @@ impl Ui {
             Command::LoginRefresh => self.start_refresh(),
             Command::Join => self.open_auth(true),
             Command::Help => {
-                self.state.borrow_mut().screen = Screen::Help;
+                {
+                    let mut state = self.state.borrow_mut();
+                    state.help_return = state.screen;
+                    state.screen = Screen::Help;
+                }
                 self.refresh();
                 self.focus(FocusTarget::Composer);
             }
@@ -2992,13 +3173,15 @@ impl Ui {
         }
     }
 
-    fn copy_password(&self) {
+    fn copy_password(&self) -> bool {
         let Some(entry) = self.selected_entry() else {
-            return;
+            return false;
         };
         if let Some(password) = entry.password.as_deref().filter(|value| !value.is_empty()) {
             self.app.copy_to_clipboard(password);
+            return true;
         }
+        false
     }
 
     fn copy_otp(&self) -> bool {
@@ -3182,7 +3365,8 @@ impl Ui {
                 self.focus(FocusTarget::List);
             }
             Screen::Help => {
-                self.state.borrow_mut().screen = Screen::Dashboard;
+                let return_to = self.state.borrow().help_return;
+                self.state.borrow_mut().screen = return_to;
                 self.refresh();
                 self.focus(FocusTarget::Composer);
             }
@@ -3223,7 +3407,8 @@ impl Ui {
         }
         match screen {
             Screen::Help => {
-                self.state.borrow_mut().screen = Screen::Dashboard;
+                let return_to = self.state.borrow().help_return;
+                self.state.borrow_mut().screen = return_to;
                 self.refresh();
                 self.focus(FocusTarget::Composer);
             }
@@ -3356,15 +3541,33 @@ impl Ui {
             return;
         }
         if screen == Screen::Help {
+            if key.matches("enter") || key.matches("escape") {
+                self.back();
+                cx.stop_propagation();
+                return;
+            }
+            let step = if key.matches("pagedown") || key.matches("pageup") {
+                10
+            } else {
+                1
+            };
             if key.matches("down") || key.matches("pagedown") {
-                let step = if key.matches("pagedown") { 10 } else { 1 };
-                self.state.borrow_mut().help_scroll += step;
+                let limit = help_scroll_limit(self.state.borrow().size);
+                let mut state = self.state.borrow_mut();
+                state.help_scroll = (state.help_scroll + step).min(limit);
+                drop(state);
                 self.refresh_page();
             } else if key.matches("up") || key.matches("pageup") {
-                let step = if key.matches("pageup") { 10 } else { 1 };
                 let mut state = self.state.borrow_mut();
                 state.help_scroll = state.help_scroll.saturating_sub(step);
                 drop(state);
+                self.refresh_page();
+            } else if key.matches("home") {
+                self.state.borrow_mut().help_scroll = 0;
+                self.refresh_page();
+            } else if key.matches("end") {
+                let limit = help_scroll_limit(self.state.borrow().size);
+                self.state.borrow_mut().help_scroll = limit;
                 self.refresh_page();
             }
             return;
@@ -3445,9 +3648,22 @@ impl Ui {
                 None
             };
             match action {
-                Some("copy") => self.copy_password(),
+                Some("copy") => {
+                    if self.copy_password() {
+                        self.set_notice(Some("copied the password".into()), false);
+                    } else {
+                        self.set_notice(Some("the selected item has no password".into()), true);
+                    }
+                }
                 Some("otp") => {
-                    let _ = self.copy_otp();
+                    if self.copy_otp() {
+                        self.set_notice(Some("copied the one-time code".into()), false);
+                    } else {
+                        self.set_notice(
+                            Some("the selected item has no one-time code".into()),
+                            true,
+                        );
+                    }
                 }
                 Some("reveal") => self.reveal_password(),
                 Some("edit") => self.start_edit(),
@@ -3568,6 +3784,21 @@ fn wordmark_lines(size: (u16, u16)) -> Vec<String> {
         return vec![WORDMARK_COMPACT.to_string()];
     }
     WORDMARK.lines().map(str::to_string).collect()
+}
+
+fn help_scroll_limit(size: (u16, u16)) -> usize {
+    let (_, height) = size;
+    let dialog_height = u32::from(height)
+        .saturating_sub(1)
+        .saturating_sub(2)
+        .min(28);
+    let visible = dialog_height.saturating_sub(3) as usize;
+    let rows = help_groups()
+        .iter()
+        .enumerate()
+        .map(|(index, (_, rows))| rows.len() + 1 + usize::from(index > 0))
+        .sum::<usize>();
+    rows.saturating_sub(visible)
 }
 
 fn help_groups() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
@@ -3769,6 +4000,20 @@ mod tests {
     }
 
     #[test]
+    fn palette_arrows_move_the_selection() {
+        let app = TestApp::new(100, 30);
+        let ui = ui(&app);
+        ui.set_query("/".into());
+        app.press("down");
+        assert_eq!(ui.state.borrow().palette_selected, 1);
+        app.press("end");
+        assert_eq!(
+            ui.state.borrow().palette_selected,
+            COMMANDS.len().saturating_sub(1)
+        );
+    }
+
+    #[test]
     fn palette_enter_runs_the_selected_command() {
         let app = TestApp::new(100, 30);
         let ui = ui(&app);
@@ -3781,7 +4026,7 @@ mod tests {
         app.press("enter");
         assert_eq!(ui.state.borrow().screen, Screen::Help);
         app.press("escape");
-        assert_eq!(ui.state.borrow().screen, Screen::Dashboard);
+        assert_eq!(ui.state.borrow().screen, Screen::Browser);
     }
 
     #[test]

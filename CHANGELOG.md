@@ -14,6 +14,23 @@ Changes worth knowing between releases. 0.5.0 covers everything since `v0.3.0`;
 - The dashboard is a centered column: wordmark, status, counts, prompt, then
   `Recent`. The category strip carries counts and overflow markers.
 
+### Fixed
+
+- Closing the command palette restores the prompt and footer instead of leaving
+  the search bar over the page. Help and forms return the layout to the base
+  screen.
+- Dialogs dim the page behind a full-screen scrim and hide the prompt and app
+  footer while they are open.
+- The command palette scrolls to the selected row and shows a scrollbar, so
+  every command is reachable on short terminals.
+- Forms scroll their field area on short terminals and keep the action band and
+  hints in place.
+- Help no longer draws the search bar over its body or clips its last group,
+  and `enter` closes it back to the screen that opened it.
+- Footer hints drop whole key and label pairs at narrow widths instead of
+  leaving bare keys.
+- Copy actions report success or a missing value in a toast.
+
 ## [0.5.1] - 2026-11-27
 
 ### Changed

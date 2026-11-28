@@ -4,7 +4,7 @@
 //! and ellipsis truncation. OpenTUI's list widgets cannot draw that, so the
 //! body is painted from a model and only text entry uses a widget.
 
-use opentui::prelude::{App, ColorMatrix, Component, Custom, Painter, Style};
+use opentui::prelude::{App, Color, Component, Custom, Painter, Style};
 
 use crate::tui::theme::Tokens;
 use crate::tui::view::{truncate, Line};
@@ -173,7 +173,7 @@ impl Component for PageView {
             ),
         }
         if let (Some(palette), Some(_page)) = (&self.model.palette, self.model.page) {
-            painter.color_matrix(0, 0, width, height, &ColorMatrix::gain(0.45));
+            painter.fill(0, 0, width, height, Color::rgba(0, 0, 0, 150));
             draw_palette(painter, &self.tokens, width, height, palette);
         }
     }
@@ -467,14 +467,14 @@ fn draw_help(
     let mut skip = help.scroll;
     let mut first = true;
     for (group, rows) in &help.groups {
-        if !first && row + 2 < y + dialog_height {
+        if !first && row + 3 < y + dialog_height {
             row += 1;
         }
         first = false;
         if skip > 0 {
             skip -= 1;
         } else {
-            if row + 1 >= y + dialog_height {
+            if row + 1 > y + dialog_height {
                 break;
             }
             painter.text(
@@ -490,7 +490,7 @@ fn draw_help(
                 skip -= 1;
                 continue;
             }
-            if row + 1 >= y + dialog_height {
+            if row + 1 > y + dialog_height {
                 break;
             }
             painter.text(
@@ -508,13 +508,6 @@ fn draw_help(
             row += 1;
         }
     }
-    let footer = "ok enter";
-    painter.text(
-        (x + dialog_width).saturating_sub(footer.len() as u32 + 3) as i32,
-        (y + dialog_height).saturating_sub(2) as i32,
-        footer,
-        Style::new().fg(tokens.muted),
-    );
 }
 
 fn draw_palette(
@@ -538,17 +531,46 @@ fn draw_palette(
         "esc",
         Style::new().fg(tokens.muted),
     );
-    for (index, line) in palette.rows.iter().enumerate() {
-        let row = rect.y + 3 + index as u32;
-        if row + 1 >= rect.y + rect.height {
-            break;
+    let visible = rect.height.saturating_sub(4) as usize;
+    let scroll = if palette.rows.len() > visible {
+        palette.selected.saturating_sub(visible.saturating_sub(1))
+    } else {
+        0
+    };
+    if palette.rows.len() > visible && visible > 0 {
+        let bar_x = (rect.x + rect.width - 2) as i32;
+        for offset in 0..visible {
+            painter.text(
+                bar_x,
+                (rect.y + 3 + offset as u32) as i32,
+                "│",
+                Style::new().fg(tokens.faint),
+            );
         }
+        let span = palette.rows.len().saturating_sub(visible).max(1);
+        let thumb = scroll * visible.saturating_sub(1) / span;
+        painter.text(
+            bar_x,
+            (rect.y + 3 + thumb as u32) as i32,
+            "┃",
+            Style::new().fg(tokens.muted),
+        );
+    }
+    for (offset, (index, line)) in palette
+        .rows
+        .iter()
+        .enumerate()
+        .skip(scroll)
+        .take(visible)
+        .enumerate()
+    {
+        let row = rect.y + 3 + offset as u32;
         draw_line(
             painter,
             tokens,
             rect.x + 3,
             row,
-            rect.width.saturating_sub(6),
+            rect.width.saturating_sub(7),
             line,
             index == palette.selected,
             false,

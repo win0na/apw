@@ -302,9 +302,11 @@ Dialogs are flat rectangles on the scrim: no border, no title bar rule.
 - Header: title in `text.base`, bold only if the row itself needs emphasis;
   `esc` at the right in `text.muted`; optional muted description line.
 - One blank row between header, body, and footer.
-- Footer: a band in `background.raised.high` across the dialog body, padded 1
-  row and 2 cells, with `gap 2`. Secondary actions sit
-  left, primary actions right. Under 60 columns the groups stack.
+- Footer: a full-width band in `background.raised.high` across the dialog,
+  padded 1 row and 2 cells, with `gap 2`. Secondary actions sit left, primary
+  actions right. Under 60 columns the groups stack.
+- The scrim is black at alpha 150/255. The prompt and the app footer are hidden
+  while a dialog is open; the page behind stays visible but dim.
 - Action labels are `title key`, for example `Cancel esc` and `Confirm enter`.
   Disabled actions use `text.action.primary.disabled`.
 - Mouse click on the scrim closes the dialog; text selection on release does
@@ -317,6 +319,8 @@ The form is a dialog with fields, not a sequence of prompts.
 - Label above the control, `text.base`; the focused control shows
   `text.formfield.focused`.
 - One blank row between fields. Multi-line notes grow to at most 6 rows.
+- When the terminal is shorter than the form, the field area scrolls with a
+  scrollbar; the header, footer band, and hints stay in place.
 - Validation error on the footer right, `text.feedback.error.base`, cleared on
   the next edit.
 - Footer hints: `tab` next field, `↑↓` move, `enter` submit, `esc` dismiss.
@@ -342,7 +346,9 @@ The form is a dialog with fields, not a sequence of prompts.
 A 60-cell centered dialog titled `Help`, close label `esc`. Groups such as
 `Vault`, `Sync`, and `Navigation`, each a bold heading followed by rows: a
 shortcut column of 17 cells in `text.base`, then the description in
-`text.muted`. The body scrolls; the footer is `ok enter`.
+`text.muted`. The body scrolls. The app footer reads
+`↑↓ scroll · enter close · esc back`; `enter` closes Help back to the screen
+that opened it.
 
 ### Footer
 
@@ -352,8 +358,9 @@ One row at the bottom, page padding, `gap 2`:
   the help dialog, and `vault / <category>` with ` / <query>` while filtering.
 - Right: hints as `key label`, each key in `text.base` and each label in
   `text.muted`, groups joined by ` · `.
-- Below 60 columns the hints keep two or three entries and shrink to the
-  available width. The location keeps at most 28 cells.
+- Below 60 columns the hints keep as many whole `key label` groups as fit and
+  drop the rest; a key never appears without its label. The location keeps at
+  most 28 cells.
 
 ### Prompt
 
